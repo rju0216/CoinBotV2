@@ -29,3 +29,9 @@ data/backtest_reports/00_Working/
 
 # 캔들 캐시 (자동 다운로드, 크기 큼)
 data/candles/*.csv
+
+# ML 모델 아티팩트 (학습 산출물, 크기 큼)
+models/
+
+# 피처 캐시 (parquet, 학습 시 자동 생성)
+data/features/
