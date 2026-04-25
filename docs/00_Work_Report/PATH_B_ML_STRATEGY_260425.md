@@ -371,6 +371,31 @@ Phase E (통합 평가)     ←  위 Phase 중 1개 이상 완료 시 실행 가
 - 다중 기간 교차: 2020~2022 학습 → 2023 테스트, 2020~2023 학습 → 2024 테스트
 - 모든 모델의 OOS 성능이 random baseline(정확도 ~33%)을 초과하는지 확인
 
+### 데스크탑(GPU) 환경 이관 후 수행할 검증
+
+노트북 환경에 ML 패키지(lightgbm, torch 등)가 미설치 상태이므로 아래 항목은 데스크탑 이관 후 수행한다.
+
+```bash
+# 1. ML 의존성 설치
+pip install -r requirements.txt
+pip install -r requirements-ml.txt
+
+# 2. skip된 테스트 전체 실행 (torch + lightgbm 필요)
+python -m pytest tests/ -v --tb=short
+#   → skip 0건이 되어야 정상
+
+# 3. LightGBM 학습 스크립트 end-to-end 실행
+#    (사전에 캔들 데이터 다운로드 필요: scripts/download_history.py)
+python scripts/train_lightgbm.py --config config/ml_lightgbm.yaml \
+    --start 2020-01-01 --end 2024-12-31
+#   → models/lightgbm/v001_*/ 디렉토리 + model.txt 생성 확인
+
+# 4. 학습된 모델로 백테스트 실행
+python -m src.main backtest --config config/ml_lightgbm.yaml \
+    --start 2024-01-01 --end 2024-12-31
+#   → metrics.json의 total_trades > 0 확인
+```
+
 ---
 
 ## 10. 수정 대상 기존 파일
@@ -414,9 +439,9 @@ Phase E (통합 평가)     ←  위 Phase 중 1개 이상 완료 시 실행 가
 |---|------|------|------|------|
 | 0 | 설계 문서화 | 완료 | — | 본 문서 작성 |
 | 0-a | 설계 점검 | 완료 | — | 4건 수정 사항 발견, §11 기록 |
-| 1 | Phase 0: 공통 인프라 | 완료 | (커밋 대기) | requirements-ml.txt, .gitignore, features.py, ml/{__init__, label_generator, walk_forward, feature_pipeline, models}.py 신규. I-B001/B002/B003 발견/해결. 테스트 33건 추가 (23 passed + 10 skipped/torch 미설치) — 전체 119 passed + 10 skipped, 회귀 없음 |
-| — | Phase B-1a: LightGBM | 대기 | — | |
-| — | Phase B-1b: XGBoost | 대기 | — | |
+| 1 | Phase 0: 공통 인프라 | 완료 | `da136e6` | requirements-ml.txt, .gitignore, features.py, ml/{__init__, label_generator, walk_forward, feature_pipeline, models}.py 신규. I-B001/B002/B003 발견/해결. 테스트 33건 추가 (23 passed + 10 skipped/torch 미설치) — 전체 119 passed + 10 skipped, 회귀 없음 |
+| 2 | Phase B-1a: LightGBM | 완료 | (커밋 대기) | plugins/ml_lightgbm.py, scripts/train_lightgbm.py, config/ml_lightgbm.yaml, tests/test_ml_lightgbm.py 신규. 테스트 9건 추가 (8 passed + 1 skipped/lightgbm) — 전체 127 passed + 11 skipped, 회귀 없음. ML 패키지 미설치 skip 테스트는 데스크탑 이관 후 검증 예정 (§9 참조) |
+| — | Phase B-1b: XGBoost | 대기 | — | 데스크탑 환경에서 진행 예정 |
 | — | Phase B-2a: LSTM | 대기 | — | |
 | — | Phase B-2b: Transformer | 대기 | — | |
 | — | Phase B-3: PPO | 대기 | — | |

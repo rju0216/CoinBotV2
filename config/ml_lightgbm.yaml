@@ -1,0 +1,70 @@
+exchange:
+  name: "okx"
+  symbol: "BTC/USDT:USDT"
+  sandbox: false
+  leverage: 5
+
+engine:
+  reverse_signal_policy: "ignore"
+
+risk:
+  max_daily_loss_pct: 0.05
+  max_drawdown_pct: 0.35
+  max_position_size_btc: 1.0
+  max_concurrent_positions: 1
+
+accounting:
+  taker_fee_pct: 0.0005
+  slippage_pct: 0.0
+  funding_enabled: true
+
+paper:
+  initial_balance: 10000.0
+
+data:
+  history_bars: 300
+  candle_dir: "data/candles"
+
+database:
+  path: "data/coinbot.db"
+
+logging:
+  level: "INFO"
+  file: "logs/coinbot.log"
+  max_size_mb: 50
+  backup_count: 5
+
+strategies:
+  active: ["ml_lightgbm"]
+
+ml_lightgbm:
+  # ── 엔진 필수 ──
+  risk_per_trade_pct: 0.01
+  max_leverage: 5
+
+  # ── 모델 ──
+  model_path: "models/lightgbm/latest"
+  confidence_threshold: 0.55
+
+  # ── 타임프레임 ──
+  entry_timeframe: "15m"
+  required_timeframes: ["15m", "1h", "4h"]
+
+  # ── SL/TP ──
+  atr_period: 14
+  atr_sl_mult: 2.0
+  reward_risk_ratio: 2.0
+
+  # ── 학습 전용 (train_lightgbm.py가 참조, 추론 시 무시) ──
+  train:
+    horizon: 10
+    threshold_pct: 0.3
+    train_months: 6
+    test_months: 2
+    step_months: 2
+    n_estimators: 500
+    early_stopping_rounds: 50
+    lgb_params:
+      learning_rate: 0.05
+      num_leaves: 63
+      max_depth: 7
