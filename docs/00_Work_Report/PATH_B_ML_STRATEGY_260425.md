@@ -71,6 +71,7 @@ src/
 │   ├── feature_pipeline.py         # 피처 캐싱 (parquet) — 학습 전용
 │   ├── label_generator.py          # 3-class 방향 레이블 — 학습 전용
 │   ├── walk_forward.py             # 시간 기반 롤링 분할 — 학습 전용
+│   ├── sequence_utils.py           # (B-2a) 시퀀스 변환 (N, F) → (N-L+1, L, F) — DL/RL 학습+추론 공통
 │   ├── models.py                   # DL 모델 클래스 (LSTMClassifier, TransformerClassifier) — 학습+추론
 │   └── env_trading.py              # B-3용 Gym 환경 — 학습 전용
 
@@ -101,7 +102,7 @@ config/
 requirements-ml.txt                 # ML 전용 의존성
 ```
 
-총 신규 파일: **약 19개** (인프라 6 + 플러그인 5 + 학습 5 + 평가 1 + config 5 + requirements 1)
+총 신규 파일: **약 24개** (인프라 7 + 플러그인 5 + 학습 5 + 평가 1 + config 5 + requirements 1)
 
 > Buy & Hold 베이스라인은 `evaluate_models.py`에서 직접 계산하므로 별도 플러그인 불필요.
 
@@ -478,8 +479,9 @@ python -m src.main backtest --config config/ml_lightgbm.yaml \
 | 2 | Phase B-1a: LightGBM | 완료 | `9accbd4` | plugins/ml_lightgbm.py, scripts/train_lightgbm.py, config/ml_lightgbm.yaml, tests/test_ml_lightgbm.py 신규. 테스트 9건 추가 (8 passed + 1 skipped/lightgbm) — 전체 127 passed + 11 skipped, 회귀 없음. ML 패키지 미설치 skip 테스트는 데스크탑 이관 후 검증 예정 (§9 참조) |
 | 2-V | 데스크탑 환경 ML 의존성/skip 테스트 검증 | 완료 | — | 데스크탑(Python 3.14.3)에 requirements-ml.txt 설치 — I-B004 발견/해결. `pytest tests/ -v` 결과 **138 passed, 0 skipped, 0 failed** (이전 127+11 → 138+0). torch 2.11.0(cp314) 정식 휠 사용. §9의 ML 의존성 설치/skip 테스트 항목 완료 |
 | 2-E | Phase B-1a end-to-end 검증 (학습+백테) | 완료 | `cddb875` | I-B005(sys.path 누락) / I-B006(`download_range_merged` 범위 미슬라이스) 발견·해결. 회귀 테스트 138 passed 유지. **학습**: 5년치 172,025행 / 81피처 / 26 folds, OOS Acc 0.6377·F1(macro) 0.6345, 약 45초. **백테**(2024 in-sample, 누출 있음): 910거래, 승률 69.89%, total_return 5,177%, MDD 2.97%. PnL 계산식·사이징·수수료 검산 모두 정상. 결과의 비현실성은 데이터 누출 때문임을 코드 레벨에서 확정. **§9의 LightGBM end-to-end 항목(`total_trades > 0`) 충족**. 모델 진짜 성능은 §7.5에 따라 Phase E에서 재평가 |
-| 3 | Phase B-1b: XGBoost | 완료 | (커밋 대기) | plugins/ml_xgboost.py, scripts/train_xgboost.py, config/ml_xgboost.yaml, tests/test_ml_xgboost.py 신규. B-1a 구조 그대로 + XGBoost API 교체 (objective=multi:softprob, DMatrix wrapping, model.json 저장). I-B005 교훈 반영(sys.path.insert 포함). 테스트 9건 추가 → pytest 147 passed. **학습** (2020-01 ~ 2024-12, 26 folds): OOS Acc 0.6364·F1 0.6334 (B-1a 0.6377/0.6345와 사실상 동률 — 같은 GBDT 계열, 피처 정보량 한계). 학습 시간 ~150초. **백테 (2025-01 ~ 2025-12 깨끗 OOS — §9 수정안 적용 첫 케이스)**: 878거래, 승률 **64.46%(=OOS Acc)**, MDD 4.9%, 1년 수익 4,411%, Profit Factor 2.73. equity curve가 1월 무거래·11월 BTC 급락 시 조정 등 **시장 반응 보이는 자연스러운 패턴** — B-1a 누출 백테(직선 우상향)와 질적으로 다름. PnL/사이징/수수료 검산 정상. **§9 검증(`total_trades > 0`) 충족**. Lookahead bias 가능성은 I-B007로 별도 등록 (Phase E에서 검증) |
-| — | Phase B-2a: LSTM | 대기 | — | |
+| 3 | Phase B-1b: XGBoost | 완료 | `f745ef4` | plugins/ml_xgboost.py, scripts/train_xgboost.py, config/ml_xgboost.yaml, tests/test_ml_xgboost.py 신규. B-1a 구조 그대로 + XGBoost API 교체 (objective=multi:softprob, DMatrix wrapping, model.json 저장). I-B005 교훈 반영(sys.path.insert 포함). 테스트 9건 추가 → pytest 147 passed. **학습** (2020-01 ~ 2024-12, 26 folds): OOS Acc 0.6364·F1 0.6334 (B-1a 0.6377/0.6345와 사실상 동률 — 같은 GBDT 계열, 피처 정보량 한계). 학습 시간 ~150초. **백테 (2025-01 ~ 2025-12 깨끗 OOS — §9 수정안 적용 첫 케이스)**: 878거래, 승률 **64.46%(=OOS Acc)**, MDD 4.9%, 1년 수익 4,411%, Profit Factor 2.73. equity curve가 1월 무거래·11월 BTC 급락 시 조정 등 **시장 반응 보이는 자연스러운 패턴** — B-1a 누출 백테(직선 우상향)와 질적으로 다름. PnL/사이징/수수료 검산 정상. **§9 검증(`total_trades > 0`) 충족**. Lookahead bias 가능성은 I-B007로 별도 등록 (Phase E에서 검증) |
+| 3-T | 테스트 구조 리팩토링 (Phase 0 test_ml_infra.py 분리) | 완료 | (커밋 대기) | B-2a 진입 직전 테스트 구조 일관성 정비. 변경: `tests/test_ml_infra.py` 삭제 → `test_features.py`, `test_label_generator.py`, `test_walk_forward.py`, `test_lstm.py`, `test_transformer.py` 5개로 분리. 기존 테스트 코드 그대로 이동(새 테스트 작성 아님). `_make_candles` 헬퍼는 필요 파일에 로컬 복사 (test_ml_lightgbm/xgboost와 동일 패턴). pytest **147 passed 유지** (회귀 없음). 결과: `src/ml/` 하위·`src/strategy/plugins/` 하위 모두 모듈별 1:1 패턴으로 일관성 회복. LSTM 모델 정의 테스트도 더 이상 `test_ml_infra.py` 안에 흩어지지 않고 `test_lstm.py` 단독 |
+| — | Phase B-2a: LSTM | 대기 | — | **결정사항 (착수 전)**: A. lookback=60 (15m봉 60개 = 15시간 컨텍스트). B. Scaler=전체 train 데이터로 1회 fit, joblib 저장 후 추론에서 재사용. C. epochs=50 + early_stopping_patience=5. D. class weighting 미적용 (분포 28/42/30 균형 양호, B-1과 공정 비교). 신규 5개: `src/ml/sequence_utils.py`(시퀀스 변환), `scripts/train_lstm.py`, `src/strategy/plugins/dl_lstm.py`, `config/dl_lstm.yaml`, `tests/test_dl_lstm.py`. I-B003(deepcopy state_dict) 적용 필수 |
 | — | Phase B-2b: Transformer | 대기 | — | |
 | — | Phase B-3: PPO | 대기 | — | |
 | — | Phase E: 통합 평가 | 대기 | — | |
