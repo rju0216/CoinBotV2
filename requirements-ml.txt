@@ -11,7 +11,8 @@ scikit-learn>=1.4.0
 torch>=2.2.0
 
 # Phase B-3: RL (PPO)
-stable-baselines3[extra]>=2.3.0
+# [extra] 옵션은 Atari 환경(ale-py 등) 의존성 — 자체 트레이딩 Gym 환경(env_trading.py) 사용으로 불필요. (I-B004)
+stable-baselines3>=2.3.0
 gymnasium>=0.29.0
 
 # 공통

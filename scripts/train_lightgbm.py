@@ -16,20 +16,24 @@ import asyncio
 import argparse
 import json
 import logging
+import os
+import sys
 from datetime import datetime
 from pathlib import Path
 
-import lightgbm as lgb
-import numpy as np
-import pandas as pd
-from sklearn.metrics import accuracy_score, classification_report, f1_score
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.data.historical import HistoricalDataLoader
-from src.ml.feature_pipeline import build_features
-from src.ml.label_generator import generate_direction_labels
-from src.ml.walk_forward import generate_walk_forward_splits
-from src.strategy.features import get_feature_names
-from src.utils.config_loader import load_config
+import lightgbm as lgb  # noqa: E402
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
+from sklearn.metrics import accuracy_score, classification_report, f1_score  # noqa: E402
+
+from src.data.historical import HistoricalDataLoader  # noqa: E402
+from src.ml.feature_pipeline import build_features  # noqa: E402
+from src.ml.label_generator import generate_direction_labels  # noqa: E402
+from src.ml.walk_forward import generate_walk_forward_splits  # noqa: E402
+from src.strategy.features import get_feature_names  # noqa: E402
+from src.utils.config_loader import load_config  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
