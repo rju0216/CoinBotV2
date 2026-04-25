@@ -399,6 +399,13 @@ Phase E (통합 평가)     ←  위 Phase 중 1개 이상 완료 시 실행 가
 
 노트북 환경에 ML 패키지(lightgbm, torch 등)가 미설치 상태이므로 아래 항목은 데스크탑 이관 후 수행한다.
 
+**기간 설정 원칙 (2026-04-25 B-1a 검증 후 추가):**
+- **백테 기간은 학습 기간과 겹치지 않게 설정.** Phase별 동작 검증이라도 데이터 누출은 결과 해석을 어렵게 만듦
+- 캔들 데이터 가용 범위: **2020-01-01 ~ 2026-04 (15m/4h)**, **~2026-04-10 (1h)**
+- 권장 분할: 학습 2020-01-01 ~ 2024-12-31 / 백테 2025-01-01 ~ 2025-12-31 (1년 OOS)
+- 모델 간 비교 일관성을 위해 모든 Phase B-* 백테는 동일 OOS 기간 사용 권장
+- 진짜 성능 평가는 §7.5에 따라 Phase E에서 별도 수행
+
 ```bash
 # 1. ML 의존성 설치
 pip install -r requirements.txt
@@ -414,9 +421,9 @@ python scripts/train_lightgbm.py --config config/ml_lightgbm.yaml \
     --start 2020-01-01 --end 2024-12-31
 #   → models/lightgbm/v001_*/ 디렉토리 + model.txt 생성 확인
 
-# 4. 학습된 모델로 백테스트 실행
+# 4. 학습된 모델로 백테스트 실행 (학습 기간과 분리된 OOS 구간)
 python -m src.main backtest --config config/ml_lightgbm.yaml \
-    --start 2024-01-01 --end 2024-12-31
+    --start 2025-01-01 --end 2025-12-31
 #   → metrics.json의 total_trades > 0 확인
 ```
 
@@ -457,6 +464,7 @@ python -m src.main backtest --config config/ml_lightgbm.yaml \
 | I-B004 | Phase B-1a 후 데스크탑 환경 검증 | `pip install -r requirements-ml.txt` 시 ale-py 휠 빌드 실패 (Python 3.14 + Visual C++ 컴파일러 부재). `stable-baselines3[extra]`가 Atari 환경용 ale-py를 끌어오는데, 본 프로젝트는 자체 트레이딩 Gym 환경(env_trading.py)을 사용 예정이라 Atari 의존성 불필요 | requirements-ml.txt | 데스크탑 환경 검증 단계 | 해결 — `stable-baselines3[extra]` → `stable-baselines3`로 변경하여 불필요한 부가 의존성(ale-py, OpenCV, Pygame 등) 제거 |
 | I-B005 | Phase B-1a end-to-end 검증 | `python scripts/train_lightgbm.py` 실행 시 `ModuleNotFoundError: No module named 'src'`. download_history.py에는 있는 `sys.path.insert(...)` 라인이 train_lightgbm.py에 누락되어 프로젝트 루트가 sys.path에 추가되지 않음 | scripts/train_lightgbm.py | 데스크탑 환경 검증 단계 | 해결 — download_history.py와 동일한 sys.path 추가 라인 삽입. 향후 train_*.py / evaluate_models.py 신규 스크립트도 동일 패턴 적용 필요 |
 | I-B006 | Phase B-1a end-to-end 검증 | `HistoricalDataLoader.download_range_merged`가 `[start_ms, end_ms]` 범위 슬라이싱 없이 캐시 CSV 전체를 반환. CSV 캐시가 요청 범위보다 길면 호출자가 `--end`를 지정해도 무시됨. 학습 데이터가 의도한 5년치(~175k행) 대신 6.2년치(217,817행)로 늘어남. 백테스트 엔진(engine.py:300)도 동일 영향. | src/data/historical.py | 데스크탑 환경 검증 단계 | 해결 — `download_range_merged` 반환 직전에 `[start_ms, end_ms]` 슬라이싱 추가. 캐시 CSV는 전체 보존, 반환값만 자름 |
+| I-B007 | Phase B-1b end-to-end 검증 | 추론 시 `features.iloc[-1]`(가장 최근 봉)의 close가 피처로 들어가는지 미검증. 백테 엔진이 봉 진행 중에 `generate_signal`을 호출하고 같은 봉 close 가격으로 진입한다면 lookahead bias 발생 가능. B-1b 깨끗 OOS(2025)에서도 1년 4,411% 수익으로 비현실적으로 높은 결과가 lookahead 의심 사유. 데이터 누출과 별개의 문제 — 누출이 해소돼도 lookahead가 있으면 모든 백테 결과 부풀려짐 | src/strategy/plugins/ml_*.py 추론 시점 + src/backtest/engine.py `evaluate_strategies_on_bar` 호출 흐름 + entry_price 결정 시점 | Phase E 또는 별도 검증 단계 | 미해결 — 코드 추적 + 검증 필요 |
 
 ---
 
@@ -469,8 +477,8 @@ python -m src.main backtest --config config/ml_lightgbm.yaml \
 | 1 | Phase 0: 공통 인프라 | 완료 | `da136e6` | requirements-ml.txt, .gitignore, features.py, ml/{__init__, label_generator, walk_forward, feature_pipeline, models}.py 신규. I-B001/B002/B003 발견/해결. 테스트 33건 추가 (23 passed + 10 skipped/torch 미설치) — 전체 119 passed + 10 skipped, 회귀 없음 |
 | 2 | Phase B-1a: LightGBM | 완료 | `9accbd4` | plugins/ml_lightgbm.py, scripts/train_lightgbm.py, config/ml_lightgbm.yaml, tests/test_ml_lightgbm.py 신규. 테스트 9건 추가 (8 passed + 1 skipped/lightgbm) — 전체 127 passed + 11 skipped, 회귀 없음. ML 패키지 미설치 skip 테스트는 데스크탑 이관 후 검증 예정 (§9 참조) |
 | 2-V | 데스크탑 환경 ML 의존성/skip 테스트 검증 | 완료 | — | 데스크탑(Python 3.14.3)에 requirements-ml.txt 설치 — I-B004 발견/해결. `pytest tests/ -v` 결과 **138 passed, 0 skipped, 0 failed** (이전 127+11 → 138+0). torch 2.11.0(cp314) 정식 휠 사용. §9의 ML 의존성 설치/skip 테스트 항목 완료 |
-| 2-E | Phase B-1a end-to-end 검증 (학습+백테) | 완료 | (커밋 대기) | I-B005(sys.path 누락) / I-B006(`download_range_merged` 범위 미슬라이스) 발견·해결. 회귀 테스트 138 passed 유지. **학습**: 5년치 172,025행 / 81피처 / 26 folds, OOS Acc 0.6377·F1(macro) 0.6345, 약 45초. **백테**(2024 in-sample, 누출 있음): 910거래, 승률 69.89%, total_return 5,177%, MDD 2.97%. PnL 계산식·사이징·수수료 검산 모두 정상. 결과의 비현실성은 데이터 누출 때문임을 코드 레벨에서 확정. **§9의 LightGBM end-to-end 항목(`total_trades > 0`) 충족**. 모델 진짜 성능은 §7.5에 따라 Phase E에서 재평가 |
-| — | Phase B-1b: XGBoost | 대기 | — | B-1a 검증 결과 학습/백테 파이프라인 정상 확인됨. B-1a 복사 후 모델 API 교체 |
+| 2-E | Phase B-1a end-to-end 검증 (학습+백테) | 완료 | `cddb875` | I-B005(sys.path 누락) / I-B006(`download_range_merged` 범위 미슬라이스) 발견·해결. 회귀 테스트 138 passed 유지. **학습**: 5년치 172,025행 / 81피처 / 26 folds, OOS Acc 0.6377·F1(macro) 0.6345, 약 45초. **백테**(2024 in-sample, 누출 있음): 910거래, 승률 69.89%, total_return 5,177%, MDD 2.97%. PnL 계산식·사이징·수수료 검산 모두 정상. 결과의 비현실성은 데이터 누출 때문임을 코드 레벨에서 확정. **§9의 LightGBM end-to-end 항목(`total_trades > 0`) 충족**. 모델 진짜 성능은 §7.5에 따라 Phase E에서 재평가 |
+| 3 | Phase B-1b: XGBoost | 완료 | (커밋 대기) | plugins/ml_xgboost.py, scripts/train_xgboost.py, config/ml_xgboost.yaml, tests/test_ml_xgboost.py 신규. B-1a 구조 그대로 + XGBoost API 교체 (objective=multi:softprob, DMatrix wrapping, model.json 저장). I-B005 교훈 반영(sys.path.insert 포함). 테스트 9건 추가 → pytest 147 passed. **학습** (2020-01 ~ 2024-12, 26 folds): OOS Acc 0.6364·F1 0.6334 (B-1a 0.6377/0.6345와 사실상 동률 — 같은 GBDT 계열, 피처 정보량 한계). 학습 시간 ~150초. **백테 (2025-01 ~ 2025-12 깨끗 OOS — §9 수정안 적용 첫 케이스)**: 878거래, 승률 **64.46%(=OOS Acc)**, MDD 4.9%, 1년 수익 4,411%, Profit Factor 2.73. equity curve가 1월 무거래·11월 BTC 급락 시 조정 등 **시장 반응 보이는 자연스러운 패턴** — B-1a 누출 백테(직선 우상향)와 질적으로 다름. PnL/사이징/수수료 검산 정상. **§9 검증(`total_trades > 0`) 충족**. Lookahead bias 가능성은 I-B007로 별도 등록 (Phase E에서 검증) |
 | — | Phase B-2a: LSTM | 대기 | — | |
 | — | Phase B-2b: Transformer | 대기 | — | |
 | — | Phase B-3: PPO | 대기 | — | |
