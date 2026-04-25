@@ -1,0 +1,56 @@
+# CoinBot 뼈대 프로토타입 기본 config.
+# subcommand(paper/live/backtest)로 실행 모드 결정 (§7). mode 필드 없음.
+# OKX API 자격증명은 .env의 OKX_API_KEY / OKX_SECRET / OKX_PASSPHRASE로 주입.
+
+exchange:
+  name: "okx"
+  symbol: "BTC/USDT:USDT"
+  sandbox: false
+  leverage: 5                         # 거래소 단일 레버리지 설정 (전략별 max_leverage와 구분)
+
+engine:
+  reverse_signal_policy: "ignore"    # "ignore" | "reverse" | "same_strategy_only"
+
+risk:                                # 엔진 전역 안전장치
+  max_daily_loss_pct: 0.05
+  max_drawdown_pct: 0.35
+  max_position_size_btc: 1.0
+  max_concurrent_positions: 1        # (C) 배타적 경합 — 전역 슬롯 1개
+
+accounting:
+  taker_fee_pct: 0.0005
+  slippage_pct: 0.0
+  funding_enabled: true              # 라이브는 fetch_funding_history, 백테는 0
+
+paper:
+  initial_balance: 10000.0
+
+data:
+  history_bars: 300
+  candle_dir: "data/candles"
+
+database:
+  path: "data/coinbot.db"             # mode별 접미사 자동 부여 (coinbot_live.db, coinbot_paper.db, coinbot_backtest.db)
+
+logging:
+  level: "INFO"
+  file: "logs/coinbot.log"
+  max_size_mb: 50
+  backup_count: 5
+
+strategies:
+  active: []                          # 뼈대 상태 — 사용자가 전략 이름을 추가해야 매매 발생.
+                                      # 예: ["example_macross"] 로 켜면 아래 샘플 전략이 활성화됨.
+                                      # (C) 정책: 리스트 순서 = 우선순위.
+
+# ---- 샘플 전략 섹션 (참고용) ----
+# strategy/plugins/example.py 의 ExampleMACross 가 등록되어 있다.
+# active 리스트에 "example_macross" 를 추가해야 실제로 동작한다.
+example_macross:
+  risk_per_trade_pct: 0.01            # 필수 (엔진 사이징)
+  max_leverage: 5                     # 필수 (엔진 사이징)
+  ma_fast: 20
+  ma_slow: 50
+  atr_period: 14
+  atr_sl_mult: 1.5
+  reward_risk_ratio: 2.0

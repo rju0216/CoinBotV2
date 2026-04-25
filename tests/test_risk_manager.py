@@ -1,0 +1,133 @@
+"""RiskManager 단위 테스트 (단계 4).
+
+_legacy/tests의 사이징·검증 테스트를 신규 시그니처에 맞춰 이전. 동방향 차단,
+SL/TP 산정, owner 분기 테스트는 책임이 옮겨갔으므로 제외.
+"""
+
+import pytest
+
+from src.risk.manager import RiskManager
+
+
+def _make_config(**overrides):
+    base = {
+        "risk": {
+            "max_daily_loss_pct": 0.05,
+            "max_drawdown_pct": 0.15,
+            "max_position_size_btc": 1.0,
+            "max_concurrent_positions": 1,
+        }
+    }
+    base["risk"].update(overrides)
+    return base
+
+
+SIZING_KW = {"risk_per_trade_pct": 0.015, "max_leverage": 10}
+
+
+class TestPositionSizing:
+    def test_basic(self):
+        rm = RiskManager(_make_config())
+        # $10,000 balance, entry $67,000, stop $66,370 (risk $630)
+        size = rm.calculate_position_size(67000, 66370, 10000, **SIZING_KW)
+        # risk_amount = 10000 * 0.015 = $150 → raw = 150/630 ≈ 0.238 BTC
+        assert 0.20 < size < 0.30
+
+    def test_respects_max_leverage(self):
+        rm = RiskManager(_make_config())
+        # 매우 좁은 stop → 큰 raw size, leverage로 제한되어야 함
+        size = rm.calculate_position_size(67000, 66990, 10000, **SIZING_KW)
+        max_by_leverage = (10000 * 10) / 67000  # ≈ 1.49 BTC
+        assert size <= max_by_leverage + 1e-3
+
+    def test_respects_max_position_size(self):
+        rm = RiskManager(_make_config())
+        size = rm.calculate_position_size(67000, 66990, 1_000_000, **SIZING_KW)
+        assert size <= 1.0  # max_position_size_btc
+
+    def test_zero_risk_returns_zero(self):
+        rm = RiskManager(_make_config())
+        size = rm.calculate_position_size(67000, 67000, 10000, **SIZING_KW)
+        assert size == 0.0
+
+    def test_zero_balance_returns_zero(self):
+        rm = RiskManager(_make_config())
+        size = rm.calculate_position_size(67000, 66000, 0, **SIZING_KW)
+        assert size == 0.0
+
+    def test_strategy_specific_params(self):
+        """전략이 자기 risk_per_trade_pct를 넘기면 그 값으로 사이징."""
+        rm = RiskManager(_make_config())
+        size_low = rm.calculate_position_size(
+            67000, 66370, 10000, risk_per_trade_pct=0.005, max_leverage=5
+        )
+        size_high = rm.calculate_position_size(
+            67000, 66370, 10000, risk_per_trade_pct=0.030, max_leverage=5
+        )
+        assert size_high > size_low
+        assert size_high < 6 * size_low + 1e-6  # ratio 6배 미만 (leverage cap)
+
+
+class TestValidateOrder:
+    def test_passes_normally(self):
+        rm = RiskManager(_make_config())
+        rm.set_initial_balance(10000)
+        assert rm.validate_order(10000, current_position_count=0) is True
+
+    def test_blocks_when_slot_full(self):
+        rm = RiskManager(_make_config())
+        rm.set_initial_balance(10000)
+        assert rm.validate_order(10000, current_position_count=1) is False
+
+    def test_blocks_daily_loss(self):
+        rm = RiskManager(_make_config())
+        rm.set_initial_balance(10000)
+        rm.daily_pnl = -600  # -6% > 5% limit
+        assert rm.validate_order(10000, current_position_count=0) is False
+
+    def test_blocks_drawdown_and_locks(self):
+        rm = RiskManager(_make_config())
+        rm.set_initial_balance(10000)
+        rm.peak_equity = 10000
+        # balance $8400 → 16% drawdown > 15% limit
+        assert rm.validate_order(8400, current_position_count=0) is False
+        assert rm.is_drawdown_locked is True
+
+    def test_blocks_when_dd_locked(self):
+        rm = RiskManager(_make_config())
+        rm.set_initial_balance(10000)
+        rm._dd_locked = True
+        assert rm.validate_order(10000, current_position_count=0) is False
+
+
+class TestDrawdownUnlock:
+    def test_unlock_sets_baseline(self):
+        rm = RiskManager(_make_config())
+        rm.set_initial_balance(10000)
+        rm.peak_equity = 10000
+        rm._dd_locked = True
+        rm.unlock_drawdown(8000)
+        assert rm.is_drawdown_locked is False
+        assert rm.unlock_baseline == 8000
+        # peak_equity 보존
+        assert rm.peak_equity == 10000
+
+    def test_baseline_clears_on_new_peak(self):
+        rm = RiskManager(_make_config())
+        rm.set_initial_balance(10000)
+        rm.peak_equity = 10000
+        rm.unlock_drawdown(8000)
+        # 신고가 도달 → unlock_baseline 자동 폐기
+        rm.update_equity(11000)
+        assert rm.unlock_baseline is None
+        assert rm.peak_equity == 11000
+
+
+class TestPnLTracking:
+    def test_add_and_reset(self):
+        rm = RiskManager(_make_config())
+        rm.add_pnl(100)
+        rm.add_pnl(-50)
+        assert rm.daily_pnl == 50
+        rm.reset_daily_pnl()
+        assert rm.daily_pnl == 0.0

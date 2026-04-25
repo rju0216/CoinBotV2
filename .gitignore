@@ -1,0 +1,31 @@
+# 환경
+.env
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+.claude/settings.local.json
+
+# 로그
+logs/
+logs/*.log
+
+# DB (paper/live 영속, 사적 데이터)
+data/coinbot_*.db
+data/coinbot.db
+
+# 백테 결과 — 작업용은 ignore, 보존용은 99_old/ 로 옮겨 추적
+data/backtest_reports/00_Working/
+
+# 캔들 캐시 (자동 다운로드, 크기 큼)
+data/candles/*.csv

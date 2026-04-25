@@ -1,0 +1,286 @@
+# User Guide
+
+CoinBot 뼈대 프로토타입의 사용자 가이드. 설치 → 환경 설정 → CLI 사용 →
+백테 결과 해석 → 라이브 운영까지 다룬다.
+
+---
+
+## 1. 설치
+
+### 1.1 Python
+
+Python 3.11+ 권장. `python --version` 으로 확인.
+
+### 1.2 의존성 설치
+
+```bash
+pip install -r requirements.txt
+```
+
+### 1.3 환경변수 (`.env`)
+
+OKX API 자격증명은 `config/default.yaml` 에 두지 않고 `.env` 파일로 주입.
+프로젝트 루트에 `.env` 작성:
+
+```
+OKX_API_KEY=your_api_key_here
+OKX_SECRET=your_secret_here
+OKX_PASSPHRASE=your_passphrase_here
+```
+
+`.env` 는 `.gitignore` 에 포함되어 git에 올라가지 않는다.
+
+paper / backtest 모드만 사용한다면 자격증명 없어도 동작 (sandbox=false 라도
+공개 캔들 API 만 사용). live 모드 시 필수.
+
+---
+
+## 2. CLI
+
+세 가지 subcommand. config 미지정 또는 잘못된 인자 시 argparse 에러로 종료.
+
+### 2.1 백테스트
+
+```bash
+python -m src.main backtest --config config/default.yaml --start 2024-01-01 --end 2024-12-31
+```
+
+- `--start` / `--end` 필수, ISO 또는 `YYYY-MM-DD` 형식
+- 종료 후 `data/backtest_reports/00_Working/{tag}_backtest_{start}_{end}_{config_name}/{config_name}/` 에 결과 5종 파일 생성
+- stdout 에 Summary 출력
+
+### 2.2 페이퍼 모드 (시뮬레이션 실시간)
+
+```bash
+python -m src.main paper --config config/default.yaml
+```
+
+- 실제 가격으로 시뮬레이션, 거래소 주문은 보내지 않음
+- `data/coinbot_paper.db` 에 거래·자산 영속 기록
+- Ctrl+C 로 graceful shutdown
+
+### 2.3 라이브 모드 (실거래)
+
+```bash
+python -m src.main live --config config/default.yaml
+```
+
+⚠️ **실제 자금이 거래되는 모드.** 시작 전 §5 라이브 운영 가이드 필독.
+
+---
+
+## 3. config/default.yaml
+
+```yaml
+exchange:
+  name: "okx"
+  symbol: "BTC/USDT:USDT"
+  sandbox: false
+  leverage: 5
+
+engine:
+  reverse_signal_policy: "ignore"   # "ignore" | "reverse" | "same_strategy_only"
+
+risk:
+  max_daily_loss_pct: 0.05
+  max_drawdown_pct: 0.35
+  max_position_size_btc: 1.0
+  max_concurrent_positions: 1
+
+accounting:
+  taker_fee_pct: 0.0005
+  slippage_pct: 0.0
+  funding_enabled: true
+
+paper:
+  initial_balance: 10000.0
+
+data:
+  history_bars: 300
+  candle_dir: "data/candles"
+
+database:
+  path: "data/coinbot.db"
+
+strategies:
+  active: []                          # 활성 전략 이름 리스트 (순서 = 우선순위)
+
+# 전략별 섹션은 strategy.name 과 일치하는 키
+example_macross:
+  risk_per_trade_pct: 0.01            # 필수
+  max_leverage: 5                     # 필수
+  ma_fast: 20
+  ma_slow: 50
+  ...
+```
+
+전략 추가는 `DEVELOPER_GUIDE.md` 참조.
+
+### 전략 On/Off
+
+```yaml
+strategies:
+  active: ["my_strategy"]             # On
+  # active: []                        # Off (무거래)
+  # active: ["a", "b"]                # 둘 다 On (선언 순서 = 우선순위)
+```
+
+---
+
+## 4. 백테 결과 해석
+
+### 4.1 출력 디렉토리 구조
+
+```
+data/backtest_reports/00_Working/
+└── 260425_backtest_2024-01-01_2024-12-31_default/
+    └── default/
+        ├── trades.csv          ─ 모든 closed 거래
+        ├── equity_curve.csv    ─ 시계열 잔고
+        ├── metrics.json        ─ 통합 메트릭 + by_strategy_name/exit_reason/direction 분할
+        ├── config_snapshot.yaml─ 사용된 config (자격증명 제거)
+        └── equity_curve.png    ─ Equity + BTC 가격 + Drawdown 차트
+```
+
+### 4.2 Summary stdout
+
+```
+---- Backtest Summary ----
+  initial_balance: 10000.0
+  final_balance: 9694.32
+  total_pnl: -305.68
+  total_pnl_pct: -3.06
+  num_trades: 12
+  num_winners: 3
+  num_losers: 9
+  win_rate: 25.0
+  max_drawdown_pct: 3.06
+  reports: data\backtest_reports\00_Working\...
+```
+
+### 4.3 metrics.json 구조
+
+```json
+{
+  "integrated": { "initial_balance", "final_balance", "total_pnl", "total_return_pct",
+                  "total_trades", "winning_trades", "losing_trades", "win_rate_pct",
+                  "gross_profit", "gross_loss", "profit_factor", "avg_win", "avg_loss",
+                  "max_drawdown_pct" },
+  "by_strategy_name": { "<name>": { "trades", "winning_trades", "losing_trades",
+                                     "win_rate_pct", "pnl", "profit_factor" } },
+  "by_exit_reason":  { "<reason>": {...} },
+  "by_direction":    { "long"/"short": {...} }
+}
+```
+
+---
+
+## 5. 다중 연도 병렬 백테 + 통합 리포트
+
+### 5.1 7년치 병렬 백테 (Windows)
+
+```bash
+scripts\run_full_backtest.bat config/default.yaml
+```
+
+- Phase 1: `download_history.py` 가 1d/4h/15m 캔들을 미리 다운로드
+- Phase 2: 7개 콘솔에서 2020 ~ 2026 연도별 백테 병렬 실행
+
+### 5.2 통합 리포트 생성
+
+```bash
+scripts\merge_reports.bat 260425 default
+```
+
+- `260425_backtest_*_default` 패턴 디렉토리들을 시간순 정렬
+- 복리 기준으로 trades · equity_curve 통합
+- `260425_backtest_MERGE_{start}_{end}_default/default/` 에 통합 5종 파일 출력
+
+---
+
+## 6. 라이브 운영 가이드 ⚠️
+
+라이브 모드는 **실제 자금이 거래되는 모드**. 다음 흐름을 반드시 준수한다.
+
+### 6.1 라이브 진입 전 체크리스트
+
+- [ ] 전략을 백테스트로 검증 — 최소 1년치, 합리적 PnL/MDD 확인
+- [ ] paper 모드로 실시간 검증 — 최소 1~2일, 신호·체결 시점 정상 확인
+- [ ] `.env` 의 OKX 자격증명 정확성 확인 (`OKX_API_KEY`/`OKX_SECRET`/`OKX_PASSPHRASE`)
+- [ ] `config.exchange.sandbox: false` 설정 (실거래 환경)
+- [ ] `config.exchange.leverage` 와 전략별 `max_leverage` 일치성 확인
+- [ ] `config.risk.max_daily_loss_pct` / `max_drawdown_pct` / `max_position_size_btc` 확인
+- [ ] OKX 계정 잔액·격리/교차 모드·레버리지 설정 확인
+- [ ] 거래소에 기존 포지션이 있다면 → 라이브 진입 시 `_restore_state` 가
+      DB·거래소 매칭으로 자동 입양. **DB가 깨끗하면 strategy_name="_unknown"
+      orphan 처리**되므로 의도한 상태인지 확인
+
+### 6.2 자동 입양 정책 (재시작 시)
+
+| 거래소 포지션 | DB open trade | 활성 전략 | 결과 |
+|---|---|---|---|
+| ∅ | ∅ | 무관 | 정상 빈 슬롯 |
+| ∅ | O | 무관 | DB trades 사후 closed 처리 |
+| O | 무관 | **0개** | **RuntimeError 중단** (전략 없는 뼈대 상태) |
+| O | 매칭 + active | ≥1 | 정상 OPEN 복원 |
+| O | 매칭 + 전략 제거됨 | ≥1 | ORPHAN (엔진 SL/TP만 유효) |
+| O | 매칭 실패 | ≥1 | strategy_name="_unknown" ORPHAN |
+
+ORPHAN 상태에서는 전략의 `update_stop_loss`·`should_force_exit` 훅이 호출되지
+않으므로 동적 SL 갱신·시간 기반 청산 같은 전략 특화 로직이 작동하지 않는다.
+
+### 6.3 라이브 운영 중 위험 한도
+
+자동으로 적용되는 안전장치:
+
+- **일일 손실 한도** (`risk.max_daily_loss_pct`): daily_pnl 이 한도 초과 시 신규 진입 차단
+- **최대 드로우다운 락** (`risk.max_drawdown_pct`): peak 대비 한도 초과 시 emergency brake.
+  코드 수준에서 `RiskManager.unlock_drawdown(current_balance)` 호출로 수동 해제 필요
+- **포지션 크기 상한** (`risk.max_position_size_btc`): 사이징이 이 값을 넘지 않음
+- **동시 포지션 수** (`risk.max_concurrent_positions`): 신규 진입 차단
+
+### 6.4 라이브 종료
+
+`Ctrl+C` 시 graceful shutdown — broker/data_store close, 현재 포지션은 그대로
+유지(거래소 SL/TP pending 주문이 청산을 담당).
+
+---
+
+## 7. 데이터 캐시
+
+`data/candles/` 에 1m/5m/15m/1h/4h/1d CSV 캐시. 백테/라이브 시작 시
+`HistoricalDataLoader.download_range_merged` 가:
+
+1. 기존 CSV 로드
+2. 요청 범위에서 부족한 부분만 OKX API 다운로드
+3. 합쳐서 CSV 갱신
+4. 메모리에 통합 DataFrame 주입
+
+캐시가 충분하면 API 호출 0 (오프라인도 백테 가능).
+
+수동으로 미리 받기:
+
+```bash
+python scripts/download_history.py --config config/default.yaml \
+    --timeframe 1d,4h,15m --start 2020-01-01 --end 2026-04-25
+```
+
+---
+
+## 8. 트러블슈팅
+
+| 증상 | 원인 / 해결 |
+|---|---|
+| `Strategy 'X' not found in registry` | `src/strategy/plugins/X.py` 가 없거나 `@register_strategy` 누락 |
+| `Strategy 'X' config is missing required params` | config[X] 에 `risk_per_trade_pct` 또는 `max_leverage` 누락 |
+| `Cannot run: no master timeframe or candles loaded` | `strategies.active: []` (무거래) 또는 캔들 로딩 실패 |
+| `Exchange has open position but no active strategies` | 라이브 시작 시 거래소에 포지션 있는데 전략 0개 → 의도적 중단. 전략 추가 또는 거래소 포지션 수동 청산 필요 |
+| 백테 결과가 매번 누적되어 보임 | (이미 해결됨) 단계 14에서 `BacktestEngine` 이 메모리만 사용하도록 분리 |
+| `merge_yearly_reports.py` "매칭되는 연도별 리포트가 ... 개뿐입니다" | tag·config_name 패턴 불일치. `data/backtest_reports/00_Working/` 디렉토리명 확인 |
+
+---
+
+## 9. 더 알아보기
+
+- 전략 작성·플러그인 인터페이스 → `docs/01_Guides/DEVELOPER_GUIDE.md`
+- 설계 사양서 → `docs/00_Work_Report/PROTOTYPE_DESIGN_260425.md`

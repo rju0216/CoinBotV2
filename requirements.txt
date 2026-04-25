@@ -1,0 +1,24 @@
+# Exchange API
+ccxt>=4.4.0
+
+# Data & Indicators
+pandas>=2.2.0
+numpy>=1.26.0
+pandas-ta-classic>=0.2.0
+
+# Configuration
+pyyaml>=6.0
+python-dotenv>=1.0.0
+
+# Database (라이브/페이퍼만 사용; 백테는 메모리)
+aiosqlite>=0.20.0
+
+# Logging
+rich>=13.9.0
+
+# Reporting (matplotlib equity_curve.png + merge_yearly_reports)
+matplotlib>=3.9.0
+
+# Development / Testing
+pytest>=8.0.0
+pytest-asyncio>=0.24.0
