@@ -153,10 +153,18 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
         feat["minus_di"] = _nan
         feat["di_diff"] = _nan
 
-    chop = compute_choppiness(df, 14)
-    feat["choppiness"] = chop if chop is not None else _nan
-    er = compute_efficiency_ratio(df, 10)
-    feat["efficiency_ratio"] = er if er is not None else _nan
+    # I-B011: 빈 df 입력 시 ta.atr가 None 반환 → .rolling() AttributeError
+    # I-B001 해결 시 다른 indicator는 try-except 감쌌으나 choppiness/efficiency_ratio 누락
+    try:
+        chop = compute_choppiness(df, 14)
+        feat["choppiness"] = chop if chop is not None else _nan
+    except (AttributeError, TypeError):
+        feat["choppiness"] = _nan
+    try:
+        er = compute_efficiency_ratio(df, 10)
+        feat["efficiency_ratio"] = er if er is not None else _nan
+    except (AttributeError, TypeError):
+        feat["efficiency_ratio"] = _nan
 
     # ── 거래량 ──
     vol_sma20 = df["volume"].rolling(20).mean()

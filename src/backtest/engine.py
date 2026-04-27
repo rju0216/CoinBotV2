@@ -175,30 +175,33 @@ class BacktestEngine(AbstractEngine):
         for ts, candle in master_df.iterrows():
             high = float(candle["high"])
             low = float(candle["low"])
-            close = float(candle["close"])
+            open_ = float(candle["open"])
             now = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
 
+            # SL/TP 안전장치 — 봉 안에서 hit 여부는 high/low로 판정 (라이브와 일치)
             if self._position is not None:
                 fill = self.check_candle_sl_tp(self._position, high, low)
                 if fill is not None:
                     exit_price, reason = fill
                     await self.close_position(exit_price, reason, now=now)
 
+            # I-B007 수정: ts 시점에는 직전 봉까지의 데이터로 평가 + open 가격으로 진입
+            # _slice_candles는 ts 미만 슬라이스 (lookahead 제거)
             candles_slice = self._slice_candles(ts)
             balance = await self.broker.get_balance()
 
             if self._position is not None:
                 exit_decision = self.check_strategy_exits(
-                    candles_slice, close, balance, now
+                    candles_slice, open_, balance, now
                 )
                 if exit_decision is not None:
-                    await self.close_position(close, exit_decision.reason, now=now)
+                    await self.close_position(open_, exit_decision.reason, now=now)
                     balance = await self.broker.get_balance()
 
             for tf in self.timeframes:
                 if self._is_tf_boundary(now, tf):
                     await self.evaluate_strategies_on_bar(
-                        tf, candles_slice, close, balance, now
+                        tf, candles_slice, open_, balance, now
                     )
                     balance = await self.broker.get_balance()
 
@@ -319,12 +322,19 @@ class BacktestEngine(AbstractEngine):
         return False
 
     def _slice_candles(self, ts) -> dict[str, pd.DataFrame]:
+        """ts 시점 직전까지의 캔들 반환 (I-B007 lookahead 제거).
+
+        과거에는 `df.loc[:ts]`로 ts 봉을 포함시켰으나,
+        이는 봉 시작 시점에 그 봉의 close 정보가 피처에 들어가는 lookahead bias.
+        라이브 환경에서는 ts 시점에 그 봉이 시작도 안 한 상태이므로,
+        직전 봉까지의 데이터로만 의사결정해야 함.
+        """
         result: dict[str, pd.DataFrame] = {}
         for tf, df in self.candles_per_tf.items():
             if df.empty:
                 result[tf] = df
             else:
-                result[tf] = df.loc[:ts]
+                result[tf] = df[df.index < ts]
         return result
 
     # ---- 결과 집계 ----
@@ -345,21 +355,30 @@ class BacktestEngine(AbstractEngine):
 
     # ---- 결과 파일 출력 (I-011) ----
 
-    def write_reports(self, config_path: str | Path | None = None) -> Path:
+    def write_reports(
+        self,
+        config_path: str | Path | None = None,
+        out_root: str | Path | None = None,
+    ) -> Path:
         """리포트 5종(trades / equity_curve / metrics / config_snapshot / png)을
         `data/backtest_reports/00_Working/{tag}_backtest_{start}_{end}_{name}/{name}/`
         하위에 저장하고 디렉토리 경로를 반환.
+
+        out_root가 지정되면 기본 경로 대신 그 디렉토리를 사용 (Phase E-2 evaluate_models.py).
         """
         config_name = "default"
         if config_path:
             config_name = Path(str(config_path)).stem
-        today = datetime.now().strftime("%y%m%d")
-        start_str = self.start_dt.strftime("%Y-%m-%d")
-        end_str = self.end_dt.strftime("%Y-%m-%d")
-        out_root = REPORT_BASE / (
-            f"{today}_backtest_{start_str}_{end_str}_{config_name}"
-        )
-        out = out_root / config_name
+        if out_root is None:
+            today = datetime.now().strftime("%y%m%d")
+            start_str = self.start_dt.strftime("%Y-%m-%d")
+            end_str = self.end_dt.strftime("%Y-%m-%d")
+            out_root_path = REPORT_BASE / (
+                f"{today}_backtest_{start_str}_{end_str}_{config_name}"
+            )
+        else:
+            out_root_path = Path(out_root)
+        out = out_root_path / config_name
         out.mkdir(parents=True, exist_ok=True)
 
         # trades.csv
