@@ -504,3 +504,92 @@ python -m src.main backtest --config config/ml_lightgbm.yaml \
 | — | Phase E-2-2: 분할 백테 + 베이스라인 | 대기 | — | 5개 모델 × 6개 OOS 분할 = 약 30개 백테 (모델별 1~2 OOS) + Buy & Hold 단순 계산 + example_macross 백테. 자동 실행 약 2.5~3시간 |
 | — | Phase E-2-3: 슬리피지 sensitivity + Calibration | 대기 | — | 슬리피지 (I-B010): 분할 1, 4 양 끝점에 5모델 × 4슬리피지 = 40개 백테. Calibration (I-B009): v001만 4개 분류 모델에 Platt scaling 적용 + 백테 4개 |
 | — | Phase E-2-4: 통계 + 시각화 + 종합 | 대기 | — | Sharpe/Calmar Ratio 계산, 부트스트랩 유의성 검정 (n=10,000), equity_overlay.png 시각화, 종합 비교 표 CSV |
+| — | **🔔 Phase E 종착 시 TODO** | 대기 | — | **§14 참조 — 잊지 말 것**. ①본 §13 마지막 갱신 (E-2-2/3/4 결과 + 커밋 ID), ②§14를 닫는 메모로 정리, ③`PATH_B_PRODUCTION_*.md` 신규 생성 (BP-1/2/3 상세 계획), ④`PATH_B_LIVE_TRADING_*.md` 신규 생성 (BL-1/2 상세 계획), ⑤한 묶음 커밋 `[경로B_종착]` |
+
+---
+
+## 14. Phase B 후속 로드맵 (Phase E 종착 후 진행)
+
+**🔔 작성 시점:** 2026-04-28 (Phase E-2 진행 중에 사전 작성). Phase E 종착 시 본 §14를 갱신하여 닫는 메모(작업 완료 보고)로 정리하고, 상세 계획은 신규 리포트로 이전.
+
+Phase B (ML 전략 비교 연구)는 Phase E로 종착되며, 이후 작업은 두 개의 별도 리포트에서 진행 — 모두 **"경로 B"의 연속**.
+
+### 14.1 Phase E 종착 시 수행할 작업 (TODO — 한 묶음 커밋)
+
+커밋 메시지 예: `[경로B_종착] Phase E 마무리 + 후속 로드맵 + 신규 리포트 2개`
+
+1. **본 §13 마지막 갱신** — Phase E-2-2/2-3/2-4의 결과 + 커밋 ID 모두 채움
+2. **본 §14 닫는 정리** — "이 작업은 PATH_B_PRODUCTION/LIVE_TRADING으로 이어졌음" 식의 클로징 메모로 변환
+3. **`PATH_B_PRODUCTION_{날짜}.md` 신규 생성** — §14.2의 outline을 기반으로 상세 계획
+4. **`PATH_B_LIVE_TRADING_{날짜}.md` 신규 생성** — §14.3의 outline을 기반으로 상세 계획
+5. 회귀 테스트 1회 통과 확인 후 커밋
+
+### 14.2 PATH_B_PRODUCTION_*.md 구조 (Phase BP-1, BP-2, BP-3)
+
+**목적:** 데이터 확장 + 운영 인프라 + 모델 결합·강화 — **라이브 운영 가능한 base 구축**
+
+#### Phase BP-1: 데이터 확장
+- **펀딩률·OI 데이터 수집 + 피처 추가** (가장 큰 alpha source — 우리 모델의 사각지대 해소)
+  - OKX API에서 펀딩률 history + open interest 수집
+  - 피처에 funding_rate, oi_change 등 추가 (현재 81 → ~85개)
+- **2020 이전 BTC 현물 데이터 추가** (학습 데이터 +50%)
+  - 2017-2019 BTC/USDT 현물 데이터 (OKX 또는 Bitstamp)
+  - 학습 시 현물 + 선물 병합 처리
+  - 시기별 거래량 정규화 (현물/선물 단위 차이)
+
+#### Phase BP-2: 운영 인프라
+- **Live OOS monitoring 시스템** (alpha decay 자동 감지)
+  - 실시간 OOS Acc 측정 (예: 최근 100봉 정확도)
+  - 임계 미달 시 자동 정지 또는 사이징 축소
+- **동적 사이징** (변동성 기반 risk_per_trade 조정)
+  - ATR 평균 대비 현재 변동성 비율로 사이징 스케일
+
+#### Phase BP-3: 모델 결합
+- **Confidence calibration 본격 적용** (I-B009 후속)
+  - Phase E-2-3 검증 결과 기반 production 적용
+  - Platt scaling 또는 isotonic regression
+- **Ensemble** (5개 모델 결합)
+  - Phase E 결과로 다양성 확인됨
+  - voting / stacking / weighted average 등 비교
+- **Triple-barrier 라벨** (label noise 해소 — OOS 64% 한계 돌파 시도)
+
+**이슈 ID 체계:** I-BP001~
+
+### 14.3 PATH_B_LIVE_TRADING_*.md 구조 (Phase BL-1, BL-2)
+
+**목적:** Regime 검증 + 학술 검증 + 실거래 전환
+
+#### Phase BL-1: Regime + 추가 검증
+- **Regime-matched 백테** (사용자 제안)
+  - 학습 2022~2024 (약세+회복) → 백테 2020-2021 (강세) — regime 매칭 검증
+  - 또는 HMM/stylized facts로 현재 시장과 비슷한 과거 시기 식별
+- **Walk-forward 통합 OOS** (가장 엄밀한 평가)
+  - 학습 시 fold별 모델 모두 저장 → 통합 백테
+- **Lookahead bias 추가 점검** (I-B007 후속)
+  - 캔들 데이터 자체의 미래 정보 누출 등 다른 경로 점검
+
+#### Phase BL-2: 실거래 전환
+- **Paper → 소액 실거래 점진 전환**
+  - 단일 모델로 시작 → 점진 확장
+  - Fail-safe / 자동 알림 (텔레그램 등)
+- **다중 거래소** (Binance + OKX)
+- **Survivorship bias 점검** (학술적 검증)
+
+**이슈 ID 체계:** I-BL001~
+
+### 14.4 모든 후속 리포트가 PATH_B_ML_STRATEGY에서 계승
+
+- **5개 모델 base** (Phase B-1a/b/2a/b/3) — 코드 + 학습된 모델 (v001~v004 디렉토리)
+- **평가 인프라** — `evaluate_models.py`, `walk_forward`, `sequence_utils` 등
+- **잠재 이슈 트래커** I-B001~I-B011 (모두 해결 또는 검증 완료)
+- **설계 원칙** — 엔진 코드 수정 = 0, 학습/추론 분리, 단계별 검증, 솔직한 검증 분류 등 (CLAUDE.md 협업 규칙 그대로)
+
+### 14.5 명명 규칙
+
+| 식별자 | 의미 |
+|---|---|
+| `PATH_B_ML_STRATEGY` | 경로 B 시작 — ML 전략 비교 (본 문서) |
+| `PATH_B_PRODUCTION` | 경로 B Production Readiness — 다음 Phase 1·2 묶음 |
+| `PATH_B_LIVE_TRADING` | 경로 B Live Trading — 다음 Phase 3·4 묶음 |
+| Phase ID `BP` / `BL` | Production / Live |
+| 이슈 ID `I-BP` / `I-BL` | 새 리포트의 잠재 이슈 prefix |
