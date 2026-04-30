@@ -1,6 +1,6 @@
 """모델 통합 평가 스크립트 (Phase E-2).
 
-5개 모델 × 6개 OOS 분할 자동 백테 + 베이스라인 비교 + 결과 수집.
+5개 모델 × 6개 OOS 분할 자동 백테 + 베이스라인(Buy & Hold + example_macross) + 결과 수집.
 
 분할 매트릭스:
   - 분할 1 (v001, 5년 학습): OOS 2025-01-01 ~ 2025-12-31  (1년)
@@ -11,8 +11,10 @@
   - Expanding 4 (v002, 2년): OOS 2022-01-01 ~ 2025-12-31   (4년)
 
 출력: data/backtest_reports/00_Working/eval_{YYMMDD}/
-  - {strategy}_{split}/   각 백테 결과 (trades.csv, equity_curve.csv, metrics.json, ...)
-  - comparison.csv        종합 비교 표
+  - {strategy}_{split}/    각 모델 백테 결과 (5×6 = 30개)
+  - macross_{split}/       example_macross 백테 결과 (6개)
+  - buy_and_hold.json      Buy & Hold 결과 (메모리에 모아 한 파일에)
+  - comparison.csv         종합 비교 표
 
 Usage:
     # E-2-2 (전체 자동 실행):
@@ -43,10 +45,15 @@ from typing import Any
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pandas as pd  # noqa: E402
+import yaml  # noqa: E402
 
 from src.backtest.engine import BacktestEngine  # noqa: E402
+from src.data.historical import HistoricalDataLoader  # noqa: E402
 from src.utils.config_loader import load_config  # noqa: E402
 from src.utils.logger import setup_logger  # noqa: E402
+
+DEFAULT_CONFIG = "config/default.yaml"
+BUY_AND_HOLD_FILE = "buy_and_hold.json"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -227,6 +234,206 @@ async def run_all(specs: list[BacktestSpec], eval_root: Path) -> None:
     logger.info("백테 완료: 성공 %d / 전체 %d", n_success, len(specs))
 
 
+# ─── 베이스라인: Buy & Hold ───
+
+async def compute_buy_and_hold(
+    config: dict[str, Any],
+    split_id: str,
+    oos_start: str,
+    oos_end: str,
+) -> dict | None:
+    """OOS 기간 첫 봉 close에 매수, 마지막 봉 close에 청산.
+
+    equity curve 시뮬레이션으로 MDD 계산. 수수료 0 가정 (1회 거래라 영향 미미).
+    """
+    loader = HistoricalDataLoader(config)
+    start_ms = int(pd.Timestamp(oos_start, tz="UTC").timestamp() * 1000)
+    end_ms = int(pd.Timestamp(oos_end, tz="UTC").timestamp() * 1000)
+
+    try:
+        df = await loader.download_range_merged("15m", start_ms, end_ms)
+    finally:
+        await loader.close()
+
+    if df.empty:
+        logger.warning("Buy & Hold: %s 캔들 없음", split_id)
+        return None
+
+    closes = df["close"].astype(float)
+    first_close = float(closes.iloc[0])
+    last_close = float(closes.iloc[-1])
+
+    # equity curve: 첫 close 매수 후 가격 변화 추적
+    initial = float(config.get("paper", {}).get("initial_balance", 10000.0))
+    equity = closes / first_close * initial
+    peak = equity.cummax()
+    drawdown = (peak - equity) / peak * 100
+    max_dd = float(drawdown.max())
+
+    total_return_pct = (last_close / first_close - 1) * 100
+
+    return {
+        "strategy": "buy_and_hold",
+        "split": split_id,
+        "oos_start": oos_start,
+        "oos_end": oos_end,
+        "total_trades": 1,
+        "win_rate_pct": 100.0 if total_return_pct > 0 else 0.0,
+        "total_return_pct": round(total_return_pct, 2),
+        "max_drawdown_pct": round(max_dd, 2),
+        "profit_factor": None,
+        "avg_win": None,
+        "avg_loss": None,
+    }
+
+
+# ─── 베이스라인: example_macross ───
+
+async def run_baseline_macross(
+    split_id: str,
+    oos_start: str,
+    oos_end: str,
+    eval_root: Path,
+) -> tuple[Path, dict] | None:
+    """example_macross 백테. config 임시 생성 → 백테 → 임시 파일 삭제."""
+    logger.info("[BASELINE macross] %s | OOS %s ~ %s", split_id, oos_start, oos_end)
+
+    base_config = load_config(DEFAULT_CONFIG)
+    # active를 example_macross로 임시 변경
+    base_config.setdefault("strategies", {})["active"] = ["example_macross"]
+
+    # 임시 config 파일 (config/_eval_macross_{split_id}.yaml)
+    temp_config_path = Path(f"config/_eval_macross_{split_id}.yaml")
+    with open(temp_config_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(base_config, f, allow_unicode=True, sort_keys=False)
+
+    out_dir = None
+    try:
+        engine = BacktestEngine(base_config, start=oos_start, end=oos_end)
+        try:
+            await engine.initialize()
+            await engine.run()
+            await engine.get_result()
+            out_dir = engine.write_reports(
+                config_path=str(temp_config_path),
+                out_root=eval_root / f"macross_{split_id}",
+            )
+        except Exception:
+            logger.exception("example_macross 백테 실패: %s", split_id)
+        finally:
+            await engine.shutdown()
+    finally:
+        # 임시 config 정리
+        if temp_config_path.exists():
+            temp_config_path.unlink()
+
+    if out_dir is None:
+        return None
+
+    metrics_path = out_dir / "metrics.json"
+    if not metrics_path.exists():
+        logger.error("metrics.json 없음: %s", metrics_path)
+        return None
+
+    with open(metrics_path) as f:
+        metrics = json.load(f)
+    logger.info("[OK] macross_%s → %s (trades=%d, return=%.2f%%)",
+                split_id, out_dir,
+                metrics["integrated"]["total_trades"],
+                metrics["integrated"]["total_return_pct"])
+    return out_dir, metrics
+
+
+# ─── 베이스라인 통합 실행 ───
+
+def _unique_splits(specs: list[BacktestSpec]) -> dict[str, tuple[str, str]]:
+    """모델 spec에서 unique (split_id → (oos_start, oos_end)) 추출.
+
+    같은 split_id는 동일 OOS 기간이라 가정 (build_specs가 보장).
+    """
+    seen: dict[str, tuple[str, str]] = {}
+    for s in specs:
+        seen.setdefault(s.split_id, (s.oos_start, s.oos_end))
+    return seen
+
+
+async def run_baselines(
+    specs: list[BacktestSpec], eval_root: Path
+) -> list[dict]:
+    """베이스라인 전체 실행. Buy & Hold 결과는 메모리 → 파일 저장."""
+    splits = _unique_splits(specs)
+    logger.info("=" * 60)
+    logger.info("베이스라인: Buy & Hold + example_macross × %d 분할", len(splits))
+
+    base_config = load_config(DEFAULT_CONFIG)
+
+    # 1) Buy & Hold (단순 계산, 6개)
+    bh_results: list[dict] = []
+    for split_id, (oos_start, oos_end) in splits.items():
+        bh = await compute_buy_and_hold(base_config, split_id, oos_start, oos_end)
+        if bh:
+            bh_results.append(bh)
+            logger.info("[OK] buy_and_hold_%s: return=%.2f%%, MDD=%.2f%%",
+                        split_id, bh["total_return_pct"], bh["max_drawdown_pct"])
+
+    # Buy & Hold 결과 파일 저장 (mode=collect에서 재사용)
+    eval_root.mkdir(parents=True, exist_ok=True)
+    with open(eval_root / BUY_AND_HOLD_FILE, "w") as f:
+        json.dump(bh_results, f, indent=2)
+
+    # 2) example_macross 백테 (6개)
+    n_macross = 0
+    for split_id, (oos_start, oos_end) in splits.items():
+        result = await run_baseline_macross(split_id, oos_start, oos_end, eval_root)
+        if result is not None:
+            n_macross += 1
+
+    logger.info("베이스라인 완료: B&H %d, macross %d / %d",
+                len(bh_results), n_macross, len(splits))
+    return bh_results
+
+
+def collect_macross_metrics(
+    eval_root: Path, splits: dict[str, tuple[str, str]]
+) -> list[dict]:
+    """example_macross 결과 metrics.json 수집."""
+    rows: list[dict] = []
+    for split_id, (oos_start, oos_end) in splits.items():
+        # write_reports 내부 구조: {macross_{split_id}}/{config_name}/metrics.json
+        # config_name = "_eval_macross_{split_id}" (Path stem)
+        config_name = f"_eval_macross_{split_id}"
+        metrics_path = eval_root / f"macross_{split_id}" / config_name / "metrics.json"
+        if not metrics_path.exists():
+            logger.warning("macross metrics 없음: %s", metrics_path)
+            continue
+        with open(metrics_path) as f:
+            m = json.load(f)
+        integ = m.get("integrated", {})
+        rows.append({
+            "strategy": "example_macross",
+            "split": split_id,
+            "oos_start": oos_start,
+            "oos_end": oos_end,
+            "total_trades": integ.get("total_trades"),
+            "win_rate_pct": integ.get("win_rate_pct"),
+            "total_return_pct": integ.get("total_return_pct"),
+            "max_drawdown_pct": integ.get("max_drawdown_pct"),
+            "profit_factor": integ.get("profit_factor"),
+            "avg_win": integ.get("avg_win"),
+            "avg_loss": integ.get("avg_loss"),
+        })
+    return rows
+
+
+def load_buy_and_hold(eval_root: Path) -> list[dict]:
+    """저장된 Buy & Hold 결과 로드. 없으면 빈 리스트."""
+    bh_path = eval_root / BUY_AND_HOLD_FILE
+    if not bh_path.exists():
+        return []
+    with open(bh_path) as f:
+        return json.load(f)
+
+
 def save_comparison(df: pd.DataFrame, eval_root: Path) -> Path:
     """비교 표 CSV 저장."""
     eval_root.mkdir(parents=True, exist_ok=True)
@@ -257,8 +464,18 @@ def main() -> int:
 
     if args.mode == "full":
         specs = build_specs()
-        asyncio.run(run_all(specs, eval_root))
-        df = collect_metrics(eval_root, specs)
+
+        async def _full():
+            await run_all(specs, eval_root)
+            await run_baselines(specs, eval_root)
+
+        asyncio.run(_full())
+        # 종합 비교 표
+        splits = _unique_splits(specs)
+        df_models = collect_metrics(eval_root, specs)
+        df_macross = pd.DataFrame(collect_macross_metrics(eval_root, splits))
+        df_bh = pd.DataFrame(load_buy_and_hold(eval_root))
+        df = pd.concat([df_models, df_macross, df_bh], ignore_index=True)
         save_comparison(df, eval_root)
     elif args.mode == "single":
         if not args.strategy or not args.split:
@@ -273,7 +490,11 @@ def main() -> int:
         asyncio.run(run_all(specs, eval_root))
     elif args.mode == "collect":
         specs = build_specs()
-        df = collect_metrics(eval_root, specs)
+        splits = _unique_splits(specs)
+        df_models = collect_metrics(eval_root, specs)
+        df_macross = pd.DataFrame(collect_macross_metrics(eval_root, splits))
+        df_bh = pd.DataFrame(load_buy_and_hold(eval_root))
+        df = pd.concat([df_models, df_macross, df_bh], ignore_index=True)
         save_comparison(df, eval_root)
         print(df.to_string(index=False))
 
