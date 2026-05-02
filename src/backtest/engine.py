@@ -34,6 +34,7 @@ from src.core.engine_base import AbstractEngine
 from src.core.enums import ExitReason, PositionSide
 from src.core.types import Position
 from src.data.historical import HistoricalDataLoader
+from src.strategy.features import compute_multi_tf_features
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +141,25 @@ class BacktestEngine(AbstractEngine):
         balance = await self.broker.get_balance()
         self.risk_manager.set_initial_balance(balance)
         await self._load_candles()
+        self._build_features_cache()
+
+    def _build_features_cache(self) -> None:
+        """활성 strategies의 entry_timeframe별로 OOS 전체 features 사전계산.
+
+        Phase E-2-2-OPT Step 1 — 매 봉 generate_signal에서 compute_multi_tf_features를
+        처음부터 재계산하던 것을 1회로 축소. plugin은 ctx.precomputed_features를
+        slice해서 사용 (lookahead는 features.get_features_for_ctx에서 ts < now로 차단).
+        """
+        entry_tfs = {s.entry_timeframe for s in self.strategies}
+        for tf in entry_tfs:
+            if tf in self.candles_per_tf and not self.candles_per_tf[tf].empty:
+                self._features_cache[tf] = compute_multi_tf_features(
+                    self.candles_per_tf, tf
+                )
+                logger.info(
+                    "Features cache built: entry_tf=%s, rows=%d",
+                    tf, len(self._features_cache[tf]),
+                )
 
     async def shutdown(self) -> None:
         await self.broker.close()

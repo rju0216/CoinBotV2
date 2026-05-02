@@ -84,6 +84,11 @@ class AbstractEngine(ABC):
         # (C) 배타적 경합 — 전역 슬롯 1개
         self._position: Position | None = None
 
+        # Phase E-2-2-OPT Step 1: entry_timeframe별 features 사전계산 cache.
+        # BacktestEngine.initialize에서 OOS 전체로 채움. CoreEngine(라이브)에선
+        # 빈 dict 유지 → _build_ctx가 None 반환 → plugin이 즉시 계산 경로 사용.
+        self._features_cache: dict[str, pd.DataFrame] = {}
+
     # ---- properties ----
 
     @property
@@ -171,6 +176,7 @@ class AbstractEngine(ABC):
             is_slot_occupied=self._position is not None,
             params=strategy.params,
             now=now,
+            precomputed_features=self._features_cache.get(strategy.entry_timeframe),
         )
 
     # ---- 봉 마감 dispatch ----

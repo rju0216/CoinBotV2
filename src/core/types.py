@@ -97,3 +97,7 @@ class StrategyContext:
     is_slot_occupied: bool
     params: dict[str, Any]
     now: datetime
+    # Phase E-2-2-OPT Step 1: 백테에서 BacktestEngine이 OOS 전체 features를 사전계산해
+    # 주입. cutoff(ts < now) 처리는 features.get_features_for_ctx가 담당.
+    # 라이브에서는 항상 None — get_features_for_ctx가 즉시 계산 경로로 fallback.
+    precomputed_features: pd.DataFrame | None = None

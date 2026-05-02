@@ -9,6 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from src.core.types import StrategyContext
 from src.strategy.indicators import (
     compute_adx,
     compute_atr,
@@ -223,3 +224,21 @@ def get_feature_names(
         if tf != entry_tf:
             all_names.extend(f"{tf}_{n}" for n in BASE_FEATURE_NAMES)
     return all_names
+
+
+def get_features_for_ctx(
+    ctx: StrategyContext,
+    entry_tf: str,
+) -> pd.DataFrame:
+    """ctx 시점(ctx.now)까지의 멀티TF 피처 반환.
+
+    백테 모드: BacktestEngine이 OOS 전체 features를 ctx.precomputed_features에
+              주입한 상태 → 여기서 ctx.now 미만으로 cutoff (lookahead 방어).
+    라이브 모드: ctx.precomputed_features=None → 매 호출마다 즉시 계산.
+
+    plugin 코드는 모드 무관하게 이 helper만 호출하면 된다.
+    """
+    cache = ctx.precomputed_features
+    if cache is not None:
+        return cache.loc[cache.index < ctx.now]
+    return compute_multi_tf_features(ctx.candles, entry_tf)

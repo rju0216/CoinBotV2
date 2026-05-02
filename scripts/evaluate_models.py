@@ -39,8 +39,15 @@ import os
 import sys
 from dataclasses import dataclass
 from datetime import datetime
+from multiprocessing import Pool
 from pathlib import Path
 from typing import Any
+
+# Phase E-2-2-OPT Step 3: PyTorch/MKL thread thrashing 방지.
+# 4 워커 × N thread = 같은 코어 경합 → 오히려 느려짐. spawn 자식이 상속하도록
+# import 전에 설정.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -54,9 +61,17 @@ from src.utils.logger import setup_logger  # noqa: E402
 
 DEFAULT_CONFIG = "config/default.yaml"
 BUY_AND_HOLD_FILE = "buy_and_hold.json"
+_NUM_WORKERS = 4  # Phase E-2-2-OPT Step 3 multiprocessing.Pool 워커 수 (사안 D)
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [PID %(process)d] [%(levelname)s] %(message)s",
+)
 logger = logging.getLogger(__name__)
+
+# Phase E-2-2-OPT Step 3: worker가 eval_root을 알아야 하지만 BacktestSpec dataclass를
+# 변경하지 않기 위해 Pool initializer로 모듈 글로벌에 주입.
+_WORKER_EVAL_ROOT: Path | None = None
 
 REPORT_BASE = Path("data/backtest_reports/00_Working")
 
@@ -220,7 +235,7 @@ def collect_metrics(eval_root: Path, specs: list[BacktestSpec]) -> pd.DataFrame:
 
 
 async def run_all(specs: list[BacktestSpec], eval_root: Path) -> None:
-    """specs 전체를 순차 실행."""
+    """specs 전체를 순차 실행 (single-process 경로 — debugging용 유지)."""
     eval_root.mkdir(parents=True, exist_ok=True)
     logger.info("총 %d개 백테 시작 (출력: %s)", len(specs), eval_root)
     n_success = 0
@@ -232,6 +247,86 @@ async def run_all(specs: list[BacktestSpec], eval_root: Path) -> None:
             n_success += 1
     logger.info("=" * 60)
     logger.info("백테 완료: 성공 %d / 전체 %d", n_success, len(specs))
+
+
+# ─── Phase E-2-2-OPT Step 3: 캔들 캐시 워밍업 + multiprocessing.Pool ───
+
+async def _warmup_candle_cache(specs: list[BacktestSpec]) -> None:
+    """unique OOS 기간 × required TF에 대해 캔들 다운로드/CSV 캐시 1회 보장 (사안 F).
+
+    이게 없으면 4 워커가 동시에 같은 CSV에 write → race condition 가능.
+    캐시 hit이면 수 초, miss면 다운로드 — 비용은 크지 않음.
+    """
+    splits = _unique_splits(specs)
+    base_config = load_config(DEFAULT_CONFIG)
+    timeframes = ["15m", "1h", "4h"]
+    loader = HistoricalDataLoader(base_config)
+    try:
+        for split_id, (oos_start, oos_end) in splits.items():
+            start_ms = int(pd.Timestamp(oos_start, tz="UTC").timestamp() * 1000)
+            end_ms = int(pd.Timestamp(oos_end, tz="UTC").timestamp() * 1000)
+            for tf in timeframes:
+                df = await loader.download_range_merged(tf, start_ms, end_ms)
+                logger.info(
+                    "[Warmup] split=%s tf=%s rows=%d", split_id, tf, len(df)
+                )
+    finally:
+        await loader.close()
+
+
+def _init_worker(eval_root_str: str) -> None:
+    """Pool worker initializer — eval_root 주입 + thread 환경 재확인."""
+    global _WORKER_EVAL_ROOT
+    _WORKER_EVAL_ROOT = Path(eval_root_str)
+    # main에서 spawn 전 환경변수 설정했으나 자식에서도 명시적 보장
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+
+
+def _run_one_sync(spec: BacktestSpec) -> str | None:
+    """worker가 단일 spec 백테 실행 (asyncio.run으로 비동기 wrapping).
+
+    pickle 호환을 위해 모듈 top level에 정의 (Windows spawn 호환).
+    eval_root는 _init_worker에서 주입된 모듈 글로벌 사용.
+    """
+    if _WORKER_EVAL_ROOT is None:
+        logger.error("worker eval_root 미초기화 — Pool initializer 누락")
+        return None
+    try:
+        result = asyncio.run(run_one_backtest(spec, _WORKER_EVAL_ROOT))
+    except Exception:
+        logger.exception("worker 백테 실패: %s", spec.label)
+        return None
+    return spec.label if result is not None else None
+
+
+def run_all_parallel(specs: list[BacktestSpec], eval_root: Path) -> None:
+    """multiprocessing.Pool(N=_NUM_WORKERS)로 specs 병렬 실행.
+
+    chunksize=1 — spec마다 OOS 길이 차이 (1년~4년) 큼 → imap_unordered가
+    부하 분산. 베이스라인은 별도 main process 순차 (run_baselines).
+    """
+    eval_root.mkdir(parents=True, exist_ok=True)
+    logger.info(
+        "총 %d개 백테 병렬 시작 (워커 %d, 출력: %s)",
+        len(specs), _NUM_WORKERS, eval_root,
+    )
+    n_success = 0
+    with Pool(
+        processes=_NUM_WORKERS,
+        initializer=_init_worker,
+        initargs=(str(eval_root),),
+    ) as pool:
+        for i, label in enumerate(
+            pool.imap_unordered(_run_one_sync, specs, chunksize=1), 1
+        ):
+            if label is not None:
+                n_success += 1
+                logger.info("[%d/%d] [OK] %s", i, len(specs), label)
+            else:
+                logger.warning("[%d/%d] [FAIL] (worker 반환 None)", i, len(specs))
+    logger.info("=" * 60)
+    logger.info("병렬 백테 완료: 성공 %d / 전체 %d", n_success, len(specs))
 
 
 # ─── 베이스라인: Buy & Hold ───
@@ -463,13 +558,17 @@ def main() -> int:
     eval_root = REPORT_BASE / f"eval_{args.eval_date}"
 
     if args.mode == "full":
+        import time as _time
+        _t0 = _time.perf_counter()
         specs = build_specs()
 
-        async def _full():
-            await run_all(specs, eval_root)
-            await run_baselines(specs, eval_root)
+        # Phase E-2-2-OPT Step 3: 모델 백테는 multiprocessing.Pool 병렬,
+        # 베이스라인(B&H + macross)은 main process 순차 (간단/빠름).
+        # 사전 캔들 캐시 워밍업으로 워커 race condition 방지 (사안 F).
+        asyncio.run(_warmup_candle_cache(specs))
+        run_all_parallel(specs, eval_root)
+        asyncio.run(run_baselines(specs, eval_root))
 
-        asyncio.run(_full())
         # 종합 비교 표
         splits = _unique_splits(specs)
         df_models = collect_metrics(eval_root, specs)
@@ -477,6 +576,12 @@ def main() -> int:
         df_bh = pd.DataFrame(load_buy_and_hold(eval_root))
         df = pd.concat([df_models, df_macross, df_bh], ignore_index=True)
         save_comparison(df, eval_root)
+        _elapsed = _time.perf_counter() - _t0
+        logger.info("=" * 60)
+        logger.info(
+            "[Phase E-2-2-OPT Step 3] 전체 wall time: %.1f sec (%.2f h)",
+            _elapsed, _elapsed / 3600,
+        )
     elif args.mode == "single":
         if not args.strategy or not args.split:
             logger.error("--mode single은 --strategy와 --split 필요")

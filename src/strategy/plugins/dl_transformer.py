@@ -35,7 +35,7 @@ import numpy as np
 from src.core.enums import SignalSide
 from src.core.types import Signal, StrategyContext
 from src.strategy.base import StrategyModule
-from src.strategy.features import compute_multi_tf_features
+from src.strategy.features import get_features_for_ctx
 from src.strategy.indicators import compute_atr
 from src.strategy.registry import register_strategy
 
@@ -130,7 +130,7 @@ class DLTransformer(StrategyModule):
 
         self._ensure_model()
 
-        features = compute_multi_tf_features(ctx.candles, self.entry_timeframe)
+        features = get_features_for_ctx(ctx, self.entry_timeframe)
         if len(features.dropna()) < self._lookback:
             return Signal(side=SignalSide.HOLD)
 
