@@ -85,11 +85,18 @@ class BacktestSpec:
     split_id: str            # "1", "A", "B", "Exp2", "Exp3", "Exp4"
     oos_start: str           # "2025-01-01"
     oos_end: str             # "2025-12-31"
+    # Phase E-2-3 Step 1 (슬리피지 sensitivity, I-B010): None이면 config 기본값 사용,
+    # 값이면 accounting.slippage_pct 오버라이드. 미래 다른 sensitivity 차원 추가 시
+    # 같은 패턴으로 fee/leverage 필드 추가 가능.
+    slippage_pct: float | None = None
 
     @property
     def label(self) -> str:
-        """결과 디렉토리 이름."""
-        return f"{self.strategy}_{self.split_id}"
+        """결과 디렉토리 이름. slippage_pct 지정 시 suffix 추가 (sensitivity 백테 구분)."""
+        base = f"{self.strategy}_{self.split_id}"
+        if self.slippage_pct is not None:
+            base += f"_slip{self.slippage_pct:.4f}"
+        return base
 
 
 # ─── 모델 × 분할 매트릭스 ───
@@ -156,10 +163,49 @@ def build_specs(strategies: list[str] | None = None) -> list[BacktestSpec]:
     return specs
 
 
+# Phase E-2-3 Step 1: 슬리피지 sensitivity 매트릭스 (I-B010 — 사안 G/H 결정 반영)
+SENSITIVITY_TARGET_SPLITS = ["1", "Exp4"]  # 양 끝점: 1년 OOS + 4년 OOS
+SENSITIVITY_SLIPPAGES = [0.0, 0.0002, 0.0005, 0.001]  # 0% / 0.02% / 0.05% / 0.1%
+
+
+def build_sensitivity_specs() -> list[BacktestSpec]:
+    """슬리피지 sensitivity 백테 매트릭스: 5 모델 × 2 분할(끝점) × 4 슬리피지 = 40 specs."""
+    specs: list[BacktestSpec] = []
+    for strat in STRATEGIES:
+        config_path = STRATEGIES[strat]
+        dir_prefix = STRATEGY_DIR_PREFIX[strat]
+        for split_id, version, oos_start, oos_end in SPLIT_DEFINITIONS:
+            if split_id not in SENSITIVITY_TARGET_SPLITS:
+                continue
+            model_dir = f"models/{dir_prefix}/{MODEL_VERSIONS[version]}"
+            for slip in SENSITIVITY_SLIPPAGES:
+                specs.append(BacktestSpec(
+                    strategy=strat,
+                    config_path=config_path,
+                    model_dir=model_dir,
+                    split_id=split_id,
+                    oos_start=oos_start,
+                    oos_end=oos_end,
+                    slippage_pct=slip,
+                ))
+    return specs
+
+
 def _override_model_path(config: dict[str, Any], strategy: str, model_dir: str) -> dict[str, Any]:
     """config의 strategy 섹션에서 model_path를 명시적 디렉토리로 오버라이드."""
     if strategy in config and isinstance(config[strategy], dict):
         config[strategy]["model_path"] = model_dir
+    return config
+
+
+def _override_slippage(config: dict[str, Any], slippage_pct: float | None) -> dict[str, Any]:
+    """Phase E-2-3 Step 1: spec.slippage_pct가 None이 아니면 accounting.slippage_pct 오버라이드.
+
+    슬리피지는 FeeModel의 per_side_rate에 합산되어 진입/청산 비용으로 차감됨.
+    BacktestEngine은 이 오버라이드를 인식할 필요 없음 — config.from_config에서 자동 적용.
+    """
+    if slippage_pct is not None:
+        config.setdefault("accounting", {})["slippage_pct"] = float(slippage_pct)
     return config
 
 
@@ -173,6 +219,7 @@ async def run_one_backtest(spec: BacktestSpec, eval_root: Path) -> tuple[Path, d
 
     config = load_config(spec.config_path)
     config = _override_model_path(config, spec.strategy, spec.model_dir)
+    config = _override_slippage(config, spec.slippage_pct)
 
     engine = BacktestEngine(config, start=spec.oos_start, end=spec.oos_end)
     out_dir = None
@@ -221,6 +268,7 @@ def collect_metrics(eval_root: Path, specs: list[BacktestSpec]) -> pd.DataFrame:
         rows.append({
             "strategy": spec.strategy,
             "split": spec.split_id,
+            "slippage_pct": spec.slippage_pct,
             "oos_start": spec.oos_start,
             "oos_end": spec.oos_end,
             "total_trades": integ.get("total_trades"),
@@ -542,9 +590,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="모델 통합 평가 (Phase E-2)")
     parser.add_argument(
         "--mode",
-        choices=["full", "single", "collect"],
+        choices=["full", "single", "collect", "sensitivity"],
         default="full",
-        help="full: 모든 모델×분할 백테 / single: 특정 조합 / collect: 결과 수집만",
+        help=(
+            "full: 모든 모델×분할 백테 / single: 특정 조합 / collect: 결과 수집만 / "
+            "sensitivity: 슬리피지 sensitivity (Phase E-2-3 Step 1)"
+        ),
     )
     parser.add_argument("--strategy", help="--mode single 시 특정 strategy 이름")
     parser.add_argument("--split", help="--mode single 시 특정 split id")
@@ -593,6 +644,23 @@ def main() -> int:
                          args.strategy, args.split)
             return 2
         asyncio.run(run_all(specs, eval_root))
+    elif args.mode == "sensitivity":
+        # Phase E-2-3 Step 1: 슬리피지 sensitivity (I-B010).
+        # 5 모델 × 분할{1, Exp4} × 슬리피지{0%, 0.02%, 0.05%, 0.1%} = 40 백테.
+        # 출력 폴더는 baseline 보존을 위해 별도 권장 (예: --eval-date 260503_sensitivity).
+        import time as _time
+        _t0 = _time.perf_counter()
+        specs = build_sensitivity_specs()
+        asyncio.run(_warmup_candle_cache(specs))
+        run_all_parallel(specs, eval_root)
+        df = collect_metrics(eval_root, specs)
+        save_comparison(df, eval_root)
+        _elapsed = _time.perf_counter() - _t0
+        logger.info("=" * 60)
+        logger.info(
+            "[Phase E-2-3 Step 1] sensitivity wall time: %.1f sec (%.2f h)",
+            _elapsed, _elapsed / 3600,
+        )
     elif args.mode == "collect":
         specs = build_specs()
         splits = _unique_splits(specs)

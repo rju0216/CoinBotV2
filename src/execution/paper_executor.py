@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from src.accounting.fee_model import FeeModel
 from src.core.enums import OrderType, PositionSide
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,10 @@ class PaperExecutor:
         paper_cfg = config.get("paper", {}) or {}
         self.initial_balance = float(paper_cfg.get("initial_balance", 10000.0))
         self.balance = self.initial_balance
+        # I-B012 fix (2026-05-03): paper 시뮬레이션이 fees를 balance에 반영해야
+        # equity_curve / metrics가 정확. 라이브 거래소는 자동 차감되지만 paper는
+        # 자체 처리 필요. 라이브-백테 일관성 (CLAUDE.md 정체성) 충족.
+        self.fee_model = FeeModel.from_config(config)
         # 보유 포지션 정보 (None = 슬롯 비어있음)
         self._position: dict | None = None
         self._order_id = 0
@@ -111,15 +116,19 @@ class PaperExecutor:
         entry = self._position["entry_price"]
         size = self._position["size"]
         if side == PositionSide.LONG:
-            pnl = (exit_price - entry) * size
+            gross_pnl = (exit_price - entry) * size
         elif side == PositionSide.SHORT:
-            pnl = (entry - exit_price) * size
+            gross_pnl = (entry - exit_price) * size
         else:
-            pnl = 0.0
-        self.balance += pnl
+            gross_pnl = 0.0
+        # I-B012 fix: round-trip fees(수수료+슬리피지)를 balance에서 차감하여
+        # equity_curve / metrics가 net PnL을 반영하도록 함 (trades.csv는 이미 net)
+        fees = self.fee_model.estimate_round_trip(entry, exit_price, size)
+        net_pnl = gross_pnl - fees
+        self.balance += net_pnl
         logger.info(
-            "Paper close: %s %.4f @ %.2f, PnL=$%.2f, Balance=$%.2f",
-            side.value, size, exit_price, pnl, self.balance,
+            "Paper close: %s %.4f @ %.2f, gross=$%.2f, fees=$%.2f, net=$%.2f, Balance=$%.2f",
+            side.value, size, exit_price, gross_pnl, fees, net_pnl, self.balance,
         )
         self._position = None
 
