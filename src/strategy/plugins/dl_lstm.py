@@ -66,6 +66,11 @@ class DLLSTM(StrategyModule):
         self._confidence_threshold = float(
             params.get("confidence_threshold", 0.55)
         )
+        # Phase E-2-3 Step 2 (I-B009)
+        self._calibration_method = str(
+            params.get("calibration_method", "none")
+        ).lower()
+        self._calibrator = None
 
     def _resolve_model_dir(self) -> Path:
         """model_path → 실제 모델 디렉토리 해석. latest.json 간접 참조 지원."""
@@ -115,6 +120,15 @@ class DLLSTM(StrategyModule):
 
         self._scaler = joblib.load(str(model_dir / "scaler.joblib"))
 
+        # I-B009 calibrator lazy 로드
+        if self._calibration_method in ("platt", "isotonic"):
+            cal_path = model_dir / f"calibrator_{self._calibration_method}.joblib"
+            if cal_path.exists():
+                self._calibrator = joblib.load(cal_path)
+                logger.info("Calibrator 로드 완료: %s (%s)", cal_path, self._calibration_method)
+            else:
+                logger.warning("Calibrator 파일 없음: %s — raw 확률 사용", cal_path)
+
         logger.info(
             "LSTM 모델 로드 완료: %s (%d 피처, lookback=%d)",
             model_dir,
@@ -157,6 +171,9 @@ class DLLSTM(StrategyModule):
             logits = self._model(x)
             probs = torch.softmax(logits, dim=1).numpy()[0]
 
+        # I-B009 calibrator 적용
+        if self._calibrator is not None:
+            probs = self._calibrator.transform(probs.reshape(1, -1))[0]
         pred_class = int(np.argmax(probs))
         confidence = float(probs[pred_class])
         meta = {"probs": [round(float(p), 4) for p in probs]}

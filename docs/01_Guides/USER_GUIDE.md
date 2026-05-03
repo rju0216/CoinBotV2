@@ -67,6 +67,47 @@ python -m src.main live --config config/default.yaml
 
 ⚠️ **실제 자금이 거래되는 모드.** 시작 전 §5 라이브 운영 가이드 필독.
 
+### 2.4 ML 모델 통합 평가 (`scripts/evaluate_models.py`)
+
+5 모드 (Phase E-2 ~ E-2-3):
+
+```bash
+# 5 모델 × 6 분할 = 30 백테 + 베이스라인(B&H + macross 12) 일괄
+python scripts/evaluate_models.py --mode full --eval-date 260502
+
+# 특정 모델 + 분할
+python scripts/evaluate_models.py --mode single --strategy ml_lightgbm --split 1
+
+# 결과 수집만 (이미 백테 끝났을 때)
+python scripts/evaluate_models.py --mode collect
+
+# 슬리피지 sensitivity (5 모델 × {분할 1, Exp4} × 4 슬리피지 = 40)
+python scripts/evaluate_models.py --mode sensitivity --eval-date 260503_sensitivity
+
+# Calibration 백테 (4 분류 모델 × 분할 1 × {Platt, Isotonic} = 8)
+python scripts/evaluate_models.py --mode calibration --eval-date 260503_calibration
+```
+
+- 출력: `data/backtest_reports/00_Working/eval_{날짜}/`
+- multiprocessing.Pool(N=4) + 캔들 캐시 워밍업 자동 — 30 specs 약 5h
+- 각 spec별 5종 파일 + 통합 `comparison.csv`
+
+### 2.5 Calibrator 학습 (`scripts/calibrate_models.py`)
+
+분류 모델 4개의 confidence calibration용. v001 모델 디렉토리에 `calibrator_platt.joblib` + `calibrator_isotonic.joblib` + `calibration_meta.json` 생성.
+
+```bash
+# 4 분류 모델 모두 (~8분)
+python scripts/calibrate_models.py --strategy all --start 2020-01-01 --end 2024-12-31
+
+# 특정 모델만
+python scripts/calibrate_models.py --strategy ml_lightgbm --start 2020-01-01 --end 2024-12-31
+```
+
+- 학습 데이터로 walk-forward 26 folds 재실행 → OOS probabilities 수집 → calibrator 학습
+- 기존 모델 파일(`model.txt`/`model.pth`)은 변경 0
+- 백테 시 `config[strategy].calibration_method`로 적용 method 선택 (§3 참조)
+
 ---
 
 ## 3. config/default.yaml
@@ -115,6 +156,20 @@ example_macross:
 ```
 
 전략 추가는 `DEVELOPER_GUIDE.md` 참조.
+
+### 분류 모델용 calibration_method (Phase E-2-3, I-B009)
+
+`ml_lightgbm`/`ml_xgboost`/`dl_lstm`/`dl_transformer` 4 분류 모델은 confidence calibration 옵션 지원. PPO는 정책 모델이라 미적용.
+
+```yaml
+ml_lightgbm:
+  ...
+  calibration_method: "none"        # 기본: raw probability 그대로 사용
+  # calibration_method: "platt"     # Platt scaling 적용 (효과 미미)
+  # calibration_method: "isotonic"  # Isotonic regression (4 모델 모두 개선 — 추천)
+```
+
+`"none"` 외 값 사용 시 `model_dir/calibrator_<method>.joblib` 파일 필요. 없으면 `scripts/calibrate_models.py`로 사전 학습 (§2.5 참조). 분할 1 OOS 검증 결과: Isotonic이 4 모델 모두에서 raw 대비 개선 (Transformer +7.9%로 가장 큼).
 
 ### 전략 On/Off
 
@@ -172,6 +227,15 @@ data/backtest_reports/00_Working/
   "by_direction":    { "long"/"short": {...} }
 }
 ```
+
+### 4.4 결과 정합성 검증 (의심스러울 때)
+
+수익률이 비현실적으로 높거나 fees/slippage 변경 효과가 안 보일 때, 직관 가설(데이터 누출 등)보다 데이터 단위 정합성 먼저 점검:
+
+- **trades.csv pnl 합** == **metrics.json `integrated.total_pnl`**
+- **initial_balance + sum(trades.pnl)** == **equity_curve.csv 마지막 row balance**
+
+불일치 시 paper_executor·FeeModel·BacktestEngine.close_position 흐름 점검 (I-B012 같은 라이브-백테 일관성 위반 가능). DEVELOPER_GUIDE §11.5 참조. 자동 회귀 보호: `tests/test_backtest_fees.py`.
 
 ---
 

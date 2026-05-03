@@ -326,6 +326,17 @@ async def test_my_strategy(tmp_path):
     assert result.num_trades >= 1
 ```
 
+### 8.4 fees/slippage 정합성 회귀 테스트 (I-B012 회귀 방지)
+
+paper_executor가 fees를 balance에 정확히 반영하는지 검증. `tests/test_backtest_fees.py` 참조.
+
+3 invariant:
+- `initial_balance + sum(trades.csv.pnl)` == `equity_curve.csv` 마지막 row balance
+- `sum(trades.csv.pnl)` == `metrics.json["integrated"]["total_pnl"]`
+- fees 증가 시 final_balance 단조 감소
+
+paper_executor / FeeModel / BacktestEngine.close_position 흐름 변경 시 반드시 통과해야 함.
+
 ---
 
 ## 9. 보안 가이드
@@ -350,6 +361,7 @@ async def test_my_strategy(tmp_path):
 | 새 Reverse 정책 | `src/core/policies.py` 에 클래스 추가 + `_POLICY_REGISTRY` 등록 | 그 후 config의 `engine.reverse_signal_policy` 값으로 사용 |
 | 새 거래소 | `src/execution/` 에 신규 executor + Broker 분기 | OKX 외 거래소 지원 시 |
 | 새 데이터 소스 | `src/data/` 에 신규 feed | WebSocket 외 다른 소스 |
+| 새 분류 모델 + Calibration | plugin에 `calibration_method` 파라미터 추가 + `_ensure_model`에서 `model_dir/calibrator_<method>.joblib` 자동 로드 + `generate_signal`에서 `raw_probs → calibrator.transform` 분기 (`src/strategy/plugins/ml_lightgbm.py` 참고) | `scripts/calibrate_models.py` 패턴으로 calibrator 학습 별도 진행 |
 
 엔진(`AbstractEngine`/`CoreEngine`/`BacktestEngine`) 자체 수정은 **공통
 인프라 변경**일 때만. 전략 추가만으로 엔진을 건드린다면 추상화가 잘못된 것.
@@ -383,6 +395,21 @@ eng.inject_candles({"15m": custom_df})
 
 백테 결과의 `by_strategy_name`·`by_exit_reason`·`by_direction` 분할로 어느
 조건에서 손실/이익이 발생했는지 빠르게 파악.
+
+### 11.5 백테 결과 정합성 검증 (CLAUDE.md 협업 규칙 10)
+
+수익률이 의심스럽거나 fees/slippage 변경 효과를 빠르게 진단할 때, 직관적 가설(데이터 누출/lookahead 등)보다 데이터 단위 정합성을 먼저 점검:
+
+```python
+import json, pandas as pd
+trades = pd.read_csv("path/to/trades.csv")
+metrics = json.load(open("path/to/metrics.json"))["integrated"]
+sum_pnl = float(trades["pnl"].sum())
+total_pnl = float(metrics["total_pnl"])
+assert abs(sum_pnl - total_pnl) < 0.01, f"trades.csv ↔ metrics.json 불일치: {sum_pnl} vs {total_pnl}"
+```
+
+`equity_curve.csv` 마지막 balance도 같이 비교 (`initial + sum_pnl`과 일치). 불일치 시 paper_executor·FeeModel·BacktestEngine.close_position 흐름 점검 — I-B012 같은 라이브-백테 일관성 위반 가능.
 
 ---
 

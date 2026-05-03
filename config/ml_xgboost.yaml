@@ -45,6 +45,7 @@ ml_xgboost:
   # ── 모델 ──
   model_path: "models/xgboost/latest"
   confidence_threshold: 0.55
+  calibration_method: "none"  # "none" / "platt" / "isotonic" (Phase E-2-3 Step 2 — I-B009)
 
   # ── 타임프레임 ──
   entry_timeframe: "15m"

@@ -89,13 +89,18 @@ class BacktestSpec:
     # 값이면 accounting.slippage_pct 오버라이드. 미래 다른 sensitivity 차원 추가 시
     # 같은 패턴으로 fee/leverage 필드 추가 가능.
     slippage_pct: float | None = None
+    # Phase E-2-3 Step 2 (calibration, I-B009): None이면 config 기본값 사용("none"),
+    # "platt" 또는 "isotonic"이면 plugin이 자동 calibrator 로드/적용.
+    calibration_method: str | None = None
 
     @property
     def label(self) -> str:
-        """결과 디렉토리 이름. slippage_pct 지정 시 suffix 추가 (sensitivity 백테 구분)."""
+        """결과 디렉토리 이름. sensitivity/calibration 차원 지정 시 suffix 추가."""
         base = f"{self.strategy}_{self.split_id}"
         if self.slippage_pct is not None:
             base += f"_slip{self.slippage_pct:.4f}"
+        if self.calibration_method is not None:
+            base += f"_cal{self.calibration_method}"
         return base
 
 
@@ -168,6 +173,40 @@ SENSITIVITY_TARGET_SPLITS = ["1", "Exp4"]  # 양 끝점: 1년 OOS + 4년 OOS
 SENSITIVITY_SLIPPAGES = [0.0, 0.0002, 0.0005, 0.001]  # 0% / 0.02% / 0.05% / 0.1%
 
 
+# Phase E-2-3 Step 3: Calibration 백테 매트릭스 (사안 H — 분할 1만)
+CALIBRATION_TARGET_SPLIT = "1"  # v001 5년 학습, OOS 2025-01-01 ~ 2025-12-31
+CALIBRATION_METHODS = ["platt", "isotonic"]
+# PPO 제외 — 정책 모델이라 confidence calibration 무의미
+CALIBRATION_TARGET_STRATEGIES = ["ml_lightgbm", "ml_xgboost", "dl_lstm", "dl_transformer"]
+
+
+def build_calibration_specs() -> list[BacktestSpec]:
+    """Calibration 백테 매트릭스: 4 분류 모델 × 분할 1 × 2 알고리즘 = 8 specs.
+
+    raw baseline은 별도 (calibration_method=None) — eval_260503_sensitivity의
+    *_slip0.0000 결과 또는 별도 단일 백테 사용.
+    """
+    specs: list[BacktestSpec] = []
+    for strat in CALIBRATION_TARGET_STRATEGIES:
+        config_path = STRATEGIES[strat]
+        dir_prefix = STRATEGY_DIR_PREFIX[strat]
+        for split_id, version, oos_start, oos_end in SPLIT_DEFINITIONS:
+            if split_id != CALIBRATION_TARGET_SPLIT:
+                continue
+            model_dir = f"models/{dir_prefix}/{MODEL_VERSIONS[version]}"
+            for method in CALIBRATION_METHODS:
+                specs.append(BacktestSpec(
+                    strategy=strat,
+                    config_path=config_path,
+                    model_dir=model_dir,
+                    split_id=split_id,
+                    oos_start=oos_start,
+                    oos_end=oos_end,
+                    calibration_method=method,
+                ))
+    return specs
+
+
 def build_sensitivity_specs() -> list[BacktestSpec]:
     """슬리피지 sensitivity 백테 매트릭스: 5 모델 × 2 분할(끝점) × 4 슬리피지 = 40 specs."""
     specs: list[BacktestSpec] = []
@@ -209,6 +248,18 @@ def _override_slippage(config: dict[str, Any], slippage_pct: float | None) -> di
     return config
 
 
+def _override_calibration(
+    config: dict[str, Any], strategy: str, calibration_method: str | None,
+) -> dict[str, Any]:
+    """Phase E-2-3 Step 2: spec.calibration_method가 None이 아니면 strategy 섹션 오버라이드.
+
+    plugin이 _ensure_model에서 자동으로 calibrator_<method>.joblib 로드/적용.
+    """
+    if calibration_method is not None and strategy in config and isinstance(config[strategy], dict):
+        config[strategy]["calibration_method"] = str(calibration_method)
+    return config
+
+
 async def run_one_backtest(spec: BacktestSpec, eval_root: Path) -> tuple[Path, dict] | None:
     """단일 백테 실행 → (결과 디렉토리, metrics dict) 반환.
 
@@ -220,6 +271,7 @@ async def run_one_backtest(spec: BacktestSpec, eval_root: Path) -> tuple[Path, d
     config = load_config(spec.config_path)
     config = _override_model_path(config, spec.strategy, spec.model_dir)
     config = _override_slippage(config, spec.slippage_pct)
+    config = _override_calibration(config, spec.strategy, spec.calibration_method)
 
     engine = BacktestEngine(config, start=spec.oos_start, end=spec.oos_end)
     out_dir = None
@@ -269,6 +321,7 @@ def collect_metrics(eval_root: Path, specs: list[BacktestSpec]) -> pd.DataFrame:
             "strategy": spec.strategy,
             "split": spec.split_id,
             "slippage_pct": spec.slippage_pct,
+            "calibration_method": spec.calibration_method,
             "oos_start": spec.oos_start,
             "oos_end": spec.oos_end,
             "total_trades": integ.get("total_trades"),
@@ -590,11 +643,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="모델 통합 평가 (Phase E-2)")
     parser.add_argument(
         "--mode",
-        choices=["full", "single", "collect", "sensitivity"],
+        choices=["full", "single", "collect", "sensitivity", "calibration"],
         default="full",
         help=(
             "full: 모든 모델×분할 백테 / single: 특정 조합 / collect: 결과 수집만 / "
-            "sensitivity: 슬리피지 sensitivity (Phase E-2-3 Step 1)"
+            "sensitivity: 슬리피지 sensitivity (Phase E-2-3 Step 1) / "
+            "calibration: Calibration 백테 (Phase E-2-3 Step 3)"
         ),
     )
     parser.add_argument("--strategy", help="--mode single 시 특정 strategy 이름")
@@ -659,6 +713,23 @@ def main() -> int:
         logger.info("=" * 60)
         logger.info(
             "[Phase E-2-3 Step 1] sensitivity wall time: %.1f sec (%.2f h)",
+            _elapsed, _elapsed / 3600,
+        )
+    elif args.mode == "calibration":
+        # Phase E-2-3 Step 3: Calibration 백테 (I-B009).
+        # 4 분류 모델 × 분할 1 × {Platt, Isotonic} = 8 백테. PPO 제외.
+        # raw baseline은 eval_260503_sensitivity/*_slip0.0000/ 사용.
+        import time as _time
+        _t0 = _time.perf_counter()
+        specs = build_calibration_specs()
+        asyncio.run(_warmup_candle_cache(specs))
+        run_all_parallel(specs, eval_root)
+        df = collect_metrics(eval_root, specs)
+        save_comparison(df, eval_root)
+        _elapsed = _time.perf_counter() - _t0
+        logger.info("=" * 60)
+        logger.info(
+            "[Phase E-2-3 Step 3] calibration wall time: %.1f sec (%.2f h)",
             _elapsed, _elapsed / 3600,
         )
     elif args.mode == "collect":
