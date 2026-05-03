@@ -61,7 +61,7 @@ from src.utils.logger import setup_logger  # noqa: E402
 
 DEFAULT_CONFIG = "config/default.yaml"
 BUY_AND_HOLD_FILE = "buy_and_hold.json"
-_NUM_WORKERS = 4  # Phase E-2-2-OPT Step 3 multiprocessing.Pool 워커 수 (사안 D)
+_NUM_WORKERS = 4  # multiprocessing.Pool 워커 수. E-2-4에서 6으로 시도 (5.12→4.65h, 9.2% 단축)했으나 30%+ 기준 미달 — tail effect (마지막 PPO Exp4 처리 시 다른 워커 idle) 때문에 N 증가 효과 작음. N=4 유지가 OS+사용자 작업 여유 + 효과 trade-off 최선.
 
 logging.basicConfig(
     level=logging.INFO,

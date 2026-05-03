@@ -108,6 +108,47 @@ python scripts/calibrate_models.py --strategy ml_lightgbm --start 2020-01-01 --e
 - 기존 모델 파일(`model.txt`/`model.pth`)은 변경 0
 - 백테 시 `config[strategy].calibration_method`로 적용 method 선택 (§3 참조)
 
+### 2.6 결과 통계 분석 (`scripts/analyze_results.py`)
+
+evaluate_models 결과 폴더에서 30 specs 매트릭스 메트릭 + 5 모델 pairwise bootstrap 검정 (Phase E-2-4 Step 2):
+
+```bash
+# 30 specs 매트릭스 + 20 pairwise bootstrap (분할 1, Exp4)
+python scripts/analyze_results.py --eval-date 260503_baseline
+
+# 매트릭스만 (메트릭 추출만, bootstrap 생략)
+python scripts/analyze_results.py --eval-date 260503_baseline --metrics-only
+
+# Bootstrap만 (매트릭스 생략)
+python scripts/analyze_results.py --eval-date 260503_baseline --bootstrap-only --bootstrap-n 10000 --seed 42
+```
+
+- 입력: `eval_<날짜>/{strategy}_{split}/{config}/{trades.csv, equity_curve.csv, metrics.json}`
+- 출력:
+  - `analysis_metrics.csv` — 42 rows (30 specs + macross 6 + B&H 6) — Sharpe/Calmar/PF/MDD/Win rate
+  - `bootstrap_pvalues.csv` — 20 rows (5 모델 pairwise × {분할 1, Exp4}) — p-value, CI
+- annualization=365 (crypto 24/7 표준)
+- B&H는 equity_curve 없음 → Sharpe NaN
+- 실행 시간 ~30초 (Bootstrap n=10,000)
+
+### 2.7 결과 시각화 (`scripts/plot_results.py`)
+
+분할별 1 PNG × 6 — 5 모델 + macross + B&H equity overlay + BTC 가격 보조축:
+
+```bash
+# 6 분할 모두
+python scripts/plot_results.py --eval-date 260503_baseline
+
+# 특정 분할만
+python scripts/plot_results.py --eval-date 260503_baseline --split 1
+```
+
+- 출력: `eval_<날짜>/equity_overlay_<split>.png` (16×9, 150 DPI, ~300KB)
+- log scale Y축 (수익률 격차 5,000% ~ -5% 모두 표시)
+- BTC 1d 보조 Y축 (시장 흐름 비교)
+- B&H는 BTC 가격 시뮬레이션 (`initial × close/first_close`)
+- 실행 시간 ~30초 (6 PNG)
+
 ---
 
 ## 3. config/default.yaml
@@ -236,6 +277,34 @@ data/backtest_reports/00_Working/
 - **initial_balance + sum(trades.pnl)** == **equity_curve.csv 마지막 row balance**
 
 불일치 시 paper_executor·FeeModel·BacktestEngine.close_position 흐름 점검 (I-B012 같은 라이브-백테 일관성 위반 가능). DEVELOPER_GUIDE §11.5 참조. 자동 회귀 보호: `tests/test_backtest_fees.py`.
+
+### 4.5 통계 분석 결과 해석 (`scripts/analyze_results.py` 출력)
+
+#### `analysis_metrics.csv` 컬럼
+
+| 컬럼 | 의미 |
+|---|---|
+| `sharpe_ratio` | 연환산 Sharpe (annualization=365). 수익률 대비 변동성. >2 양호, >5 매우 우수 |
+| `calmar_ratio` | 연환산 수익률 / 최대 낙폭. >5 양호, >50 매우 우수 |
+| `total_return_pct` | 백테 기간 전체 누적 수익률 |
+| `profit_factor` | 총 이익 / 총 손실. >1.5 양호, >2 우수 |
+| `max_drawdown_pct` | 누적 잔액의 최대 낙폭 |
+
+#### `bootstrap_pvalues.csv` 컬럼
+
+| 컬럼 | 의미 |
+|---|---|
+| `mean_pnl_diff` | model_a 평균 거래 PnL - model_b 평균 |
+| `p_value` | 두 모델이 같은 분포에서 추출됐다는 가설(null)의 p-value. **<0.05 = 유의한 차이** |
+| `ci_low_95` / `ci_high_95` | bootstrap 분포의 95% confidence interval |
+| `significant_at_0.05` | p<0.05 여부 (true/false) |
+
+해석:
+- **p>0.05** → 두 모델 차이가 통계적으로 유의하지 않음 ("같은 수준")
+- **p<0.05** → 차이가 진짜
+- **p<0.001** → 매우 명확한 차이
+
+예: `ml_lightgbm vs ml_xgboost p=0.61` → 두 GBDT 모델은 통계적으로 동등, 운영 시 둘 중 하나 선택 무관.
 
 ---
 
