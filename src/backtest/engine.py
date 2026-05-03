@@ -33,7 +33,7 @@ import yaml
 from src.core.engine_base import AbstractEngine
 from src.core.enums import ExitReason, PositionSide
 from src.core.types import Position
-from src.data.historical import HistoricalDataLoader
+from src.data.historical import TF_MS, HistoricalDataLoader
 from src.strategy.features import compute_multi_tf_features
 
 logger = logging.getLogger(__name__)
@@ -315,14 +315,22 @@ class BacktestEngine(AbstractEngine):
     # ---- 캔들 로딩 ----
 
     async def _load_candles(self) -> None:
+        # I-BP002 fix: data.history_bars만큼 warmup 캔들 미리 로드 → indicator NaN
+        # 구간 단축. master_df slice는 run() 루프에서 [start, end]로 잘라내므로
+        # warmup 캔들은 features 사전계산용으로만 사용 (라이브 backfill과 동일 키 재사용).
+        warmup_bars = int(self.config.get("data", {}).get("history_bars", 300))
         loader = HistoricalDataLoader(self.config)
         try:
-            start_ms = int(self.start_dt.timestamp() * 1000)
             end_ms = int(self.end_dt.timestamp() * 1000)
             for tf in self.timeframes:
+                tf_ms = TF_MS.get(tf, 60_000)
+                start_ms = int(self.start_dt.timestamp() * 1000) - warmup_bars * tf_ms
                 df = await loader.download_range_merged(tf, start_ms, end_ms)
                 self.candles_per_tf[tf] = df
-                logger.info("Loaded %d %s candles", len(df), tf)
+                logger.info(
+                    "Loaded %d %s candles (warmup_bars=%d)",
+                    len(df), tf, warmup_bars,
+                )
         finally:
             await loader.close()
 

@@ -16,6 +16,10 @@ risk:                                # 엔진 전역 안전장치
   max_drawdown_pct: 0.35
   max_position_size_btc: 1.0
   max_concurrent_positions: 1        # (C) 배타적 경합 — 전역 슬롯 1개
+  volatility_targeting:              # BP-2-2: 동적 사이징 (사안 J 가, K 가, L 가)
+    enabled: false                   # default 비활성 — 활성화 시 ATR 기반 size 축소만 적용
+    target_atr_pct: 0.005            # 평소 변동성 기준 (entry_timeframe ATR_pct)
+    lookback: 14                     # ATR 산출 기간
 
 accounting:
   taker_fee_pct: 0.0005
@@ -24,6 +28,16 @@ accounting:
 
 paper:
   initial_balance: 10000.0
+
+live:
+  oos_monitoring:                    # BP-2-3: 라이브 OOS 모니터링 (사안 D 나: 알림만)
+    enabled: false                   # default 비활성
+    window: 100                      # 최근 N개 신호의 적중률 계산
+    horizon: 10                      # 평가 horizon (entry_timeframe 봉 단위)
+    threshold_pct: 0.003             # actual label 분류 임계 (0.3%)
+    min_acc_threshold: 0.50          # 적중률 < 이 값이면 알림
+    cooldown_bars: 10                # 알림 후 재알림까지 최소 봉 수
+    alert_method: "log"              # 현재 "log"만 지원. 미래: "telegram" / "email"
 
 data:
   history_bars: 300

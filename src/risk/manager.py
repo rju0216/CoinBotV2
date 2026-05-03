@@ -108,10 +108,17 @@ class RiskManager:
         *,
         risk_per_trade_pct: float,
         max_leverage: float,
+        volatility_factor: float = 1.0,
     ) -> float:
         """전략 모듈이 자기 risk 파라미터를 명시적으로 전달.
 
         엔진 전역 한도(max_position_size_btc)와 leverage 클램프만 RiskManager가 적용.
+
+        volatility_factor (BP-2-2 동적 사이징, 사안 J 가):
+        - factor = current_atr_pct / target_atr_pct
+        - factor > 1.0 (변동성 평소 이상): size 축소 (size *= 1/factor)
+        - factor ≤ 1.0 (평소 또는 잔잔): size 유지 (축소만, 증가 없음)
+        - default 1.0이면 비활성과 동일
         """
         if entry_price <= 0 or balance <= 0:
             return 0.0
@@ -123,6 +130,8 @@ class RiskManager:
             return 0.0
 
         raw_size = risk_amount / price_risk
+        adjustment = min(1.0, 1.0 / volatility_factor) if volatility_factor > 0 else 1.0
+        raw_size *= adjustment
         max_size_by_leverage = (balance * max_leverage) / entry_price
         size = min(raw_size, max_size_by_leverage, self.max_position_size)
         return max(size, 0.0)

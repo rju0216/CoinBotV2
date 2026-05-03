@@ -28,6 +28,7 @@ from src.core.enums import (
 from src.core.types import Position
 from src.data.feed import DataFeed
 from src.data.store import DataStore
+from src.live.oos_monitor import LiveOOSMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,18 @@ class CoreEngine(AbstractEngine):
             self.config, self.event_bus, timeframes=self.timeframes
         )
         await self._backfill_candles()
+        # BP-2-3: OOS monitor 초기화 (config.live.oos_monitoring.enabled=true일 때만 활성)
+        oos_cfg = (self.config.get("live", {}) or {}).get(
+            "oos_monitoring", {}
+        ) or {}
+        if oos_cfg.get("enabled", False):
+            self.oos_monitor = LiveOOSMonitor(self.config)
+            logger.info(
+                "OOS monitor enabled: window=%d, horizon=%d, threshold=%.3f",
+                self.oos_monitor.window,
+                self.oos_monitor.horizon,
+                self.oos_monitor.min_acc_threshold,
+            )
 
     async def shutdown(self) -> None:
         self._stop.set()
@@ -309,6 +322,13 @@ class CoreEngine(AbstractEngine):
         await self.evaluate_strategies_on_bar(
             tf, candles_slice, close, balance, now
         )
+
+        # BP-2-3: OOS monitor 평가 (horizon 도달한 pending prediction 채점)
+        if self.oos_monitor is not None:
+            try:
+                self.oos_monitor.evaluate_pending(now, close)
+            except Exception as e:
+                logger.warning("oos_monitor.evaluate_pending failed: %s", e)
 
         # 4) equity 로깅
         try:

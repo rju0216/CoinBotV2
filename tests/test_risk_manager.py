@@ -68,6 +68,52 @@ class TestPositionSizing:
         assert size_high < 6 * size_low + 1e-6  # ratio 6배 미만 (leverage cap)
 
 
+class TestVolatilityFactor:
+    """BP-2-2 동적 사이징 (사안 J 가: 축소만)."""
+
+    def test_default_factor_unchanged(self):
+        rm = RiskManager(_make_config())
+        size_default = rm.calculate_position_size(67000, 66370, 10000, **SIZING_KW)
+        size_factor1 = rm.calculate_position_size(
+            67000, 66370, 10000, volatility_factor=1.0, **SIZING_KW
+        )
+        assert size_default == size_factor1
+
+    def test_factor_above_one_reduces_size(self):
+        rm = RiskManager(_make_config())
+        base = rm.calculate_position_size(67000, 66370, 10000, **SIZING_KW)
+        half = rm.calculate_position_size(
+            67000, 66370, 10000, volatility_factor=2.0, **SIZING_KW
+        )
+        assert half == pytest.approx(base / 2.0, rel=1e-6)
+
+    def test_factor_below_one_no_increase(self):
+        """축소만 (사안 J 가): factor<1 (잔잔)일 때 size 증가 없음."""
+        rm = RiskManager(_make_config())
+        base = rm.calculate_position_size(67000, 66370, 10000, **SIZING_KW)
+        low_vol = rm.calculate_position_size(
+            67000, 66370, 10000, volatility_factor=0.5, **SIZING_KW
+        )
+        assert low_vol == base
+
+    def test_zero_factor_fallback(self):
+        """target=0 등 잘못된 값 → factor=0 → fallback (변화 없음)."""
+        rm = RiskManager(_make_config())
+        base = rm.calculate_position_size(67000, 66370, 10000, **SIZING_KW)
+        zero = rm.calculate_position_size(
+            67000, 66370, 10000, volatility_factor=0.0, **SIZING_KW
+        )
+        assert zero == base
+
+    def test_extreme_factor_clamped_by_zero_floor(self):
+        """factor 매우 큼 → size 매우 작음. max(0)으로 음수 방지."""
+        rm = RiskManager(_make_config())
+        size = rm.calculate_position_size(
+            67000, 66370, 10000, volatility_factor=1000.0, **SIZING_KW
+        )
+        assert size >= 0.0
+
+
 class TestValidateOrder:
     def test_passes_normally(self):
         rm = RiskManager(_make_config())

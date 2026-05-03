@@ -534,6 +534,131 @@ async def test_multi_strategy_swapped_priority(tmp_path):
     assert len(by_strategy["always_long"]) >= 2
 
 
+# ---- I-BP002: warmup 캔들 자동 로드 ----
+
+
+@pytest.mark.asyncio
+async def test_load_candles_includes_warmup(tmp_path, monkeypatch):
+    """_load_candles가 history_bars 만큼 start_ms를 앞당겨 warmup을 로드한다."""
+    config = _make_config(db_path=str(tmp_path / "bt.db"))
+    config["data"] = {"history_bars": 300, "candle_dir": str(tmp_path / "candles")}
+    config["strategies"] = {"active": []}
+    config.pop("sl_taker", None)
+
+    eng = BacktestEngine(config, start="2024-06-01", end="2024-06-02")
+    eng.timeframes = ["15m", "4h"]
+
+    captured: list[tuple[str, int, int]] = []
+
+    async def fake_download_range_merged(self, tf, start_ms, end_ms):
+        captured.append((tf, start_ms, end_ms))
+        return pd.DataFrame(
+            columns=["open", "high", "low", "close", "volume"]
+        )
+
+    async def fake_close(self):
+        return None
+
+    from src.data import historical as hist_mod
+    monkeypatch.setattr(
+        hist_mod.HistoricalDataLoader,
+        "download_range_merged",
+        fake_download_range_merged,
+    )
+    monkeypatch.setattr(hist_mod.HistoricalDataLoader, "close", fake_close)
+
+    await eng._load_candles()
+
+    expected_start_ms = int(
+        datetime(2024, 6, 1, tzinfo=timezone.utc).timestamp() * 1000
+    )
+    expected_end_ms = int(
+        datetime(2024, 6, 2, tzinfo=timezone.utc).timestamp() * 1000
+    )
+
+    by_tf = {tf: (s, e) for (tf, s, e) in captured}
+    assert set(by_tf.keys()) == {"15m", "4h"}
+
+    # 15m: 300 * 900_000ms = 270_000_000ms 앞당김
+    assert by_tf["15m"][0] == expected_start_ms - 300 * hist_mod.TF_MS["15m"]
+    assert by_tf["15m"][1] == expected_end_ms
+
+    # 4h: 300 * 14_400_000ms = 4_320_000_000ms 앞당김 (50일)
+    assert by_tf["4h"][0] == expected_start_ms - 300 * hist_mod.TF_MS["4h"]
+    assert by_tf["4h"][1] == expected_end_ms
+
+
+@pytest.mark.asyncio
+async def test_load_candles_respects_custom_history_bars(tmp_path, monkeypatch):
+    """data.history_bars 값을 변경하면 그만큼 warmup 캔들 수가 바뀐다."""
+    config = _make_config(db_path=str(tmp_path / "bt.db"))
+    config["data"] = {"history_bars": 100, "candle_dir": str(tmp_path / "candles")}
+    config["strategies"] = {"active": []}
+    config.pop("sl_taker", None)
+
+    eng = BacktestEngine(config, start="2024-06-01", end="2024-06-02")
+    eng.timeframes = ["1h"]
+
+    captured: list[tuple[str, int, int]] = []
+
+    async def fake_download_range_merged(self, tf, start_ms, end_ms):
+        captured.append((tf, start_ms, end_ms))
+        return pd.DataFrame(
+            columns=["open", "high", "low", "close", "volume"]
+        )
+
+    async def fake_close(self):
+        return None
+
+    from src.data import historical as hist_mod
+    monkeypatch.setattr(
+        hist_mod.HistoricalDataLoader,
+        "download_range_merged",
+        fake_download_range_merged,
+    )
+    monkeypatch.setattr(hist_mod.HistoricalDataLoader, "close", fake_close)
+
+    await eng._load_candles()
+
+    expected_start_ms = int(
+        datetime(2024, 6, 1, tzinfo=timezone.utc).timestamp() * 1000
+    )
+    assert captured[0][1] == expected_start_ms - 100 * hist_mod.TF_MS["1h"]
+
+
+@pytest.mark.asyncio
+async def test_run_loop_slices_to_original_range_after_warmup(tmp_path):
+    """warmup 캔들이 candles_per_tf에 포함되어도 run 루프는 [start, end]만 순회."""
+    register_strategy(_TPTakerStrategy)
+    config = _make_config(db_path=str(tmp_path / "bt.db"), initial_balance=10000)
+    config["strategies"]["active"] = ["tp_taker"]
+    config["tp_taker"] = config.pop("sl_taker")
+
+    # 200봉 합성 캔들 (= warmup 100 + OOS 100 시나리오)
+    candles = _make_synthetic_candles(n=200, start_price=67000, drift=+50)
+    # OOS 시작 시점 = 100번째 봉
+    oos_start = candles.index[100].to_pydatetime()
+    oos_end = candles.index[-1].to_pydatetime()
+
+    eng = BacktestEngine(config, start=oos_start, end=oos_end)
+    eng.inject_candles({"1m": candles})  # warmup 포함된 전체 200봉
+    await eng.broker.initialize()
+    bal = await eng.broker.get_balance()
+    eng.risk_manager.set_initial_balance(bal)
+
+    await eng.run()
+    result = await eng.get_result()
+    await eng.shutdown()
+
+    # 진입은 OOS 시작 이후만 발생 (warmup 구간에서 진입 X)
+    assert result.num_trades >= 1
+    first_trade = result.trades[0]
+    entry_time = first_trade["entry_time"]
+    if isinstance(entry_time, str):
+        entry_time = datetime.fromisoformat(entry_time)
+    assert entry_time >= oos_start
+
+
 def test_backtest_result_metrics():
     r = BacktestResult(
         initial_balance=10000,

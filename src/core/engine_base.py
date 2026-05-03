@@ -34,6 +34,7 @@ from src.core.types import ExitDecision, Position, Signal, StrategyContext
 from src.execution.broker import Broker
 from src.risk.manager import RiskManager
 from src.strategy.base import StrategyModule
+from src.strategy.indicators import compute_atr
 from src.strategy.registry import load_active_strategies
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,10 @@ class AbstractEngine(ABC):
         # BacktestEngine.initialize에서 OOS 전체로 채움. CoreEngine(라이브)에선
         # 빈 dict 유지 → _build_ctx가 None 반환 → plugin이 즉시 계산 경로 사용.
         self._features_cache: dict[str, pd.DataFrame] = {}
+
+        # BP-2-3: Live OOS monitor (CoreEngine.initialize에서만 채움; 백테는 None 유지)
+        # 순환 import 방지: 런타임 type만 Any로 두고 CoreEngine이 LiveOOSMonitor 주입
+        self.oos_monitor: Any | None = None
 
     # ---- properties ----
 
@@ -217,6 +222,7 @@ class AbstractEngine(ABC):
                     strategy, candles_per_tf, current_price, balance, now
                 )
                 signal = strategy.generate_signal(ctx)
+                self._record_oos_signal(strategy, signal, current_price, now)
                 if not signal.is_actionable:
                     continue
                 if await self.try_enter(strategy, signal, ctx, now):
@@ -233,6 +239,7 @@ class AbstractEngine(ABC):
                     strategy, candles_per_tf, current_price, balance, now
                 )
                 signal = strategy.generate_signal(ctx)
+                self._record_oos_signal(strategy, signal, current_price, now)
                 if not signal.is_actionable:
                     continue
                 if self.reverse_policy.should_reverse(
@@ -264,6 +271,64 @@ class AbstractEngine(ABC):
                     )
                     # 단계 8: 피라미딩 hook은 받되 실 청산/추가 진입 처리는 미구현.
                     # 향후 단계에서 add_to_position 흐름으로 확장 가능.
+
+    # ---- BP-2-3 OOS monitor helper ----
+
+    def _record_oos_signal(
+        self,
+        strategy: StrategyModule,
+        signal: Signal,
+        current_price: float,
+        now: datetime,
+    ) -> None:
+        """generate_signal 결과를 oos_monitor에 push (라이브 전용; backtest는 monitor=None)."""
+        if self.oos_monitor is None:
+            return
+        try:
+            self.oos_monitor.record_prediction(
+                strategy_name=strategy.name,
+                entry_timeframe=strategy.entry_timeframe,
+                ts=now,
+                signal_side=signal.side,
+                entry_close=current_price,
+            )
+        except Exception as e:
+            logger.warning("oos_monitor.record_prediction failed: %s", e)
+
+    # ---- BP-2-2 동적 사이징 helper ----
+
+    def _compute_volatility_factor(
+        self, strategy: StrategyModule, ctx: StrategyContext
+    ) -> float:
+        """volatility_targeting.enabled=true일 때 entry_timeframe ATR_pct 기반 factor.
+
+        factor = current_atr_pct / target_atr_pct (>1 → 변동성 평소 이상 → size 축소)
+        반환 1.0이면 비활성과 동일 (RiskManager가 size 변경 안 함).
+        """
+        vt_cfg = (self.config.get("risk", {}) or {}).get(
+            "volatility_targeting", {}
+        ) or {}
+        if not vt_cfg.get("enabled", False):
+            return 1.0
+        target = float(vt_cfg.get("target_atr_pct", 0.005))
+        lookback = int(vt_cfg.get("lookback", 14))
+        if target <= 0:
+            return 1.0
+        df = ctx.candles.get(strategy.entry_timeframe)
+        if df is None or len(df) < lookback + 1:
+            return 1.0
+        try:
+            atr_series = compute_atr(df, period=lookback)
+        except Exception:
+            return 1.0
+        if atr_series is None or atr_series.empty:
+            return 1.0
+        atr = float(atr_series.iloc[-1])
+        close = float(df["close"].iloc[-1])
+        if close <= 0 or pd.isna(atr) or atr <= 0:
+            return 1.0
+        current_atr_pct = atr / close
+        return current_atr_pct / target
 
     # ---- 진입 ----
 
@@ -300,12 +365,15 @@ class AbstractEngine(ABC):
             )
             return False
 
+        volatility_factor = self._compute_volatility_factor(strategy, ctx)
+
         size = self.risk_manager.calculate_position_size(
             ctx.current_price,
             sl_price,
             ctx.balance,
             risk_per_trade_pct=risk_pct,
             max_leverage=max_lev,
+            volatility_factor=volatility_factor,
         )
         if size <= 0:
             logger.info("Sizing returned 0 for %s", strategy.name)
