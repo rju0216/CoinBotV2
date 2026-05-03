@@ -42,7 +42,7 @@ from torch.utils.data import DataLoader, TensorDataset  # noqa: E402
 
 from src.data.historical import HistoricalDataLoader  # noqa: E402
 from src.ml.feature_pipeline import build_features  # noqa: E402
-from src.ml.label_generator import generate_direction_labels  # noqa: E402
+from src.ml.label_generator import build_labels_from_config  # noqa: E402
 from src.ml.models import LSTMClassifier  # noqa: E402
 from src.ml.sequence_utils import make_sequences  # noqa: E402
 from src.ml.walk_forward import generate_walk_forward_splits  # noqa: E402
@@ -163,8 +163,6 @@ async def main() -> None:
         timeframes = [entry_tf] + timeframes
 
     lookback = int(strategy_cfg.get("lookback", 60))
-    horizon = int(train_cfg.get("horizon", 10))
-    threshold = float(train_cfg.get("threshold_pct", 0.3))
     learning_rate = float(train_cfg.get("learning_rate", 1e-3))
     batch_size = int(train_cfg.get("batch_size", 256))
     epochs = int(train_cfg.get("epochs", 50))
@@ -188,8 +186,12 @@ async def main() -> None:
     loader = HistoricalDataLoader(config)
     df = await loader.download_range_merged(entry_tf, start_ms, end_ms)
 
-    # ── 3. 레이블 생성 ──
-    labels = generate_direction_labels(df, horizon=horizon, threshold_pct=threshold)
+    # ── 3. 레이블 생성 (BP-3-3: label_method 분기) ──
+    labels, label_params, effective_horizon = build_labels_from_config(df, train_cfg)
+    logger.info(
+        "Label method=%s, effective_horizon=%d",
+        label_params["method"], effective_horizon,
+    )
 
     # ── 4. 유효 행만 추출 ──
     feature_names = get_feature_names(
@@ -226,7 +228,7 @@ async def main() -> None:
         train_months=int(train_cfg.get("train_months", 6)),
         test_months=int(train_cfg.get("test_months", 2)),
         step_months=int(train_cfg.get("step_months", 2)),
-        embargo_bars=horizon,
+        embargo_bars=effective_horizon,
     )
     if not folds:
         logger.error("데이터 기간이 너무 짧아 walk-forward 분할 불가")
@@ -246,10 +248,10 @@ async def main() -> None:
         X_tr_df, y_tr_s = X_scaled[train_mask], y_full[train_mask]
         X_te_df, y_te_s = X_scaled[test_mask], y_full[test_mask]
 
-        # Embargo: train 끝 horizon개 행 제거 (B-1과 동일)
-        if horizon > 0 and len(X_tr_df) > horizon:
-            X_tr_df = X_tr_df.iloc[:-horizon]
-            y_tr_s = y_tr_s.iloc[:-horizon]
+        # Embargo: train 끝 effective_horizon개 행 제거 (B-1과 동일)
+        if effective_horizon > 0 and len(X_tr_df) > effective_horizon:
+            X_tr_df = X_tr_df.iloc[:-effective_horizon]
+            y_tr_s = y_tr_s.iloc[:-effective_horizon]
 
         # 시퀀스 변환 (NaN/음수 라벨 자동 제외)
         X_tr, y_tr, _ = make_sequences(X_tr_df, y_tr_s, lookback=lookback)
@@ -339,7 +341,7 @@ async def main() -> None:
         "oos_accuracy": round(oos_acc, 4),
         "oos_f1_macro": round(oos_f1, 4),
         "feature_count": len(valid_cols),
-        "label_params": {"horizon": horizon, "threshold_pct": threshold},
+        "label_params": label_params,
         "model_arch": {
             "n_features": n_features,
             "hidden_size": int(lstm_params.get("hidden_size", 64)),

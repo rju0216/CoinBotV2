@@ -45,7 +45,7 @@ dl_transformer:
   # ── 모델 ──
   model_path: "models/transformer/latest"
   confidence_threshold: 0.55
-  calibration_method: "none"  # "none" / "platt" / "isotonic" (Phase E-2-3 Step 2 — I-B009)
+  calibration_method: "isotonic"  # "none" / "platt" / "isotonic" (Phase E-2-3 Step 2 — I-B009; BP-3-1 default isotonic)
 
   # ── 타임프레임 ──
   entry_timeframe: "15m"
@@ -61,8 +61,13 @@ dl_transformer:
 
   # ── 학습 전용 ──
   train:
-    horizon: 10
-    threshold_pct: 0.3
+    label_method: "direction"   # "direction" | "triple_barrier" (BP-3-3)
+    horizon: 10                 # direction 전용
+    threshold_pct: 0.3          # direction 전용
+    triple_barrier:             # triple_barrier 전용 (사안 U 가)
+      upper_pct: 1.0
+      lower_pct: 1.0
+      time_barrier_bars: 10
     train_months: 6
     test_months: 2
     step_months: 2

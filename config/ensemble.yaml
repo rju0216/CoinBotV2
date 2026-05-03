@@ -1,0 +1,108 @@
+exchange:
+  name: "okx"
+  symbol: "BTC/USDT:USDT"
+  sandbox: false
+  leverage: 5
+
+engine:
+  reverse_signal_policy: "ignore"
+
+risk:
+  max_daily_loss_pct: 0.05
+  max_drawdown_pct: 0.35
+  max_position_size_btc: 1.0
+  max_concurrent_positions: 1
+
+accounting:
+  taker_fee_pct: 0.0005
+  slippage_pct: 0.0
+  funding_enabled: true
+
+paper:
+  initial_balance: 10000.0
+
+data:
+  history_bars: 300
+  candle_dir: "data/candles"
+
+database:
+  path: "data/coinbot.db"
+
+logging:
+  level: "INFO"
+  file: "logs/coinbot.log"
+  max_size_mb: 50
+  backup_count: 5
+
+strategies:
+  active: ["ensemble"]
+
+# ─── Ensemble (BP-3-2) ───
+# 사안 결정: F=가 Soft voting, R=가 PPO 제외, S=가 skip+warning, S-2=가 min_models=2, V=가 동일 패턴
+ensemble:
+  # ── 엔진 필수 ──
+  risk_per_trade_pct: 0.01
+  max_leverage: 5
+
+  # ── Ensemble 전용 ──
+  sub_models: ["ml_lightgbm", "ml_xgboost", "dl_lstm", "dl_transformer"]
+  min_models: 2
+  confidence_threshold: 0.55
+
+  # ── 타임프레임 ──
+  entry_timeframe: "15m"
+  required_timeframes: ["15m", "1h", "4h"]
+
+  # ── SL/TP (사안 V 가: 단일 모델과 동일 패턴) ──
+  atr_period: 14
+  atr_sl_mult: 2.0
+  reward_risk_ratio: 2.0
+
+  # ── sub-model params (ml_lightgbm.yaml 등에서 복사. 변경 시 동기화 필요) ──
+  sub_params:
+    ml_lightgbm:
+      risk_per_trade_pct: 0.01      # 형식 만족용. ensemble.try_enter는 ensemble 자체 risk 사용
+      max_leverage: 5
+      model_path: "models/lightgbm/latest"
+      confidence_threshold: 0.0     # ensemble이 자체 threshold 사용. sub-plugin은 raw probs만 노출
+      calibration_method: "isotonic"
+      entry_timeframe: "15m"
+      required_timeframes: ["15m", "1h", "4h"]
+      atr_period: 14
+      atr_sl_mult: 2.0
+      reward_risk_ratio: 2.0
+    ml_xgboost:
+      risk_per_trade_pct: 0.01
+      max_leverage: 5
+      model_path: "models/xgboost/latest"
+      confidence_threshold: 0.0
+      calibration_method: "isotonic"
+      entry_timeframe: "15m"
+      required_timeframes: ["15m", "1h", "4h"]
+      atr_period: 14
+      atr_sl_mult: 2.0
+      reward_risk_ratio: 2.0
+    dl_lstm:
+      risk_per_trade_pct: 0.01
+      max_leverage: 5
+      model_path: "models/lstm/latest"
+      confidence_threshold: 0.0
+      calibration_method: "isotonic"
+      entry_timeframe: "15m"
+      required_timeframes: ["15m", "1h", "4h"]
+      lookback: 60
+      atr_period: 14
+      atr_sl_mult: 2.0
+      reward_risk_ratio: 2.0
+    dl_transformer:
+      risk_per_trade_pct: 0.01
+      max_leverage: 5
+      model_path: "models/transformer/latest"
+      confidence_threshold: 0.0
+      calibration_method: "isotonic"
+      entry_timeframe: "15m"
+      required_timeframes: ["15m", "1h", "4h"]
+      lookback: 60
+      atr_period: 14
+      atr_sl_mult: 2.0
+      reward_risk_ratio: 2.0

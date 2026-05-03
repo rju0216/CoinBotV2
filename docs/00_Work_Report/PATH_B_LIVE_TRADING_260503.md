@@ -34,10 +34,15 @@ PATH_B_PRODUCTION 종착 시점 carry-over:
 
 PATH_B_ML_STRATEGY §1 + PATH_B_PRODUCTION §1.3 그대로 — CLAUDE.md 협업 규칙 1~10 적용.
 
-### 1.4 운영 권장 (Phase E 종착 시점 기준, BP에서 갱신될 수 있음)
+### 1.4 운영 권장 (BP-3 종착 시점, 2026-05-04 갱신)
 
-- `ml_lightgbm` 또는 `ml_xgboost` + `calibration_method=isotonic`
-- BP-3 ensemble 결과에 따라 단일 모델 또는 ensemble 채택
+BP-3 결과 반영:
+- **1순위**: **`ensemble`** (4 모델 v006 + isotonic) — 회귀 백테 1118.51% / MDD 5.27% / Calmar 212.2 / PF 4.26
+- 2순위: 단일 v006 + isotonic (xgboost 895.75% / MDD 5.97%)
+- BL-1 §3.2.1 Regime-matched 백테 통과 시 라이브 채택 결정
+- PPO 라이브 부적합 확정 (E-2-4)
+
+원래 Phase E-2-4 권장 (참고): ml_lightgbm/xgboost + isotonic 통계적 동등 (Sharpe 10.42-10.88)
 
 ---
 
