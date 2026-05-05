@@ -12,6 +12,14 @@ risk:
   max_drawdown_pct: 0.35
   max_position_size_btc: 1.0
   max_concurrent_positions: 1
+  volatility_targeting:              # BP-2-2: 동적 사이징 (사안 J 가, K 가, L 가)
+    enabled: false
+    target_atr_pct: 0.005
+    lookback: 14
+  circuit_breaker:                   # BL-2-1: API 연속 실패 자동 차단 (사안 G 나)
+    enabled: true
+    failure_threshold: 5
+    auto_resume: false
 
 accounting:
   taker_fee_pct: 0.0005
@@ -20,6 +28,42 @@ accounting:
 
 paper:
   initial_balance: 10000.0
+
+live:
+  # BL-2-3 paper 본 사용 — 활성 옵션 모두 ON (사용자 결정 2026-05-05)
+  oos_monitoring:                    # BP-2-3 + BL-2 warm-up
+    enabled: true                    # warm-up 자동 실행
+    window: 100
+    horizon: 10
+    threshold_pct: 0.003
+    min_acc_threshold: 0.50
+    cooldown_bars: 10
+    alert_method: "log"
+    warmup_decay_threshold_pct: 0.10
+  orderbook:                         # BL-2-2: 호가창 + paper VWAP
+    enabled: true                    # 활성
+    depth: 20
+    save_dir: "data/orderbook"
+  notifications:                     # BL-2-1: 알림 (텔레그램 활성)
+    enabled: true
+    channels: ["log", "telegram"]    # .env의 TELEGRAM_BOT_TOKEN/CHAT_ID 자동 주입
+    telegram:
+      bot_token: ""
+      chat_id: ""
+    email:
+      smtp_host: ""
+      smtp_port: 587
+      username: ""
+      password: ""
+      from_addr: ""
+      to_addr: ""
+    levels:
+      drawdown_lock: true
+      daily_loss_lock: true
+      circuit_breaker: true
+      oos_decay: true
+      position_open: true
+      position_close: true
 
 data:
   history_bars: 300
