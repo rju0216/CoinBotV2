@@ -35,6 +35,7 @@ from src.core.enums import ExitReason, PositionSide
 from src.core.types import Position
 from src.data.historical import TF_MS, HistoricalDataLoader
 from src.strategy.features import compute_multi_tf_features
+from src.utils.path_utils import resolve_unique_dir
 
 logger = logging.getLogger(__name__)
 
@@ -404,7 +405,10 @@ class BacktestEngine(AbstractEngine):
             out_root_path = REPORT_BASE / (
                 f"{today}_backtest_{start_str}_{end_str}_{config_name}"
             )
+            # BL-1 Step A: 동일 명칭 디렉토리 존재 시 _1, _2 postfix로 보존
+            out_root_path = resolve_unique_dir(out_root_path)
         else:
+            # 호출자가 명시 지정한 out_root는 그대로 사용 (evaluate_models의 spec.label 등)
             out_root_path = Path(out_root)
         out = out_root_path / config_name
         out.mkdir(parents=True, exist_ok=True)

@@ -37,7 +37,7 @@ import pandas as pd  # noqa: E402
 from src.data.historical import HistoricalDataLoader  # noqa: E402
 from src.ml.calibration import MulticlassCalibrator  # noqa: E402
 from src.ml.feature_pipeline import build_features  # noqa: E402
-from src.ml.label_generator import generate_direction_labels  # noqa: E402
+from src.ml.label_generator import build_labels_from_config  # noqa: E402  # I-BL001 fix
 from src.ml.walk_forward import generate_walk_forward_splits  # noqa: E402
 from src.strategy.features import get_feature_names  # noqa: E402
 from src.utils.config_loader import load_config  # noqa: E402
@@ -275,9 +275,6 @@ async def _prepare_data(strategy: str, config: dict, start: str, end: str):
     if entry_tf not in timeframes:
         timeframes = [entry_tf] + timeframes
 
-    horizon = int(train_cfg.get("horizon", 10))
-    threshold = float(train_cfg.get("threshold_pct", 0.3))
-
     start_ms = int(pd.Timestamp(start, tz="UTC").timestamp() * 1000)
     end_ms = int(pd.Timestamp(end, tz="UTC").timestamp() * 1000)
 
@@ -285,7 +282,14 @@ async def _prepare_data(strategy: str, config: dict, start: str, end: str):
     loader = HistoricalDataLoader(config)
     df = await loader.download_range_merged(entry_tf, start_ms, end_ms)
     await loader.close()
-    labels = generate_direction_labels(df, horizon=horizon, threshold_pct=threshold)
+    # I-BL001 fix: train.label_method 분기 (direction / triple_barrier).
+    # train_*.py와 동일 helper 사용 → 모델 학습과 calibrator 학습이 같은 라벨 정의.
+    # effective_horizon은 embargo + train tail 제거에 사용 (direction=horizon, triple_barrier=time_barrier_bars).
+    labels, label_params, effective_horizon = build_labels_from_config(df, train_cfg)
+    logger.info(
+        "[%s] label method=%s, effective_horizon=%d",
+        strategy, label_params["method"], effective_horizon,
+    )
 
     feature_names = get_feature_names(entry_tf, [t for t in timeframes if t != entry_tf])
     valid_cols = [c for c in feature_names if c in features.columns]
@@ -315,9 +319,12 @@ async def _prepare_data(strategy: str, config: dict, start: str, end: str):
         train_months=int(train_cfg.get("train_months", 6)),
         test_months=int(train_cfg.get("test_months", 2)),
         step_months=int(train_cfg.get("step_months", 2)),
-        embargo_bars=horizon,
+        embargo_bars=effective_horizon,
     )
-    return strategy_cfg, train_cfg, X_for_folds, y_for_calibrator, folds, horizon, len(valid_cols)
+    return (
+        strategy_cfg, train_cfg, X_for_folds, y_for_calibrator,
+        folds, effective_horizon, len(valid_cols), label_params,
+    )
 
 
 # ─── 단일 strategy 처리 ───
@@ -325,9 +332,11 @@ async def _prepare_data(strategy: str, config: dict, start: str, end: str):
 async def calibrate_strategy(strategy: str, start: str, end: str) -> None:
     config_path = STRATEGY_CONFIGS[strategy]
     config = load_config(config_path)
-    strategy_cfg, train_cfg, X, y, folds, horizon, n_features = await _prepare_data(
-        strategy, config, start, end,
-    )
+    (
+        strategy_cfg, train_cfg, X, y, folds,
+        effective_horizon, n_features, label_params,
+    ) = await _prepare_data(strategy, config, start, end)
+    horizon = effective_horizon  # _collect_oos_probs_* 함수가 horizon 인자 받음 (이름 호환)
     logger.info(
         "[%s] walk-forward %d folds, %d features",
         strategy, len(folds), n_features,
@@ -364,7 +373,7 @@ async def calibrate_strategy(strategy: str, start: str, end: str) -> None:
     joblib.dump(cal_platt, model_dir / "calibrator_platt.joblib")
     joblib.dump(cal_isotonic, model_dir / "calibrator_isotonic.joblib")
 
-    # 메타
+    # 메타 (I-BL001 fix: label_params 기록 — 모델 학습과 라벨 정합성 추적)
     meta = {
         "strategy": strategy,
         "model_dir": str(model_dir),
@@ -372,6 +381,7 @@ async def calibrate_strategy(strategy: str, start: str, end: str) -> None:
         "calibration_period": f"{start} ~ {end}",
         "walk_forward_folds": len(folds),
         "oos_samples": int(len(oos_labels)),
+        "label_params": label_params,
         "label_distribution": {
             int(k): int(v) for k, v in
             pd.Series(oos_labels).value_counts().sort_index().items()

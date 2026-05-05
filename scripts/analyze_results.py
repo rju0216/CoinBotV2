@@ -30,9 +30,11 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from src.ml.metrics_extended import (  # noqa: E402
+    bonferroni_correction,
     bootstrap_pnl_diff,
     compute_calmar_ratio,
     compute_sharpe_ratio,
+    fdr_correction,
     split_to_oos_years,
 )
 
@@ -171,7 +173,28 @@ def compute_pairwise_bootstrap(eval_root: Path, n: int = 10000, seed: int = 42) 
                 "significant_at_0.05": p < 0.05,
             })
 
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+
+    # BL-1-2 (사안 D 다): Multi-hypothesis 보정 (Bonferroni + FDR)
+    if not df.empty:
+        raw_p = df["p_value"].to_numpy(dtype=np.float64)
+        bonf_p, bonf_reject = bonferroni_correction(raw_p, alpha=0.05)
+        fdr_p, fdr_reject = fdr_correction(raw_p, alpha=0.05)
+        df["p_value_bonferroni"] = np.round(bonf_p, 4)
+        df["significant_at_0.05_bonf"] = bonf_reject
+        df["p_value_fdr"] = np.round(fdr_p, 4)
+        df["significant_at_0.05_fdr"] = fdr_reject
+
+        n_raw = int(df["significant_at_0.05"].sum())
+        n_bonf = int(bonf_reject.sum())
+        n_fdr = int(fdr_reject.sum())
+        logger.info(
+            "Multi-hypothesis 보정 결과 (N=%d 비교): "
+            "raw=%d / Bonferroni=%d / FDR=%d 유의 (alpha=0.05)",
+            len(df), n_raw, n_bonf, n_fdr,
+        )
+
+    return df
 
 
 def main() -> int:

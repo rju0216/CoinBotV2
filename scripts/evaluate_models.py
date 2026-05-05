@@ -58,6 +58,7 @@ from src.backtest.engine import BacktestEngine  # noqa: E402
 from src.data.historical import HistoricalDataLoader  # noqa: E402
 from src.utils.config_loader import load_config  # noqa: E402
 from src.utils.logger import setup_logger  # noqa: E402
+from src.utils.path_utils import resolve_unique_dir  # noqa: E402
 
 DEFAULT_CONFIG = "config/default.yaml"
 BUY_AND_HOLD_FILE = "buy_and_hold.json"
@@ -302,6 +303,156 @@ async def run_one_backtest(spec: BacktestSpec, eval_root: Path) -> tuple[Path, d
                 metrics["integrated"]["total_trades"],
                 metrics["integrated"]["total_return_pct"])
     return out_dir, metrics
+
+
+# ─── BL-1-3: Walk-forward 통합 OOS 모드 ───
+
+
+def _resolve_strategy_model_dir(strategy: str) -> Path:
+    """latest.json 따라가서 v00X 디렉토리 path 반환."""
+    prefix = STRATEGY_DIR_PREFIX.get(strategy)
+    if prefix is None:
+        raise ValueError(f"Unknown strategy: {strategy}")
+    models_root = Path("models") / prefix
+    latest_json = models_root / "latest.json"
+    if not latest_json.exists():
+        raise FileNotFoundError(f"latest.json 없음: {latest_json}")
+    with open(latest_json) as f:
+        return Path(json.load(f)["path"])
+
+
+def build_walkforward_specs(strategy: str) -> list[BacktestSpec]:
+    """latest.json → v00X/folds/ 스캔 → 각 fold당 BacktestSpec 생성.
+
+    BL-1-3 사안 L' (가): calibration_method 강제 "none" — fold 디렉토리에
+    calibrator 없으므로 raw 사용. 사안 K' (가): 각 fold initial reset
+    (백테 자체가 독립이라 자동 충족).
+    """
+    config_path = STRATEGIES.get(strategy)
+    if config_path is None:
+        raise ValueError(f"Unknown strategy: {strategy}")
+    base_model_dir = _resolve_strategy_model_dir(strategy)
+    folds_root = base_model_dir / "folds"
+    if not folds_root.exists():
+        raise FileNotFoundError(
+            f"folds/ 없음: {folds_root}. train_*.py를 --save-all-folds로 재학습하세요."
+        )
+
+    specs: list[BacktestSpec] = []
+    for fold_dir in sorted(folds_root.iterdir()):
+        if not fold_dir.is_dir() or not fold_dir.name.startswith("fold_"):
+            continue
+        meta_path = fold_dir / "train_meta.json"
+        if not meta_path.exists():
+            logger.warning("train_meta.json 없음, skip: %s", fold_dir)
+            continue
+        with open(meta_path) as f:
+            meta = json.load(f)
+        # ISO datetime → "YYYY-MM-DD" 추출
+        test_start = str(meta["test_start"])[:10]
+        test_end = str(meta["test_end"])[:10]
+        fold_id = int(meta["fold_id"])
+        specs.append(
+            BacktestSpec(
+                strategy=strategy,
+                config_path=config_path,
+                model_dir=str(fold_dir),
+                split_id=f"fold_{fold_id:02d}",
+                oos_start=test_start,
+                oos_end=test_end,
+                slippage_pct=None,
+                calibration_method="none",  # 사안 L' (가)
+            )
+        )
+    if not specs:
+        raise FileNotFoundError(f"유효한 fold 없음: {folds_root}")
+    return specs
+
+
+def aggregate_walkforward_results(
+    eval_root: Path, strategy: str, specs: list[BacktestSpec]
+) -> Path:
+    """26 fold 백테 결과를 통합 trades.csv + walkforward_metrics.json으로 집계.
+
+    사안 K' (가) reset: 각 fold initial=$10K → final 결과를 평균/통합.
+    - total_pnl_sum = Σ(fold final - $10K)
+    - mean_return_pct = mean(fold total_return_pct)
+    - win_rate = pooled (총 승 / 총 거래)
+    - max_drawdown_pct = max over folds (각 fold의 MDD)
+    """
+    config_name = Path(specs[0].config_path).stem
+    fold_metrics: list[dict] = []
+    all_trades: list[pd.DataFrame] = []
+    for spec in specs:
+        m_path = eval_root / spec.label / config_name / "metrics.json"
+        t_path = eval_root / spec.label / config_name / "trades.csv"
+        if not m_path.exists():
+            logger.warning("metrics 없음 skip: %s", m_path)
+            continue
+        with open(m_path) as f:
+            m = json.load(f).get("integrated", {})
+        m["fold_id"] = int(spec.split_id.replace("fold_", ""))
+        fold_metrics.append(m)
+        if t_path.exists():
+            df = pd.read_csv(t_path)
+            df["fold_id"] = m["fold_id"]
+            all_trades.append(df)
+
+    if not fold_metrics:
+        raise RuntimeError("통합 가능한 fold 결과 없음")
+
+    # 통합 metrics
+    n_folds = len(fold_metrics)
+    total_trades = sum(int(m.get("total_trades", 0)) for m in fold_metrics)
+    winning_trades = sum(int(m.get("winning_trades", 0)) for m in fold_metrics)
+    losing_trades = sum(int(m.get("losing_trades", 0)) for m in fold_metrics)
+    pnl_sum = sum(float(m.get("total_pnl", 0)) for m in fold_metrics)
+    initial = float(fold_metrics[0].get("initial_balance", 10000.0))
+    mean_return_pct = (
+        sum(float(m.get("total_return_pct", 0)) for m in fold_metrics) / n_folds
+    )
+    pooled_win_rate = (
+        winning_trades / total_trades * 100.0 if total_trades > 0 else 0.0
+    )
+    max_dd = max(
+        (float(m.get("max_drawdown_pct", 0)) for m in fold_metrics), default=0.0
+    )
+    gross_profit = sum(float(m.get("gross_profit", 0)) for m in fold_metrics)
+    gross_loss = sum(float(m.get("gross_loss", 0)) for m in fold_metrics)
+    pf = gross_profit / gross_loss if gross_loss > 0 else (
+        float("inf") if gross_profit > 0 else 0.0
+    )
+
+    aggregated = {
+        "strategy": strategy,
+        "n_folds": n_folds,
+        "initial_balance_per_fold": round(initial, 2),
+        "total_trades": total_trades,
+        "winning_trades": winning_trades,
+        "losing_trades": losing_trades,
+        "pooled_win_rate_pct": round(pooled_win_rate, 2),
+        "sum_pnl": round(pnl_sum, 2),
+        "mean_return_pct_per_fold": round(mean_return_pct, 4),
+        "max_drawdown_pct_max": round(max_dd, 2),
+        "gross_profit": round(gross_profit, 2),
+        "gross_loss": round(gross_loss, 2),
+        "profit_factor": (
+            round(pf, 4) if pf != float("inf") else "inf"
+        ),
+        "fold_metrics": fold_metrics,
+    }
+    out_dir = eval_root / strategy / "walkforward_combined"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with open(out_dir / "walkforward_metrics.json", "w") as f:
+        json.dump(aggregated, f, indent=2, default=str)
+    if all_trades:
+        combined = pd.concat(all_trades, ignore_index=True)
+        combined.to_csv(out_dir / "walkforward_trades.csv", index=False)
+    logger.info(
+        "Walkforward 통합: %s → %s (folds=%d, trades=%d, pooled_win=%.2f%%, mean_return=%.2f%%, max_dd=%.2f%%)",
+        strategy, out_dir, n_folds, total_trades, pooled_win_rate, mean_return_pct, max_dd,
+    )
+    return out_dir
 
 
 def collect_metrics(eval_root: Path, specs: list[BacktestSpec]) -> pd.DataFrame:
@@ -643,12 +794,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="모델 통합 평가 (Phase E-2)")
     parser.add_argument(
         "--mode",
-        choices=["full", "single", "collect", "sensitivity", "calibration"],
+        choices=["full", "single", "collect", "sensitivity", "calibration", "walkforward"],
         default="full",
         help=(
             "full: 모든 모델×분할 백테 / single: 특정 조합 / collect: 결과 수집만 / "
             "sensitivity: 슬리피지 sensitivity (Phase E-2-3 Step 1) / "
-            "calibration: Calibration 백테 (Phase E-2-3 Step 3)"
+            "calibration: Calibration 백테 (Phase E-2-3 Step 3) / "
+            "walkforward: 26 folds 통합 OOS (BL-1-3, --strategy 필수)"
         ),
     )
     parser.add_argument("--strategy", help="--mode single 시 특정 strategy 이름")
@@ -661,6 +813,10 @@ def main() -> int:
     args = parser.parse_args()
 
     eval_root = REPORT_BASE / f"eval_{args.eval_date}"
+    # BL-1 Step A: collect 모드는 기존 결과 읽기 → resolve 안 함.
+    # 그 외 모드(full/single/sensitivity/calibration/walkforward)는 신규 백테 수행 → 충돌 방지
+    if args.mode != "collect":
+        eval_root = resolve_unique_dir(eval_root)
 
     if args.mode == "full":
         import time as _time
@@ -730,6 +886,30 @@ def main() -> int:
         logger.info("=" * 60)
         logger.info(
             "[Phase E-2-3 Step 3] calibration wall time: %.1f sec (%.2f h)",
+            _elapsed, _elapsed / 3600,
+        )
+    elif args.mode == "walkforward":
+        # BL-1-3: 4 모델 v00X/folds/fold_NN/ 자동 스캔 → 26 folds 통합 OOS 백테.
+        # 사안 K' (가) reset, L' (가) calibration "none" 강제, M' (나) v006 권장.
+        if not args.strategy:
+            logger.error("--mode walkforward는 --strategy 필요")
+            return 2
+        import time as _time
+        _t0 = _time.perf_counter()
+        try:
+            specs = build_walkforward_specs(args.strategy)
+        except (FileNotFoundError, ValueError) as e:
+            logger.error("walkforward spec 생성 실패: %s", e)
+            return 2
+        logger.info("Walkforward: %s 전략 %d folds 백테 시작",
+                    args.strategy, len(specs))
+        asyncio.run(_warmup_candle_cache(specs))
+        run_all_parallel(specs, eval_root)
+        aggregate_walkforward_results(eval_root, args.strategy, specs)
+        _elapsed = _time.perf_counter() - _t0
+        logger.info("=" * 60)
+        logger.info(
+            "[BL-1-3] walkforward wall time: %.1f sec (%.2f h)",
             _elapsed, _elapsed / 3600,
         )
     elif args.mode == "collect":

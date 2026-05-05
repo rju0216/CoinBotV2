@@ -41,6 +41,7 @@ from torch.utils.data import DataLoader, TensorDataset  # noqa: E402
 from src.data.historical import HistoricalDataLoader  # noqa: E402
 from src.ml.feature_pipeline import build_features  # noqa: E402
 from src.ml.label_generator import build_labels_from_config  # noqa: E402
+from src.utils.path_utils import next_model_version  # noqa: E402
 from src.ml.models import TransformerClassifier  # noqa: E402
 from src.ml.sequence_utils import make_sequences  # noqa: E402
 from src.ml.walk_forward import generate_walk_forward_splits  # noqa: E402
@@ -149,6 +150,10 @@ async def main() -> None:
     parser.add_argument("--start", required=True, help="학습 데이터 시작 (YYYY-MM-DD)")
     parser.add_argument("--end", required=True, help="학습 데이터 종료 (YYYY-MM-DD)")
     parser.add_argument("--force-features", action="store_true", help="피처 캐시 무시, 재생성")
+    parser.add_argument(
+        "--save-all-folds", action="store_true",
+        help="BL-1-3: 매 fold 모델을 model_dir/folds/fold_NN/에 저장 (walkforward 평가용)",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -233,6 +238,16 @@ async def main() -> None:
     logger.info("Walk-forward: %d folds", len(folds))
 
     # ── 7. Walk-forward 학습 루프 ──
+    # BL-1-3: --save-all-folds 시 model_dir 미리 결정 + folds/ 디렉토리 준비
+    # BL-1 Step A: next_model_version (max+1)으로 v005 같은 비워둔 번호 자동 skip
+    models_root = Path("models/transformer")
+    models_root.mkdir(parents=True, exist_ok=True)
+    version = next_model_version(models_root)
+    model_dir = models_root / f"{version}_{entry_tf}_{args.start}_{args.end}"
+    if args.save_all_folds:
+        model_dir.mkdir(parents=True, exist_ok=True)
+        (model_dir / "folds").mkdir(parents=True, exist_ok=True)
+
     oos_predictions: list[int] = []
     oos_labels: list[int] = []
     best_model: TransformerClassifier | None = None
@@ -289,6 +304,39 @@ async def main() -> None:
             info["best_val_loss"], acc, f1,
         )
 
+        if args.save_all_folds:
+            fold_dir = model_dir / "folds" / f"fold_{fold.fold_id:02d}"
+            fold_dir.mkdir(parents=True, exist_ok=True)
+            torch.save(model.cpu().state_dict(), str(fold_dir / "model.pth"))
+            joblib.dump(scaler, str(fold_dir / "scaler.joblib"))
+            with open(fold_dir / "feature_names.json", "w") as f_out:
+                json.dump(valid_cols, f_out, indent=2)
+            with open(fold_dir / "train_meta.json", "w") as f_out:
+                json.dump(
+                    {
+                        "fold_id": fold.fold_id,
+                        "train_start": fold.train_start.isoformat(),
+                        "train_end": fold.train_end.isoformat(),
+                        "test_start": fold.test_start.isoformat(),
+                        "test_end": fold.test_end.isoformat(),
+                        "oos_accuracy": round(float(acc), 4),
+                        "oos_f1_macro": round(float(f1), 4),
+                        "best_epoch": int(info["best_epoch"]),
+                        "label_params": label_params,
+                        # plugin _ensure_model이 TransformerClassifier 인스턴스화에 사용 (root train_meta와 동일 키)
+                        "model_arch": {
+                            "n_features": n_features,
+                            "d_model": int(transformer_params.get("d_model", 64)),
+                            "nhead": int(transformer_params.get("nhead", 4)),
+                            "num_layers": int(transformer_params.get("num_layers", 2)),
+                            "dim_ff": int(transformer_params.get("dim_ff", 128)),
+                            "dropout": float(transformer_params.get("dropout", 0.3)),
+                        },
+                    },
+                    f_out, indent=2, default=str,
+                )
+            model.to(device)
+
         best_model = model
 
     if not oos_predictions:
@@ -308,14 +356,9 @@ async def main() -> None:
         target_names=["SHORT(0)", "HOLD(1)", "LONG(2)"],
     ))
 
-    # ── 9. 모델 저장 ──
-    models_root = Path("models/transformer")
-    models_root.mkdir(parents=True, exist_ok=True)
-
-    existing = list(models_root.glob("v*"))
-    version = f"v{len(existing) + 1:03d}"
-    model_dir = models_root / f"{version}_{entry_tf}_{args.start}_{args.end}"
-    model_dir.mkdir(parents=True, exist_ok=True)
+    # ── 9. 모델 저장 (BL-1-3: model_dir은 §7에서 결정, save-all-folds=False면 여기서 mkdir) ──
+    if not args.save_all_folds:
+        model_dir.mkdir(parents=True, exist_ok=True)
 
     torch.save(best_model.cpu().state_dict(), str(model_dir / "model.pth"))
     joblib.dump(scaler, str(model_dir / "scaler.joblib"))

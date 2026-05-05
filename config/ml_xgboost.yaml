@@ -58,7 +58,7 @@ ml_xgboost:
 
   # ── 학습 전용 (train_xgboost.py가 참조, 추론 시 무시) ──
   train:
-    label_method: "direction"   # "direction" | "triple_barrier" (BP-3-3)
+    label_method: "triple_barrier"   # "direction" | "triple_barrier" (BP-3-3)
     horizon: 10                 # direction 전용
     threshold_pct: 0.3          # direction 전용
     triple_barrier:             # triple_barrier 전용 (사안 U 가)

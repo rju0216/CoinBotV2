@@ -38,13 +38,25 @@ PATH_B_ML_STRATEGY §12의 I-B001~I-B012 모두 해결 또는 검증 완료. 단
 - 단계별 검증 + 솔직한 검증 분류
 - CLAUDE.md 협업 규칙 1~10 그대로 적용
 
-### 1.4 운영 권장 (BP-3 종착 시점, 2026-05-04)
+### 1.4 운영 권장 (BL-1-3 종착 시점, 2026-05-05 갱신)
 
-BP-3 결과 기반 갱신 (3개월 ml_xgboost 계열 회귀 백테 + v006 OOS Acc):
-- **운영 후보 1순위**: **`ensemble`** (4 모델 v006 + isotonic) — 1118.51% / MDD 5.27% / Calmar 212.2 / PF 4.26
-- **2순위**: 단일 v006 + isotonic (xgboost 895.75% / MDD 5.97%)
-- **PPO 라이브 부적합** 확정 (Phase E-2-4): slip 0.05% break-even, 모든 모델 vs PPO p<0.0001
-- **Triple-barrier 효과**: 4 모델 OOS Acc 평균 64.31% → 75.10% (+10.79%p) — 라벨 효과 명확
+BP-3 + BL-1-3 walkforward 결과 종합:
+
+**1순위 (안정성 우선)**: **`dl_transformer` v007 + isotonic** ⭐ 신규 부상 (BL-1-3)
+- walkforward MDD 5.68% (4 모델 중 가장 낮음)
+- mean_return per fold 422.19% / Calmar 74.3 (4 모델 중 최고)
+- 26/26 positive fold
+
+**1순위 (단일 OOS 우수)**: **`ensemble` (4 모델 v007 + isotonic)**
+- BP-3-2 단일 OOS 1118.51% / MDD 5.27% / Calmar 212.2
+- ⚠️ walkforward 미수행 → I-BL002 carry (BL-2 paper trading 전 검증 권장)
+
+**2순위**: dl_lstm (PF 4.12, Calmar 53.9, MDD 7.42%, 26/26 positive)
+**3순위**: ml_lightgbm/ml_xgboost (GBDT 통계적 동등, Calmar 42-52, MDD 7.66-9.08%)
+
+**PPO 라이브 부적합** 확정 (E-2-4 + BL-1-2 Multi-hypothesis 보정 후에도 유지)
+
+**Triple-barrier 효과** (BP-3-3): 4 모델 OOS Acc 평균 64.31% → 75.10% (+10.79%p)
 
 원래 Phase E-2-4 권장 (참고): ml_lightgbm/xgboost + isotonic 통계적 동등, Sharpe 10.42-10.88, Calmar 240-810
 

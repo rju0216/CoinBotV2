@@ -10,9 +10,11 @@ import pandas as pd
 import pytest
 
 from src.ml.metrics_extended import (
+    bonferroni_correction,
     bootstrap_pnl_diff,
     compute_calmar_ratio,
     compute_sharpe_ratio,
+    fdr_correction,
     split_to_oos_years,
 )
 
@@ -117,3 +119,88 @@ class TestSplitToOosYears:
     ])
     def test_split_id_mapping(self, split, years):
         assert split_to_oos_years(split) == years
+
+
+# ─── BL-1-2: Multi-hypothesis 보정 ───
+
+
+class TestBonferroniCorrection:
+    def test_single_pvalue_unchanged(self):
+        corrected, reject = bonferroni_correction(np.array([0.04]), alpha=0.05)
+        assert corrected[0] == pytest.approx(0.04)
+        assert reject[0] == True  # 0.04 < 0.05
+
+    def test_multiplies_by_n(self):
+        # 5개 p-value, 각각 × 5
+        p = np.array([0.01, 0.02, 0.03, 0.04, 0.10])
+        corrected, _ = bonferroni_correction(p, alpha=0.05)
+        np.testing.assert_allclose(corrected, [0.05, 0.10, 0.15, 0.20, 0.50])
+
+    def test_caps_at_1(self):
+        p = np.array([0.5, 0.8])
+        corrected, _ = bonferroni_correction(p, alpha=0.05)
+        np.testing.assert_allclose(corrected, [1.0, 1.0])
+
+    def test_reject_after_correction(self):
+        # 원본: 모두 < 0.05라 raw로는 모두 reject
+        # Bonferroni: × 10 → 모두 ≥ 0.05라 reject 0개
+        p = np.full(10, 0.04)
+        _, reject = bonferroni_correction(p, alpha=0.05)
+        assert reject.sum() == 0
+
+    def test_empty(self):
+        corrected, reject = bonferroni_correction(np.array([]), alpha=0.05)
+        assert len(corrected) == 0
+        assert len(reject) == 0
+
+
+class TestFdrCorrection:
+    def test_single_pvalue_unchanged(self):
+        corrected, reject = fdr_correction(np.array([0.04]), alpha=0.05)
+        assert corrected[0] == pytest.approx(0.04)
+        assert reject[0] == True
+
+    def test_basic_bh_known_case(self):
+        """알려진 BH 케이스 — sorted p=[0.01, 0.02, 0.03, 0.04, 0.05].
+        BH adjusted: p_(i) × N / i, 단조 보정.
+          p_(5)=0.05 × 5/5 = 0.05
+          p_(4)=0.04 × 5/4 = 0.05
+          p_(3)=0.03 × 5/3 = 0.05
+          p_(2)=0.02 × 5/2 = 0.05
+          p_(1)=0.01 × 5/1 = 0.05
+        모두 0.05.
+        """
+        p = np.array([0.01, 0.02, 0.03, 0.04, 0.05])
+        corrected, _ = fdr_correction(p, alpha=0.05)
+        np.testing.assert_allclose(corrected, [0.05, 0.05, 0.05, 0.05, 0.05])
+
+    def test_preserves_input_order(self):
+        # 입력이 비정렬: [0.05, 0.01, 0.03]
+        # 정렬 sorted: [0.01, 0.03, 0.05] (rank 1, 2, 3)
+        # BH: p_(3)=0.05 × 3/3=0.05, p_(2)=0.03 × 3/2=0.045, p_(1)=0.01 × 3/1=0.03
+        # 단조 보정 (역방향 cumulative min): [min(0.03, 0.045, 0.05), min(0.045, 0.05), 0.05]
+        #                                   = [0.03, 0.045, 0.05]
+        # 입력 순서로 복원: 입력[0]=0.05 → sorted rank 3 → 0.05
+        #                   입력[1]=0.01 → sorted rank 1 → 0.03
+        #                   입력[2]=0.03 → sorted rank 2 → 0.045
+        p = np.array([0.05, 0.01, 0.03])
+        corrected, _ = fdr_correction(p, alpha=0.05)
+        np.testing.assert_allclose(corrected, [0.05, 0.03, 0.045], atol=1e-9)
+
+    def test_less_conservative_than_bonferroni(self):
+        """동일 p-value들에 대해 FDR이 Bonferroni보다 덜 보수적 (더 많은 reject)."""
+        # 10개 비교, 작은 p들 섞어둠
+        p = np.array([0.001, 0.005, 0.01, 0.02, 0.04, 0.10, 0.20, 0.30, 0.50, 0.80])
+        _, reject_bonf = bonferroni_correction(p, alpha=0.05)
+        _, reject_fdr = fdr_correction(p, alpha=0.05)
+        assert reject_fdr.sum() >= reject_bonf.sum()
+
+    def test_caps_at_1(self):
+        p = np.array([0.5, 0.6, 0.7, 0.8])
+        corrected, _ = fdr_correction(p, alpha=0.05)
+        assert (corrected <= 1.0).all()
+
+    def test_empty(self):
+        corrected, reject = fdr_correction(np.array([]), alpha=0.05)
+        assert len(corrected) == 0
+        assert len(reject) == 0

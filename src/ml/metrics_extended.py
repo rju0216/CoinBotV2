@@ -118,6 +118,67 @@ def bootstrap_pnl_diff(
     return observed, p_value, ci_low, ci_high
 
 
+def bonferroni_correction(
+    p_values: np.ndarray, alpha: float = 0.05
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Bonferroni 다중 가설 보정 (BL-1-2, 사안 D 다).
+
+    각 p-value × N으로 보정 (1.0으로 cap). reject if corrected < alpha.
+
+    Args:
+        p_values: 원본 p-value array (1D)
+        alpha: 유의수준
+
+    Returns:
+        (corrected_p_values, reject_mask) — 입력 인덱스 순서 보존.
+        corrected = min(p × N, 1.0). reject = corrected < alpha.
+    """
+    p = np.asarray(p_values, dtype=np.float64)
+    n = len(p)
+    if n == 0:
+        return p.copy(), np.zeros(0, dtype=bool)
+    corrected = np.minimum(p * n, 1.0)
+    reject = corrected < alpha
+    return corrected, reject
+
+
+def fdr_correction(
+    p_values: np.ndarray, alpha: float = 0.05
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Benjamini-Hochberg FDR 보정 (BL-1-2, 사안 D 다).
+
+    1. p_(1) ≤ p_(2) ≤ ... ≤ p_(N) 정렬
+    2. 각 i에 대해 p_adj_(i) = min over j≥i of (p_(j) × N / j) — 단조 증가 보정
+    3. reject if p_adj < alpha
+
+    Args:
+        p_values: 원본 p-value array (1D)
+        alpha: FDR 수준
+
+    Returns:
+        (corrected_p_values, reject_mask) — 입력 인덱스 순서 보존.
+    """
+    p = np.asarray(p_values, dtype=np.float64)
+    n = len(p)
+    if n == 0:
+        return p.copy(), np.zeros(0, dtype=bool)
+
+    # 정렬 인덱스
+    order = np.argsort(p)
+    p_sorted = p[order]
+    ranks = np.arange(1, n + 1)
+    # 각 정렬 위치 i (1-indexed)에서 p_(i) × N / i
+    raw_adj = p_sorted * n / ranks
+    # 단조 증가 보정 (역방향 cumulative min)
+    adj_sorted = np.minimum.accumulate(raw_adj[::-1])[::-1]
+    adj_sorted = np.minimum(adj_sorted, 1.0)
+    # 원본 인덱스 순서로 복원
+    corrected = np.empty(n, dtype=np.float64)
+    corrected[order] = adj_sorted
+    reject = corrected < alpha
+    return corrected, reject
+
+
 def split_to_oos_years(split_id: str) -> float:
     """split_id → OOS 길이 (년). build_specs SPLIT_DEFINITIONS와 일관."""
     return {
