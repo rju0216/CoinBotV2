@@ -33,6 +33,27 @@ class RiskManager:
         self._dd_locked: bool = False
         self._unlock_baseline: float | None = None
 
+        # BL-2-1: EventBus 통합 (CoreEngine.initialize에서 attach_event_bus 호출)
+        # daily loss 1회 publish 보호용 flag
+        self._event_bus: Any | None = None
+        self._daily_loss_published: bool = False
+
+    def attach_event_bus(self, event_bus: Any) -> None:
+        """CoreEngine.initialize에서 호출. EventBus publish 가능 활성화."""
+        self._event_bus = event_bus
+
+    async def _publish_event(self, event_type: str, data: dict[str, Any]) -> None:
+        if self._event_bus is None:
+            return
+        try:
+            await self._event_bus.publish(event_type, data)
+        except Exception as e:
+            logger.warning("RiskManager event publish failed (%s): %s", event_type, e)
+
+    def reset_daily_loss_published(self) -> None:
+        """일일 reset 시 호출 (CoreEngine 또는 외부 trigger)."""
+        self._daily_loss_published = False
+
     # ----- 잔액 / equity -----
 
     def set_initial_balance(self, balance: float) -> None:
@@ -48,6 +69,8 @@ class RiskManager:
 
     def reset_daily_pnl(self) -> None:
         self.daily_pnl = 0.0
+        # BL-2-1: 일일 reset 시 daily_loss_locked publish flag도 reset
+        self._daily_loss_published = False
 
     def add_pnl(self, pnl: float) -> None:
         self.daily_pnl += pnl
@@ -86,6 +109,25 @@ class RiskManager:
             self.peak_equity,
             balance,
         )
+        # BL-2-1: EventBus publish (CoreEngine subscribe → notifier)
+        if self._event_bus is not None:
+            try:
+                # async _publish_event를 sync에서 호출 — asyncio.create_task로 fire-and-forget
+                import asyncio
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(self._publish_event(
+                        "drawdown_locked",
+                        {
+                            "drawdown_pct": dd_pct,
+                            "max_drawdown_pct": self.max_drawdown_pct * 100,
+                            "balance": balance,
+                            "peak_equity": self.peak_equity,
+                            "baseline": baseline,
+                        },
+                    ))
+            except Exception as e:
+                logger.warning("DRAWDOWN_LOCKED event publish failed: %s", e)
 
     def unlock_drawdown(self, current_balance: float) -> None:
         self._dd_locked = False
@@ -153,6 +195,23 @@ class RiskManager:
                 self.daily_pnl,
                 balance * self.max_daily_loss_pct,
             )
+            # BL-2-1: 1회만 publish (일일 reset_daily_loss_published까지)
+            if self._event_bus is not None and not self._daily_loss_published:
+                self._daily_loss_published = True
+                try:
+                    import asyncio
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        loop.create_task(self._publish_event(
+                            "daily_loss_locked",
+                            {
+                                "daily_pnl": self.daily_pnl,
+                                "limit": -(balance * self.max_daily_loss_pct),
+                                "balance": balance,
+                            },
+                        ))
+                except Exception as e:
+                    logger.warning("DAILY_LOSS_LOCKED event publish failed: %s", e)
             return False
 
         baseline = self._effective_baseline()

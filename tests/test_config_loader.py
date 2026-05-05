@@ -52,6 +52,66 @@ def test_load_config_injects_env_credentials(tmp_path, monkeypatch):
     assert cfg["exchange"]["passphrase"] == "test_pw"
 
 
+def test_load_config_injects_telegram_credentials(tmp_path, monkeypatch):
+    """BL-2-1: TELEGRAM_BOT_TOKEN/CHAT_ID env → live.notifications.telegram에 주입."""
+    cfg_path = tmp_path / "cfg.yaml"
+    cfg_path.write_text(
+        "exchange:\n  symbol: BTC/USDT:USDT\n"
+        "live:\n  notifications:\n    enabled: true\n    channels: [\"log\", \"telegram\"]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test_token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "test_chat")
+
+    cfg = load_config(cfg_path)
+    tg = cfg["live"]["notifications"]["telegram"]
+    assert tg["bot_token"] == "test_token"
+    assert tg["chat_id"] == "test_chat"
+
+
+def test_load_config_creates_telegram_section_if_absent(tmp_path, monkeypatch):
+    """BL-2-1: notifications.telegram 섹션이 없어도 env가 있으면 자동 생성."""
+    cfg_path = tmp_path / "cfg.yaml"
+    cfg_path.write_text("exchange:\n  symbol: BTC/USDT:USDT\n", encoding="utf-8")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "abc")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+
+    cfg = load_config(cfg_path)
+    assert cfg["live"]["notifications"]["telegram"]["bot_token"] == "abc"
+    assert cfg["live"]["notifications"]["telegram"]["chat_id"] == "123"
+
+
+def test_load_config_no_telegram_env_keeps_yaml_default(tmp_path, monkeypatch):
+    """env 미설정 시 yaml의 기본값 (빈 문자열) 그대로."""
+    cfg_path = tmp_path / "cfg.yaml"
+    cfg_path.write_text(
+        "exchange:\n  symbol: BTC/USDT:USDT\n"
+        "live:\n  notifications:\n    telegram:\n      bot_token: \"\"\n      chat_id: \"\"\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+
+    cfg = load_config(cfg_path)
+    assert cfg["live"]["notifications"]["telegram"]["bot_token"] == ""
+
+
+def test_load_config_injects_email_credentials(tmp_path, monkeypatch):
+    """BL-2-1: EMAIL_SMTP_USERNAME/PASSWORD env → live.notifications.email에 주입."""
+    cfg_path = tmp_path / "cfg.yaml"
+    cfg_path.write_text(
+        "exchange:\n  symbol: BTC/USDT:USDT\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EMAIL_SMTP_USERNAME", "user@x.com")
+    monkeypatch.setenv("EMAIL_SMTP_PASSWORD", "pw")
+
+    cfg = load_config(cfg_path)
+    em = cfg["live"]["notifications"]["email"]
+    assert em["username"] == "user@x.com"
+    assert em["password"] == "pw"
+
+
 def test_load_config_missing_file_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         load_config(tmp_path / "nope.yaml")

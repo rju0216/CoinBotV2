@@ -71,6 +71,13 @@ class LiveOOSMonitor:
         # cooldown tracking: strategy_name → 마지막 알림 후 평가된 신호 수
         self._cooldown_counter: dict[str, int] = {}
 
+        # BL-2-1: EventBus 통합 (CoreEngine.initialize에서 attach_event_bus)
+        self._event_bus: Any | None = None
+
+    def attach_event_bus(self, event_bus: Any) -> None:
+        """CoreEngine.initialize에서 호출. _fire_alert가 OOS_DECAY publish."""
+        self._event_bus = event_bus
+
     # ---- record / evaluate ----
 
     def record_prediction(
@@ -165,11 +172,88 @@ class LiveOOSMonitor:
             f"OOS MONITOR ALERT [{strategy_name}]: accuracy {acc:.3f} < "
             f"threshold {self.min_acc_threshold:.3f} over last {self.window} signals"
         )
-        if self.alert_method == "log":
-            logger.warning(msg)
-        else:
-            # 미래 확장: telegram / email 등
-            logger.warning("(unsupported alert_method=%s) %s", self.alert_method, msg)
+        logger.warning(msg)
+        # BL-2-1: EventBus publish → CoreEngine subscribe → notifier (텔레그램 등)
+        if self._event_bus is not None:
+            try:
+                import asyncio
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(self._event_bus.publish(
+                        "oos_decay",
+                        {
+                            "strategy": strategy_name,
+                            "accuracy": acc,
+                            "threshold": self.min_acc_threshold,
+                            "window": self.window,
+                        },
+                    ))
+            except Exception as e:
+                logger.warning("OOS_DECAY event publish failed: %s", e)
+
+    # ---- BL-2 추가 step (DD''=가): 라이브 시작 직전 warm-up ----
+
+    def warmup_from_history(
+        self,
+        strategy_name: str,
+        entry_timeframe: str,
+        bars: Any,  # pd.DataFrame (timestamp index, ohlcv 컬럼)
+        signal_iter: Any,  # Callable[[ts], SignalSide] — plugin.generate_signal 시뮬
+        cutoff_dt: datetime,
+        learned_oos_acc: float | None = None,
+    ) -> dict[str, Any]:
+        """학습 cutoff 이후 historical bars로 buffer 사전 채움.
+
+        라이브 시작 직전 호출하면 OOS monitor가 즉시 적중률 보유 + alpha decay
+        사전 감지 가능. 학습 OOS Acc(예: 0.75)와 현재 적중률 비교로 격차 정량.
+
+        Args:
+            strategy_name: 모델 이름 (record_prediction과 일관)
+            entry_timeframe: 모델 entry_tf (BAR_CLOSED 시점 매칭용)
+            bars: cutoff_dt 이후 entry_tf 봉 (DataFrame, ts index, ohlcv)
+            signal_iter: ts → SignalSide 함수 (plugin.generate_signal 결과 시뮬)
+            cutoff_dt: 학습 cutoff datetime. 이 이후 봉만 처리
+            learned_oos_acc: 학습 시 OOS Acc (train_meta.oos_accuracy). 격차 비교용
+
+        Returns:
+            {samples, accuracy, gap, learned_oos_acc} 통계 dict
+        """
+        if not self.enabled or bars is None or len(bars) == 0:
+            return {
+                "samples": 0,
+                "accuracy": None,
+                "gap": None,
+                "learned_oos_acc": learned_oos_acc,
+            }
+
+        for ts in bars.index:
+            ts_dt = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
+            if ts_dt <= cutoff_dt:
+                continue
+            try:
+                side = signal_iter(ts_dt)
+            except Exception as e:
+                logger.warning("warmup signal_iter 실패 ts=%s: %s", ts_dt, e)
+                continue
+            close = float(bars.loc[ts, "close"])
+            # HOLD는 record_prediction에서 자동 skip
+            self.record_prediction(
+                strategy_name, entry_timeframe, ts_dt, side, close,
+            )
+            # 매 봉 evaluate (라이브 BAR_CLOSED 패턴 동일)
+            self.evaluate_pending(ts_dt, close)
+
+        samples = self.get_window_size(strategy_name)
+        accuracy = self.get_accuracy(strategy_name)
+        gap = None
+        if accuracy is not None and learned_oos_acc is not None:
+            gap = float(learned_oos_acc) - float(accuracy)
+        return {
+            "samples": samples,
+            "accuracy": accuracy,
+            "gap": gap,
+            "learned_oos_acc": learned_oos_acc,
+        }
 
     # ---- 외부 조회용 (테스트 + 디버깅) ----
 

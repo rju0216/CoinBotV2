@@ -12,6 +12,7 @@ PnL 정산에 주입한다.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -28,7 +29,9 @@ from src.core.enums import (
 from src.core.types import Position
 from src.data.feed import DataFeed
 from src.data.store import DataStore
+from src.data.orderbook import OrderBookCollector
 from src.live.oos_monitor import LiveOOSMonitor
+from src.utils.notifier import Notifier, build_notifier_from_config
 
 logger = logging.getLogger(__name__)
 
@@ -76,12 +79,287 @@ class CoreEngine(AbstractEngine):
         ) or {}
         if oos_cfg.get("enabled", False):
             self.oos_monitor = LiveOOSMonitor(self.config)
+            # BL-2-1: OOS monitor가 EventBus publish 가능하도록 attach
+            self.oos_monitor.attach_event_bus(self.event_bus)
             logger.info(
                 "OOS monitor enabled: window=%d, horizon=%d, threshold=%.3f",
                 self.oos_monitor.window,
                 self.oos_monitor.horizon,
                 self.oos_monitor.min_acc_threshold,
             )
+
+        # BL-2-1: notifier 인프라 초기화 + EventBus subscribe
+        self.notifier: Notifier = build_notifier_from_config(self.config)
+        self.risk_manager.attach_event_bus(self.event_bus)
+        self._setup_notifier_subscriptions()
+        # Circuit breaker 발동 시 새 진입 차단 (사안 U''=나)
+        self._circuit_breaker_open: bool = False
+
+        # BL-2-2: 호가창 collector 초기화 (config.live.orderbook.enabled=true 시)
+        # paper 모드에서만 의미. live 모드는 거래소가 자동 처리.
+        # collector는 ccxt async 클라이언트 필요 — DataFeed의 exchange 재사용
+        self.orderbook_collector: OrderBookCollector | None = None
+        ob_cfg = (self.config.get("live", {}) or {}).get("orderbook", {}) or {}
+        if ob_cfg.get("enabled", False) and self.data_feed is not None:
+            self.orderbook_collector = OrderBookCollector(
+                self.config, self.data_feed.exchange,
+            )
+            logger.info(
+                "OrderBook collector enabled: depth=%d, save_dir=%s",
+                self.orderbook_collector.depth, self.orderbook_collector.save_dir,
+            )
+        # 최신 호가창 캐시 (BAR_CLOSED 시 fetch 후 try_enter/close_position에 전달)
+        self._latest_orderbook: dict | None = None
+
+        # BL-2 추가 step (DD''=가): OOS monitor warm-up
+        # 학습 cutoff 이후 historical candles로 buffer 사전 채움 → 라이브 시작 즉시 적중률 보유
+        if self.oos_monitor is not None:
+            try:
+                await self._warmup_oos_monitor()
+            except Exception as e:
+                logger.warning("OOS warmup failed (non-blocking): %s", e)
+
+    async def _warmup_oos_monitor(self) -> None:
+        """학습 cutoff 이후 historical candles로 OOS monitor buffer 사전 채움.
+
+        4 단일 모델 (lightgbm/xgboost/lstm/transformer)만 — ensemble은 sub-plugin
+        결과 기반이라 sub-plugin들이 각자 warm-up하면 자연스러움. ensemble 자체는 skip.
+        """
+        from src.data.historical import HistoricalDataLoader
+        loader = HistoricalDataLoader(self.config)
+        try:
+            for strategy in self.strategies:
+                if strategy.name == "ensemble":
+                    logger.info("OOS warmup skip: %s (ensemble)", strategy.name)
+                    continue
+                try:
+                    await self._warmup_one_strategy(strategy, loader)
+                except Exception as e:
+                    logger.warning(
+                        "OOS warmup [%s] failed: %s", strategy.name, e,
+                    )
+        finally:
+            await loader.close()
+
+    async def _warmup_one_strategy(self, strategy, loader) -> None:
+        """단일 strategy warm-up — train_meta로 cutoff/learned_acc 추출 + 시뮬."""
+        # 1. train_meta.json 로드 (model_dir 또는 latest.json)
+        cutoff_dt, learned_acc = self._extract_train_meta(strategy)
+        if cutoff_dt is None:
+            logger.warning(
+                "OOS warmup [%s]: train cutoff 추출 실패 — skip",
+                strategy.name,
+            )
+            return
+
+        # 2. cutoff_dt 이후 ~ 현재까지 historical candles 다운로드 (캐시 활용)
+        from datetime import datetime, timezone
+        end_dt = datetime.now(timezone.utc)
+        # warmup용 인디케이터 history_bars 추가 (entry_tf max indicator window 고려)
+        history_bars = int(self.config.get("data", {}).get("history_bars", 300))
+        entry_tf = strategy.entry_timeframe
+
+        candles_per_tf: dict = {}
+        for tf in strategy.required_timeframes:
+            from src.data.historical import TF_MS
+            tf_ms = TF_MS.get(tf, 60_000)
+            start_ms = int(cutoff_dt.timestamp() * 1000) - history_bars * tf_ms
+            end_ms = int(end_dt.timestamp() * 1000)
+            df = await loader.download_range_merged(tf, start_ms, end_ms)
+            candles_per_tf[tf] = df
+
+        if entry_tf not in candles_per_tf or candles_per_tf[entry_tf].empty:
+            logger.warning("OOS warmup [%s]: entry_tf 데이터 없음 — skip", strategy.name)
+            return
+
+        # 3. signal_iter 정의 — ts마다 ctx 빌드 + plugin.generate_signal
+        master_df = candles_per_tf[entry_tf]
+        import pandas as pd
+
+        def signal_iter(ts_dt):
+            ts = pd.Timestamp(ts_dt).tz_convert("UTC") if pd.Timestamp(ts_dt).tz else pd.Timestamp(ts_dt, tz="UTC")
+            # ts 직전까지 slice (lookahead 차단, I-B007 패턴)
+            slice_dict = {
+                tf: df[df.index < ts] for tf, df in candles_per_tf.items()
+            }
+            # current_price = open of ts
+            try:
+                current_price = float(master_df.loc[ts, "open"])
+            except KeyError:
+                return None  # ts 미존재
+            ctx = self._build_ctx(strategy, slice_dict, current_price, 10000.0, ts_dt)
+            try:
+                signal = strategy.generate_signal(ctx)
+                return signal.side
+            except Exception as e:
+                logger.debug("warmup signal_iter [%s] ts=%s 실패: %s", strategy.name, ts_dt, e)
+                return None
+
+        # 4. monitor에 warm-up 위임. cutoff 이후 entry_tf 봉만 처리
+        # (signal_iter가 None 반환하면 record_prediction 시 SignalSide(None) 오류 → 사전 필터)
+        from src.core.enums import SignalSide
+
+        def safe_signal_iter(ts_dt):
+            side = signal_iter(ts_dt)
+            return side if side is not None else SignalSide.HOLD
+
+        result = self.oos_monitor.warmup_from_history(
+            strategy_name=strategy.name,
+            entry_timeframe=entry_tf,
+            bars=master_df,
+            signal_iter=safe_signal_iter,
+            cutoff_dt=cutoff_dt,
+            learned_oos_acc=learned_acc,
+        )
+
+        # 5. 결과 로그 + 격차 알림 (EE''=yes)
+        logger.info(
+            "OOS warmup [%s] complete: samples=%d, accuracy=%s, learned_oos_acc=%s, gap=%s",
+            strategy.name, result["samples"],
+            f"{result['accuracy']:.4f}" if result["accuracy"] is not None else None,
+            f"{result['learned_oos_acc']:.4f}" if result["learned_oos_acc"] is not None else None,
+            f"{result['gap']:+.4f}" if result["gap"] is not None else None,
+        )
+        # 격차 임계 도달 시 oos_decay publish (EE''=yes)
+        decay_threshold = float(
+            (self.config.get("live", {}) or {}).get("oos_monitoring", {}).get(
+                "warmup_decay_threshold_pct", 0.10,
+            )
+        )
+        if result["gap"] is not None and result["gap"] >= decay_threshold:
+            await self.event_bus.publish("oos_decay", {
+                "strategy": strategy.name,
+                "accuracy": result["accuracy"],
+                "threshold": self.oos_monitor.min_acc_threshold,
+                "learned_oos_acc": result["learned_oos_acc"],
+                "gap": result["gap"],
+                "warmup_samples": result["samples"],
+                "source": "warmup",
+            })
+
+    def _extract_train_meta(self, strategy) -> tuple:
+        """plugin model_path → train_meta.json 로드 → (cutoff_dt, oos_accuracy) 반환."""
+        from datetime import datetime, timezone
+        from pathlib import Path
+
+        model_path = strategy.params.get("model_path")
+        if not model_path:
+            return None, None
+        # latest.json 해석
+        model_dir = Path(model_path)
+        latest_json = model_dir.parent / "latest.json"
+        if model_dir.name == "latest" and latest_json.exists():
+            with open(latest_json) as f:
+                model_dir = Path(json.load(f)["path"])
+        elif (model_dir / "latest.json").exists():
+            with open(model_dir / "latest.json") as f:
+                model_dir = Path(json.load(f)["path"])
+
+        meta_path = model_dir / "train_meta.json"
+        if not meta_path.exists():
+            return None, None
+        with open(meta_path) as f:
+            meta = json.load(f)
+        # train_period: "2020-01-01 ~ 2024-12-31"
+        period = meta.get("train_period", "")
+        try:
+            end_str = period.split("~")[-1].strip()
+            cutoff_dt = datetime.fromisoformat(end_str).replace(tzinfo=timezone.utc)
+        except Exception:
+            return None, None
+        learned_acc = meta.get("oos_accuracy")
+        return cutoff_dt, float(learned_acc) if learned_acc is not None else None
+
+    def _setup_notifier_subscriptions(self) -> None:
+        """BL-2-1: 주요 EventType → notifier 송신 라우팅.
+
+        levels config로 각 이벤트의 송신 활성/비활성 결정 (V'' 사용자 결정 반영).
+        """
+        notif_cfg = (self.config.get("live", {}) or {}).get(
+            "notifications", {}
+        ) or {}
+        levels = notif_cfg.get("levels", {}) or {}
+
+        async def _on_drawdown_locked(data):
+            if not levels.get("drawdown_lock", True):
+                return
+            await self.notifier.send(
+                "ERROR",
+                "Drawdown lock triggered",
+                f"DD {data.get('drawdown_pct', 0):.2f}% >= "
+                f"{data.get('max_drawdown_pct', 0):.2f}%. Trading halted.",
+                **data,
+            )
+
+        async def _on_daily_loss_locked(data):
+            if not levels.get("daily_loss_lock", True):
+                return
+            await self.notifier.send(
+                "ERROR",
+                "Daily loss limit reached",
+                f"PnL ${data.get('daily_pnl', 0):.2f} <= ${data.get('limit', 0):.2f}",
+                **data,
+            )
+
+        async def _on_circuit_breaker(data):
+            if not levels.get("circuit_breaker", True):
+                return
+            self._circuit_breaker_open = True
+            await self.notifier.send(
+                "ERROR",
+                "Circuit breaker OPEN",
+                f"Consecutive API failures reached threshold. "
+                f"New entries blocked. Manual reset required.",
+                **data,
+            )
+
+        async def _on_oos_decay(data):
+            if not levels.get("oos_decay", True):
+                return
+            await self.notifier.send(
+                "WARNING",
+                f"OOS decay [{data.get('strategy', 'unknown')}]",
+                f"accuracy {data.get('accuracy', 0):.3f} < "
+                f"threshold {data.get('threshold', 0):.3f}",
+                **data,
+            )
+
+        async def _on_position_opened(pos):
+            if not levels.get("position_open", True):  # V'' 사용자 결정으로 default true
+                return
+            await self.notifier.send(
+                "INFO",
+                f"ENTRY [{pos.strategy_name}]",
+                f"{pos.side.value} {pos.size:.4f} @ {pos.entry_price:.2f}",
+                strategy=pos.strategy_name,
+                side=pos.side.value,
+                size=pos.size,
+                entry_price=pos.entry_price,
+            )
+
+        async def _on_position_closed(data):
+            if not levels.get("position_close", True):  # V'' 사용자 결정으로 default true
+                return
+            pos = data.get("position")
+            pnl = data.get("pnl", 0)
+            reason = data.get("reason", "")
+            if pos is None:
+                return
+            await self.notifier.send(
+                "INFO",
+                f"EXIT [{pos.strategy_name}] {reason}",
+                f"net_pnl=${pnl:.2f}",
+                strategy=pos.strategy_name,
+                pnl=pnl,
+                reason=reason,
+            )
+
+        self.event_bus.subscribe("drawdown_locked", _on_drawdown_locked)
+        self.event_bus.subscribe("daily_loss_locked", _on_daily_loss_locked)
+        self.event_bus.subscribe("circuit_breaker_open", _on_circuit_breaker)
+        self.event_bus.subscribe("oos_decay", _on_oos_decay)
+        self.event_bus.subscribe(EventType.POSITION_OPENED.value, _on_position_opened)
+        self.event_bus.subscribe(EventType.POSITION_CLOSED.value, _on_position_closed)
 
     async def shutdown(self) -> None:
         self._stop.set()
@@ -288,6 +566,30 @@ class CoreEngine(AbstractEngine):
         except Exception as e:
             logger.error("append_candle failed: %s", e, exc_info=True)
             return
+
+        # BL-2-1: Circuit breaker 감시 — broker(LiveExecutor)의 cb 상태가 OPEN이면 publish
+        if not self._circuit_breaker_open:
+            executor = getattr(self.broker, "executor", None)
+            if executor is not None:
+                cb = getattr(executor, "circuit_breaker", None)
+                if cb is not None and cb.is_open:
+                    self._circuit_breaker_open = True
+                    await self.event_bus.publish("circuit_breaker_open", {
+                        "consecutive_failures": cb.consecutive_failures,
+                        "threshold": cb.failure_threshold,
+                    })
+
+        # BL-2-2: master timeframe BAR_CLOSED에서만 호가창 fetch (Y''=가)
+        # — 다른 timeframe BAR_CLOSED 이벤트마다 fetch하면 중복
+        if (
+            self.orderbook_collector is not None
+            and tf == self.master_timeframe
+        ):
+            try:
+                self._latest_orderbook = await self.orderbook_collector.fetch_and_save()
+            except Exception as e:
+                logger.warning("OrderBook fetch failed: %s", e)
+                self._latest_orderbook = None
 
         # 진행 중 봉 재발행이면 전략 평가 skip (I-005)
         if not self._should_process_bar(tf, ts_ms):

@@ -21,13 +21,83 @@ MAX_RETRIES = 3
 RETRY_DELAY = 1.0
 
 
+class CircuitBreakerOpen(Exception):
+    """Circuit breaker가 열린 상태에서 API 호출 시 raise (BL-2-1, 사안 G=나 5회).
+
+    CoreEngine이 catch → event_bus.publish CIRCUIT_BREAKER_OPEN → notifier + 새 진입 차단
+    (사안 U''=나 trade 일시 중단). 기존 포지션 SL/TP는 거래소가 처리하므로 별도 차단 X.
+    """
+
+
+class CircuitBreaker:
+    """연속 API 실패 카운터 + 임계 도달 시 OPEN.
+
+    - _retry_api 후에도 실패 → consecutive_failures += 1
+    - 임계 도달 → _open = True. 이후 모든 호출 시 CircuitBreakerOpen raise
+    - 성공 → consecutive_failures = 0
+    - 해제는 사용자 manual (auto_resume=False default)
+    """
+
+    def __init__(self, failure_threshold: int = 5) -> None:
+        self.failure_threshold = failure_threshold
+        self._consecutive_failures = 0
+        self._open = False
+
+    @property
+    def is_open(self) -> bool:
+        return self._open
+
+    @property
+    def consecutive_failures(self) -> int:
+        return self._consecutive_failures
+
+    def record_success(self) -> None:
+        self._consecutive_failures = 0
+
+    def record_failure(self) -> bool:
+        """실패 1회 기록. 임계 도달 시 OPEN으로 전환 + True 반환."""
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= self.failure_threshold:
+            self._open = True
+            return True
+        return False
+
+    def check_or_raise(self) -> None:
+        if self._open:
+            raise CircuitBreakerOpen(
+                f"Circuit breaker OPEN ({self._consecutive_failures} consecutive failures). "
+                "Manual reset required."
+            )
+
+    def reset(self) -> None:
+        """사용자 manual 해제."""
+        self._open = False
+        self._consecutive_failures = 0
+
+
 async def _retry_api(
-    func, *args, retries: int = MAX_RETRIES, delay: float = RETRY_DELAY, **kwargs,
+    func,
+    *args,
+    retries: int = MAX_RETRIES,
+    delay: float = RETRY_DELAY,
+    circuit_breaker: CircuitBreaker | None = None,
+    **kwargs,
 ):
+    """retry + 선택적 circuit breaker 통합.
+
+    - circuit_breaker None이면 기존 동작 그대로
+    - circuit_breaker 주어지면 호출 전 OPEN 체크, 결과로 success/failure 기록
+    """
+    if circuit_breaker is not None:
+        circuit_breaker.check_or_raise()  # 이미 OPEN이면 즉시 raise
+
     last_err = None
     for attempt in range(1, retries + 1):
         try:
-            return await func(*args, **kwargs)
+            result = await func(*args, **kwargs)
+            if circuit_breaker is not None:
+                circuit_breaker.record_success()
+            return result
         except (
             ccxt.NetworkError,
             ccxt.RequestTimeout,
@@ -47,6 +117,15 @@ async def _retry_api(
                     "API call %s failed after %d attempts: %s",
                     getattr(func, "__name__", str(func)), retries, e,
                 )
+    # retry 모두 소진 → circuit breaker 카운터 증가
+    if circuit_breaker is not None:
+        opened = circuit_breaker.record_failure()
+        if opened:
+            logger.error(
+                "Circuit breaker OPEN — %d consecutive failures reached threshold",
+                circuit_breaker.consecutive_failures,
+            )
+            raise CircuitBreakerOpen(str(last_err)) from last_err
     raise last_err
 
 
@@ -75,14 +154,27 @@ class LiveExecutor:
         self.contract_size = 1.0
         if config["exchange"].get("sandbox"):
             self.exchange.set_sandbox_mode(True)
+        # BL-2-1: Circuit breaker (사안 G=나 5회 default)
+        cb_cfg = (config.get("risk", {}) or {}).get("circuit_breaker", {}) or {}
+        cb_enabled = bool(cb_cfg.get("enabled", True))
+        cb_threshold = int(cb_cfg.get("failure_threshold", 5))
+        self.circuit_breaker: CircuitBreaker | None = (
+            CircuitBreaker(failure_threshold=cb_threshold) if cb_enabled else None
+        )
+
+    async def _call(self, func, *args, **kwargs):
+        """모든 ccxt API 호출의 단일 진입점. _retry_api + circuit breaker 통합."""
+        return await self._call(
+            func, *args, circuit_breaker=self.circuit_breaker, **kwargs,
+        )
 
     async def initialize(self) -> None:
         await self.exchange.load_markets()
         market = self.exchange.market(self.symbol)
         self.contract_size = float(market.get("contractSize", 1.0) or 1.0)
-        await _retry_api(self.exchange.set_leverage, self.leverage, self.symbol)
+        await self._call(self.exchange.set_leverage, self.leverage, self.symbol)
         try:
-            await _retry_api(self.exchange.set_margin_mode, "cross", self.symbol)
+            await self._call(self.exchange.set_margin_mode, "cross", self.symbol)
         except Exception as e:
             logger.warning("set_margin_mode: %s (may already be set)", e)
         logger.info(
@@ -103,21 +195,21 @@ class LiveExecutor:
         return contracts * self.contract_size
 
     async def get_balance(self) -> float:
-        raw = await _retry_api(self.exchange.fetch_balance)
+        raw = await self._call(self.exchange.fetch_balance)
         usdt = raw.get("USDT", {})
         self.balance = float(usdt.get("total", 0))
         self._wallet_balance = float(usdt.get("free", 0))
         return self.balance
 
     async def get_wallet_balance(self) -> float:
-        raw = await _retry_api(self.exchange.fetch_balance)
+        raw = await self._call(self.exchange.fetch_balance)
         usdt = raw.get("USDT", {})
         self._wallet_balance = float(usdt.get("free", 0))
         self.balance = float(usdt.get("total", 0))
         return self._wallet_balance
 
     async def get_position(self) -> dict | None:
-        positions = await _retry_api(
+        positions = await self._call(
             self.exchange.fetch_positions, [self.symbol]
         )
         for pos in positions:
@@ -147,14 +239,14 @@ class LiveExecutor:
         contracts = self._btc_to_contracts(size)
         params = {"tdMode": "cross"}
         if order_type == OrderType.MARKET:
-            order = await _retry_api(
+            order = await self._call(
                 self.exchange.create_order,
                 self.symbol, "market", order_side, contracts, params=params,
             )
         else:
             if fill_price is None:
                 raise ValueError("fill_price required for limit order")
-            order = await _retry_api(
+            order = await self._call(
                 self.exchange.create_order,
                 self.symbol, "limit", order_side, contracts, fill_price,
                 params=params,
@@ -175,7 +267,7 @@ class LiveExecutor:
         close_side = _close_order_side(side)
         contracts = self._btc_to_contracts(size)
         params = {"tdMode": "cross", "reduceOnly": True}
-        order = await _retry_api(
+        order = await self._call(
             self.exchange.create_order,
             self.symbol, order_type.value, close_side, contracts, params=params,
         )
@@ -190,7 +282,7 @@ class LiveExecutor:
     ) -> dict:
         close_side = _close_order_side(side)
         contracts = self._btc_to_contracts(size)
-        order = await _retry_api(
+        order = await self._call(
             self.exchange.create_order,
             self.symbol, "market", close_side, contracts,
             params={
@@ -210,7 +302,7 @@ class LiveExecutor:
     ) -> dict:
         close_side = _close_order_side(side)
         contracts = self._btc_to_contracts(size)
-        order = await _retry_api(
+        order = await self._call(
             self.exchange.create_order,
             self.symbol, "market", close_side, contracts,
             params={
@@ -226,11 +318,11 @@ class LiveExecutor:
         return order
 
     async def cancel_all_orders(self) -> None:
-        orders = await _retry_api(self.exchange.fetch_open_orders, self.symbol)
+        orders = await self._call(self.exchange.fetch_open_orders, self.symbol)
         cancelled = 0
         for order in orders:
             try:
-                await _retry_api(
+                await self._call(
                     self.exchange.cancel_order, order["id"], self.symbol
                 )
                 cancelled += 1
@@ -249,7 +341,7 @@ class LiveExecutor:
             if since:
                 dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
                 since_ms = int(dt.timestamp() * 1000)
-            raw = await _retry_api(
+            raw = await self._call(
                 self.exchange.fetch_funding_history,
                 self.symbol, since=since_ms, limit=100,
             )

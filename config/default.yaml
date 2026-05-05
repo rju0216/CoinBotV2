@@ -20,6 +20,10 @@ risk:                                # 엔진 전역 안전장치
     enabled: false                   # default 비활성 — 활성화 시 ATR 기반 size 축소만 적용
     target_atr_pct: 0.005            # 평소 변동성 기준 (entry_timeframe ATR_pct)
     lookback: 14                     # ATR 산출 기간
+  circuit_breaker:                   # BL-2-1: API 연속 실패 자동 차단 (사안 G 나)
+    enabled: true                    # default 활성 (라이브 안전망)
+    failure_threshold: 5             # 연속 실패 5회 → CircuitBreakerOpen + 새 진입 차단
+    auto_resume: false               # 사용자 manual 해제 (CoreEngine 재시작 또는 broker.executor.circuit_breaker.reset())
 
 accounting:
   taker_fee_pct: 0.0005
@@ -38,6 +42,33 @@ live:
     min_acc_threshold: 0.50          # 적중률 < 이 값이면 알림
     cooldown_bars: 10                # 알림 후 재알림까지 최소 봉 수
     alert_method: "log"              # 현재 "log"만 지원. 미래: "telegram" / "email"
+    warmup_decay_threshold_pct: 0.10 # BL-2 추가: 학습 OOS Acc - warmup 적중률 ≥ 이 값이면 alpha decay 알림
+
+  orderbook:                         # BL-2-2: 호가창 수집 인프라 (paper 모드용)
+    enabled: false                   # default 비활성 (paper 시연 시 활성)
+    depth: 20                        # 호가 단계 수 (사안 Z'' 나)
+    save_dir: "data/orderbook"       # parquet 저장 디렉토리
+
+  notifications:                     # BL-2-1: 알림 인프라 (사안 T'' 가, V'' default+POSITION on)
+    enabled: true                    # default 활성 (LogNotifier만)
+    channels: ["log"]                # 사용자가 텔레그램 추가 시 ["log", "telegram"]
+    telegram:
+      bot_token: ""                  # @BotFather에서 발급 후 입력
+      chat_id: ""                    # 본인 chat_id 입력
+    email:                           # 옵션 (사용자 SMTP 설정 시)
+      smtp_host: ""
+      smtp_port: 587
+      username: ""
+      password: ""
+      from_addr: ""
+      to_addr: ""
+    levels:                          # 각 이벤트의 송신 활성/비활성 (사안 V'')
+      drawdown_lock: true
+      daily_loss_lock: true
+      circuit_breaker: true
+      oos_decay: true
+      position_open: true            # V'' default on 결정
+      position_close: true           # V'' default on 결정
 
 data:
   history_bars: 300

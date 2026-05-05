@@ -68,6 +68,78 @@ class TestPositionSizing:
         assert size_high < 6 * size_low + 1e-6  # ratio 6배 미만 (leverage cap)
 
 
+# ─── BL-2-1: EventBus 통합 ───
+
+
+class _MockEventBus:
+    def __init__(self):
+        self.events: list[tuple[str, dict]] = []
+
+    async def publish(self, event_type, data):
+        self.events.append((event_type, data))
+
+
+class TestEventBusIntegration:
+    @pytest.mark.asyncio
+    async def test_drawdown_lock_publishes_event(self):
+        import asyncio
+        rm = RiskManager(_make_config())
+        bus = _MockEventBus()
+        rm.attach_event_bus(bus)
+        rm.set_initial_balance(10000)
+        rm.peak_equity = 10000
+        # balance $8400 → 16% drawdown > 15% limit
+        assert rm.validate_order(8400, current_position_count=0) is False
+        assert rm.is_drawdown_locked is True
+        # publish는 fire-and-forget create_task — 잠시 대기
+        await asyncio.sleep(0.01)
+        assert any(e[0] == "drawdown_locked" for e in bus.events)
+        evt = next(e[1] for e in bus.events if e[0] == "drawdown_locked")
+        assert "drawdown_pct" in evt
+        assert "balance" in evt
+
+    @pytest.mark.asyncio
+    async def test_daily_loss_publishes_event_once(self):
+        import asyncio
+        rm = RiskManager(_make_config())
+        bus = _MockEventBus()
+        rm.attach_event_bus(bus)
+        rm.set_initial_balance(10000)
+        rm.daily_pnl = -600  # -6% > 5% limit
+        # 3회 호출 — publish는 1회만
+        for _ in range(3):
+            assert rm.validate_order(10000, current_position_count=0) is False
+        await asyncio.sleep(0.01)
+        events = [e for e in bus.events if e[0] == "daily_loss_locked"]
+        assert len(events) == 1
+
+    @pytest.mark.asyncio
+    async def test_reset_daily_pnl_allows_new_publish(self):
+        import asyncio
+        rm = RiskManager(_make_config())
+        bus = _MockEventBus()
+        rm.attach_event_bus(bus)
+        rm.set_initial_balance(10000)
+        rm.daily_pnl = -600
+        rm.validate_order(10000, current_position_count=0)
+        await asyncio.sleep(0.01)
+        rm.reset_daily_pnl()
+        # 다시 daily loss 트리거 → 두 번째 publish
+        rm.daily_pnl = -600
+        rm.validate_order(10000, current_position_count=0)
+        await asyncio.sleep(0.01)
+        events = [e for e in bus.events if e[0] == "daily_loss_locked"]
+        assert len(events) == 2
+
+    def test_no_event_bus_does_not_crash(self):
+        # event_bus 미연결 시에도 정상 동작 (logger만)
+        rm = RiskManager(_make_config())
+        rm.set_initial_balance(10000)
+        rm.peak_equity = 10000
+        assert rm.validate_order(8400, current_position_count=0) is False
+        assert rm.is_drawdown_locked is True
+
+
 class TestVolatilityFactor:
     """BP-2-2 동적 사이징 (사안 J 가: 축소만)."""
 

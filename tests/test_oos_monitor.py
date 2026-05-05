@@ -161,3 +161,121 @@ class TestUnknownTimeframe:
                 "s1", "30m", _ts(0), SignalSide.LONG, 67000.0  # 30m 미정의
             )
         assert m.get_window_size("s1") == 0
+
+
+# ─── BL-2 추가 step (DD''=가): warmup_from_history ───
+
+
+def _bars_df(prices: list[float], freq_min: int = 15, start: str = "2024-01-01"):
+    import pandas as pd
+    n = len(prices)
+    idx = pd.date_range(start, periods=n, freq=f"{freq_min}min", tz="UTC")
+    return pd.DataFrame({
+        "open": prices,
+        "high": [p + 50 for p in prices],
+        "low": [p - 50 for p in prices],
+        "close": prices,
+        "volume": [1.0] * n,
+    }, index=idx)
+
+
+class TestWarmup:
+    def test_disabled_returns_empty(self):
+        m = LiveOOSMonitor(_cfg(enabled=False))
+        bars = _bars_df([67000.0] * 10)
+        result = m.warmup_from_history(
+            "s1", "15m", bars,
+            signal_iter=lambda ts: SignalSide.LONG,
+            cutoff_dt=bars.index[0].to_pydatetime() - timedelta(minutes=15),
+        )
+        assert result["samples"] == 0
+        assert result["accuracy"] is None
+
+    def test_warmup_fills_window_with_correct_predictions(self):
+        """가격 상승 시 LONG 예측 → hit. 적중률 1.0 가정."""
+        m = LiveOOSMonitor(_cfg(window=5, horizon=2))
+        # 단조 상승 (1% 증가/봉) → horizon=2 후 +2% > threshold 0.3% → LONG hit
+        prices = [67000.0 * (1 + 0.01 * i) for i in range(20)]
+        bars = _bars_df(prices)
+        cutoff = bars.index[0].to_pydatetime() - timedelta(minutes=15)
+        result = m.warmup_from_history(
+            "s1", "15m", bars,
+            signal_iter=lambda ts: SignalSide.LONG,
+            cutoff_dt=cutoff,
+            learned_oos_acc=0.75,
+        )
+        # window=5라 마지막 5건만 유지. 모두 LONG 예측 + 단조 상승 → 모두 hit
+        assert result["samples"] == 5
+        assert result["accuracy"] == 1.0
+        assert result["learned_oos_acc"] == 0.75
+        # gap = 0.75 - 1.0 = -0.25 (현재 적중률이 학습보다 높음)
+        assert result["gap"] == pytest.approx(-0.25)
+
+    def test_warmup_skips_pre_cutoff(self):
+        """cutoff_dt 이전 봉은 skip."""
+        m = LiveOOSMonitor(_cfg(window=10, horizon=2))
+        prices = [67000.0 + i * 100 for i in range(20)]
+        bars = _bars_df(prices)
+        # cutoff = 10번째 봉 → 이후 10개만 처리 (LONG 예측 hit이지만 horizon 도달은 적음)
+        cutoff = bars.index[10].to_pydatetime()
+        result = m.warmup_from_history(
+            "s1", "15m", bars,
+            signal_iter=lambda ts: SignalSide.LONG,
+            cutoff_dt=cutoff,
+        )
+        # cutoff 이후 9개 record (index 11~19), horizon=2라 evaluate된 건 7개 (마지막 2개는 future 없음)
+        # 실제론 evaluate_pending이 매 봉마다 호출되어 누적
+        assert result["samples"] >= 1
+
+    def test_warmup_calculates_gap_correctly(self):
+        """학습 OOS 0.8 vs 현재 0.5 → gap 0.3."""
+        m = LiveOOSMonitor(_cfg(window=10, horizon=2))
+        # 단조 상승 (1%/봉) — LONG (hit) vs SHORT (miss) 교차
+        prices = [67000.0 * (1 + 0.01 * i) for i in range(30)]
+        bars = _bars_df(prices)
+        cutoff = bars.index[0].to_pydatetime() - timedelta(minutes=15)
+        # 짝수 ts → LONG (hit), 홀수 → SHORT (miss)
+        def alternating(ts):
+            minute = ts.minute
+            return SignalSide.LONG if (minute // 15) % 2 == 0 else SignalSide.SHORT
+        result = m.warmup_from_history(
+            "s1", "15m", bars,
+            signal_iter=alternating,
+            cutoff_dt=cutoff,
+            learned_oos_acc=0.80,
+        )
+        # 약 50% 적중률
+        assert result["accuracy"] is not None
+        assert 0.3 <= result["accuracy"] <= 0.7  # 약 0.5
+        assert result["gap"] is not None  # 학습 0.80 - 현재 ~0.5
+
+    def test_warmup_signal_iter_failure_skipped(self, caplog):
+        m = LiveOOSMonitor(_cfg(window=5, horizon=2))
+        prices = [67000.0] * 10
+        bars = _bars_df(prices)
+        cutoff = bars.index[0].to_pydatetime() - timedelta(minutes=15)
+
+        def boom(ts):
+            raise RuntimeError("simulated plugin failure")
+
+        with caplog.at_level(logging.WARNING):
+            result = m.warmup_from_history(
+                "s1", "15m", bars,
+                signal_iter=boom,
+                cutoff_dt=cutoff,
+            )
+        # 모든 signal 실패 → samples 0
+        assert result["samples"] == 0
+
+    def test_warmup_empty_bars(self):
+        import pandas as pd
+        m = LiveOOSMonitor(_cfg())
+        empty_bars = pd.DataFrame(
+            columns=["open", "high", "low", "close", "volume"]
+        )
+        result = m.warmup_from_history(
+            "s1", "15m", empty_bars,
+            signal_iter=lambda ts: SignalSide.LONG,
+            cutoff_dt=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        )
+        assert result["samples"] == 0

@@ -11,6 +11,7 @@ from typing import Any
 
 from src.accounting.fee_model import FeeModel
 from src.core.enums import OrderType, PositionSide
+from src.data.orderbook import compute_market_impact
 
 logger = logging.getLogger(__name__)
 
@@ -66,30 +67,40 @@ class PaperExecutor:
         size: float,
         fill_price: float | None = None,
         order_type: OrderType = OrderType.MARKET,
+        orderbook: dict | None = None,
     ) -> dict:
         if fill_price is None or fill_price <= 0:
             logger.error("Cannot open paper position without fill_price")
             return {}
+        # BL-2-2 (사안 CC''' 가): orderbook 가용 시 VWAP 침투 가격으로 effective_price.
+        # None / 계산 실패 시 fill_price fallback (silent, 기존 동작 보존)
+        effective_price = fill_price
+        if orderbook is not None:
+            vwap = compute_market_impact(orderbook, side, size)
+            if vwap is not None and vwap > 0:
+                effective_price = vwap
         if self._position is not None:
             logger.warning(
                 "Open while position exists; closing existing first @ %.2f",
-                fill_price,
+                effective_price,
             )
-            self._close_internal(fill_price)
+            self._close_internal(effective_price)
         self._position = {
             "side": side,
             "size": float(size),
-            "entry_price": float(fill_price),
+            "entry_price": float(effective_price),
         }
         self._order_id += 1
         logger.info(
-            "Paper open: %s %.4f @ %.2f", side.value, size, fill_price
+            "Paper open: %s %.4f @ %.2f (slippage %+.4f vs fill_price %.2f)",
+            side.value, size, effective_price,
+            effective_price - fill_price, fill_price,
         )
         return {
             "id": str(self._order_id),
             "side": side.value,
             "size": size,
-            "price": fill_price,
+            "price": effective_price,
         }
 
     async def close_position(
@@ -98,15 +109,26 @@ class PaperExecutor:
         size: float,
         fill_price: float | None = None,
         order_type: OrderType = OrderType.MARKET,
+        orderbook: dict | None = None,
     ) -> dict:
         if self._position is None or fill_price is None:
             return {}
-        self._close_internal(fill_price)
+        # BL-2-2: 청산 시 반대 방향으로 호가창 침투 (LONG 청산 = bids, SHORT 청산 = asks).
+        # close 방향은 진입 side의 반대.
+        effective_price = fill_price
+        if orderbook is not None:
+            close_side = (
+                PositionSide.SHORT if side == PositionSide.LONG else PositionSide.LONG
+            )
+            vwap = compute_market_impact(orderbook, close_side, size)
+            if vwap is not None and vwap > 0:
+                effective_price = vwap
+        self._close_internal(effective_price)
         self._order_id += 1
         return {
             "id": str(self._order_id),
             "status": "closed",
-            "price": fill_price,
+            "price": effective_price,
         }
 
     def _close_internal(self, exit_price: float) -> None:

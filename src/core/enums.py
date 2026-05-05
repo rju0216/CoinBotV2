@@ -59,4 +59,6 @@ class EventType(str, Enum):
     EQUITY_UPDATED = "equity_updated"
     DRAWDOWN_LOCKED = "drawdown_locked"
     DAILY_LOSS_LOCKED = "daily_loss_locked"
+    CIRCUIT_BREAKER_OPEN = "circuit_breaker_open"  # BL-2-1
+    OOS_DECAY = "oos_decay"  # BL-2-1 (LiveOOSMonitor → notifier 라우팅)
     ERROR = "error"

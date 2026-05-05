@@ -342,6 +342,10 @@ class AbstractEngine(ABC):
         if self._position is not None:
             return False
 
+        # BL-2-1: Circuit breaker OPEN 시 새 진입 차단 (사안 U''=나 trade 일시 중단)
+        if getattr(self, "_circuit_breaker_open", False):
+            return False
+
         # 위험 검증
         if not self.risk_manager.validate_order(
             ctx.balance, current_position_count=0
@@ -381,8 +385,10 @@ class AbstractEngine(ABC):
 
         # 진입 주문
         position_side = signal_side_to_position_side(signal.side)
+        # BL-2-2: paper 모드에서 호가창 가용 시 VWAP 침투 가격 사용 (silent fallback)
         order = await self.broker.open_position(
-            position_side, size, fill_price=ctx.current_price
+            position_side, size, fill_price=ctx.current_price,
+            orderbook=getattr(self, "_latest_orderbook", None),
         )
         if not order:
             logger.error("Open order failed for %s", strategy.name)
@@ -462,8 +468,10 @@ class AbstractEngine(ABC):
             logger.warning("cancel_all_orders failed: %s", e)
 
         # 거래소/시뮬 청산
+        # BL-2-2: paper 모드에서 호가창 가용 시 VWAP 침투 가격 사용 (silent fallback)
         await self.broker.close_position(
-            pos.side, pos.size, fill_price=exit_price
+            pos.side, pos.size, fill_price=exit_price,
+            orderbook=getattr(self, "_latest_orderbook", None),
         )
 
         # 수수료·PnL 정산 — FeeModel 단일 공식
