@@ -115,6 +115,7 @@ class TestSplitToOosYears:
     @pytest.mark.parametrize("split,years", [
         ("1", 1.0), ("A", 1.0), ("B", 1.0),
         ("Exp2", 2.0), ("Exp3", 3.0), ("Exp4", 4.0),
+        ("Regime", 2.0),  # BL-1-4: 2020-2021 강세 bull
         ("unknown", 1.0),
     ])
     def test_split_id_mapping(self, split, years):
