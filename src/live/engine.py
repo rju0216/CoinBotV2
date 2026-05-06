@@ -636,13 +636,17 @@ class CoreEngine(AbstractEngine):
     async def _fetch_actual_exit(
         self, trade: dict,
     ) -> tuple[float, float, str] | None:
-        """I-BL013: 거래소에서 trade의 실제 청산 정보 fetch (best-effort).
+        """I-BL013: 거래소에서 trade의 실제 청산 정보 fetch.
 
-        ccxt fetch_my_trades로 trade의 entry timestamp 이후 reduceOnly 체결을 찾아
-        (exit_price, pnl, reason) 반환. paper/sandbox 또는 fetch 실패 시 None.
+        ccxt `fetch_closed_orders`로 reduceOnly + 반대 방향 closed order 찾아
+        (exit_price, pnl, reason) 반환. fetch_my_trades보다 reduceOnly 식별이 정확
+        (진단 결과 fetch_my_trades는 reduceOnly key 누락).
+
+        PnL = (exit - entry) × size × side_sign - 진입_fee - 청산_fee
+        - 수수료는 config의 taker_fee_pct로 추정 (실제 OKX 표시값과 ~$0.5 오차 가능)
 
         Returns:
-            (exit_price, pnl, reason) 또는 None (실패 시 caller가 fallback)
+            (exit_price, pnl, reason) 또는 None (paper 모드/fetch 실패 시 caller가 fallback)
         """
         if not self.broker.is_live:
             return None
@@ -659,55 +663,58 @@ class CoreEngine(AbstractEngine):
                 since_ms = None
 
             symbol = self.config["exchange"]["symbol"]
-            raw_trades = await executor.exchange.fetch_my_trades(
+            orders = await executor.exchange.fetch_closed_orders(
                 symbol, since=since_ms, limit=50,
             )
 
             entry_size = float(trade["size"])
+            entry_price = float(trade["entry_price"])
             entry_side_str = trade["side"]
             close_side_str = "sell" if entry_side_str == "long" else "buy"
 
-            # reduceOnly + 반대 방향 체결 찾기 (가장 최근)
-            for t in reversed(raw_trades):
-                info = t.get("info") or {}
+            # reduceOnly + 반대 방향 closed order 찾기 (가장 최근부터)
+            for o in reversed(orders):
+                info = o.get("info") or {}
+                # reduceOnly: ccxt가 raw bool로 제공하거나 info의 string ("true")으로 제공
+                reduce_raw = o.get("reduceOnly")
                 is_reduce = (
-                    str(info.get("reduceOnly", "")).lower() == "true"
-                    or str(info.get("reduceonly", "")).lower() == "true"
+                    reduce_raw is True
+                    or str(info.get("reduceOnly", "")).lower() == "true"
                 )
-                t_side = str(t.get("side", "")).lower()
-                t_amount = float(t.get("amount") or 0)
-                if (
-                    t_side == close_side_str
-                    and abs(t_amount * executor.contract_size - entry_size) < 1e-4
-                    and (is_reduce or True)  # OKX info의 reduceOnly key 변동 가능 — 방향+수량 매칭만으로도 충분
-                ):
-                    exit_price = float(t.get("price") or 0)
-                    fee_cost = float((t.get("fee") or {}).get("cost") or 0)
-                    side_sign = 1 if entry_side_str == "long" else -1
-                    gross_pnl = (
-                        (exit_price - float(trade["entry_price"]))
-                        * entry_size * side_sign
+                if not is_reduce:
+                    continue
+                if str(o.get("side", "")).lower() != close_side_str:
+                    continue
+
+                exit_price = float(o.get("average") or 0)
+                if exit_price <= 0:
+                    continue
+
+                # PnL 계산: gross + 진입/청산 수수료 추정
+                taker_fee = float(
+                    self.config.get("accounting", {}).get("taker_fee_pct", 0.0005)
+                )
+                side_sign = 1 if entry_side_str == "long" else -1
+                gross_pnl = (exit_price - entry_price) * entry_size * side_sign
+                entry_fee_est = entry_price * entry_size * taker_fee
+                close_fee_est = exit_price * entry_size * taker_fee
+                net_pnl = gross_pnl - entry_fee_est - close_fee_est
+
+                # 청산 사유 추정 (LONG: exit<entry → SL / SHORT: exit>entry → SL)
+                if side_sign == 1:
+                    reason = (
+                        ExitReason.SL_HIT.value if exit_price < entry_price
+                        else ExitReason.TP_HIT.value
                     )
-                    # 진입 수수료도 차감 (taker fee 추정 — fetch_my_trades에서 진입 trade도 찾을 수 있지만 단순화)
-                    entry_fee_estimate = (
-                        float(trade["entry_price"]) * entry_size * 0.0005
+                else:
+                    reason = (
+                        ExitReason.SL_HIT.value if exit_price > entry_price
+                        else ExitReason.TP_HIT.value
                     )
-                    net_pnl = gross_pnl - fee_cost - entry_fee_estimate
-                    # 청산 사유 추정: SL_HIT (exit < entry) for long, opposite for short
-                    if side_sign == 1:
-                        reason = (
-                            ExitReason.SL_HIT.value if exit_price < float(trade["entry_price"])
-                            else ExitReason.TP_HIT.value
-                        )
-                    else:
-                        reason = (
-                            ExitReason.SL_HIT.value if exit_price > float(trade["entry_price"])
-                            else ExitReason.TP_HIT.value
-                        )
-                    return exit_price, net_pnl, reason
+                return exit_price, net_pnl, reason
             return None
         except Exception as e:
-            logger.warning("fetch_my_trades 실패 (best-effort): %s", e)
+            logger.warning("fetch_closed_orders 실패 (best-effort): %s", e)
             return None
 
     @staticmethod

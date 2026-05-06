@@ -119,11 +119,11 @@ class TestEngineCloseRobustness:
 
 
 class TestFetchActualExit:
-    """_fetch_actual_exit이 거래소 trade history에서 정확한 청산 정보 추출."""
+    """_fetch_actual_exit이 거래소 fetch_closed_orders에서 정확한 청산 정보 추출."""
 
     @pytest.mark.asyncio
     async def test_fetch_returns_actual_exit_data(self):
-        """fetch_my_trades에서 reduceOnly 체결 찾아 exit_price/pnl 반환."""
+        """fetch_closed_orders에서 reduceOnly + 반대 방향 order 찾아 exit_price/pnl 반환."""
         from src.live.engine import CoreEngine
 
         class _MockEngine:
@@ -133,20 +133,21 @@ class TestFetchActualExit:
                 self.broker = MagicMock()
                 self.broker.is_live = True
                 executor = MagicMock()
-                executor.contract_size = 0.01
                 executor.exchange = MagicMock()
-                # OKX 청산 trade mock — sell side, reduceOnly, 7.5 contracts
-                executor.exchange.fetch_my_trades = AsyncMock(return_value=[
+                # OKX 청산 order mock — sell side, reduceOnly, avgPx
+                executor.exchange.fetch_closed_orders = AsyncMock(return_value=[
                     {
                         "info": {"reduceOnly": "true"},
                         "side": "sell",
-                        "amount": 7.5,
-                        "price": 81707.2,
-                        "fee": {"cost": 3.06},
+                        "average": 81707.297,
+                        "status": "closed",
                     },
                 ])
                 self.broker.executor = executor
-                self.config = {"exchange": {"symbol": "BTC/USDT:USDT"}}
+                self.config = {
+                    "exchange": {"symbol": "BTC/USDT:USDT"},
+                    "accounting": {"taker_fee_pct": 0.0005},
+                }
 
         engine = _MockEngine()
         trade = {
@@ -157,11 +158,86 @@ class TestFetchActualExit:
         result = await engine._fetch_actual_exit(trade)
         assert result is not None
         exit_price, pnl, reason = result
-        assert exit_price == 81707.2
-        # gross_pnl = (81707.2 - 82159.5) × 0.075 = -33.92
-        # net_pnl = -33.92 - 3.06 (청산 fee) - 3.08 (진입 fee 추정) ≈ -40.06
-        assert pnl < -38.0 and pnl > -42.0  # 대략 -40 근처
+        assert exit_price == pytest.approx(81707.297)
+        # gross = (81707.297 - 82159.5) × 0.075 = -33.915
+        # entry_fee = 82159.5 × 0.075 × 0.0005 = 3.081
+        # close_fee = 81707.297 × 0.075 × 0.0005 = 3.064
+        # net = -33.915 - 3.081 - 3.064 ≈ -40.06
+        assert pnl == pytest.approx(-40.06, abs=0.1)
         assert reason == ExitReason.SL_HIT.value  # exit < entry → SL
+
+    @pytest.mark.asyncio
+    async def test_fetch_skips_non_reduceonly_orders(self):
+        """reduceOnly=false 인 order는 skip (진입 order 등)."""
+        from src.live.engine import CoreEngine
+
+        class _MockEngine:
+            _fetch_actual_exit = CoreEngine._fetch_actual_exit
+
+            def __init__(self):
+                self.broker = MagicMock()
+                self.broker.is_live = True
+                executor = MagicMock()
+                executor.exchange = MagicMock()
+                # 진입 order(buy, reduceOnly=false) + 청산 order(sell, reduceOnly=true)
+                executor.exchange.fetch_closed_orders = AsyncMock(return_value=[
+                    {
+                        "info": {"reduceOnly": "false"},
+                        "side": "buy", "average": 82170.1, "status": "closed",
+                    },
+                    {
+                        "info": {"reduceOnly": "true"},
+                        "side": "sell", "average": 81707.297, "status": "closed",
+                    },
+                ])
+                self.broker.executor = executor
+                self.config = {
+                    "exchange": {"symbol": "BTC/USDT:USDT"},
+                    "accounting": {"taker_fee_pct": 0.0005},
+                }
+
+        engine = _MockEngine()
+        result = await engine._fetch_actual_exit({
+            "id": 1, "side": "long", "size": 0.075, "entry_price": 82159.5,
+            "timestamp": "2026-05-06T21:15:01+00:00",
+        })
+        assert result is not None
+        exit_price, _, _ = result
+        # 진입 order(82170)이 아닌 reduceOnly=true 청산 order(81707) 선택
+        assert exit_price == pytest.approx(81707.297)
+
+    @pytest.mark.asyncio
+    async def test_fetch_skips_same_side_orders(self):
+        """반대 방향이 아닌 order는 skip (예: long 포지션의 buy reduceOnly는 hedge 모드 가능성)."""
+        from src.live.engine import CoreEngine
+
+        class _MockEngine:
+            _fetch_actual_exit = CoreEngine._fetch_actual_exit
+
+            def __init__(self):
+                self.broker = MagicMock()
+                self.broker.is_live = True
+                executor = MagicMock()
+                executor.exchange = MagicMock()
+                # buy reduceOnly만 있고 sell이 없음 (long 청산이 아님)
+                executor.exchange.fetch_closed_orders = AsyncMock(return_value=[
+                    {
+                        "info": {"reduceOnly": "true"},
+                        "side": "buy", "average": 81700.0, "status": "closed",
+                    },
+                ])
+                self.broker.executor = executor
+                self.config = {
+                    "exchange": {"symbol": "BTC/USDT:USDT"},
+                    "accounting": {"taker_fee_pct": 0.0005},
+                }
+
+        engine = _MockEngine()
+        result = await engine._fetch_actual_exit({
+            "id": 1, "side": "long", "size": 0.075, "entry_price": 82159.5,
+            "timestamp": "2026-05-06T21:15:01+00:00",
+        })
+        assert result is None  # 매칭되는 close order 없음
 
     @pytest.mark.asyncio
     async def test_fetch_returns_none_on_paper_mode(self):
@@ -181,7 +257,7 @@ class TestFetchActualExit:
 
     @pytest.mark.asyncio
     async def test_fetch_returns_none_on_api_failure(self):
-        """fetch_my_trades exception 시 None 반환 (caller가 fallback 처리)."""
+        """fetch_closed_orders exception 시 None 반환 (caller가 fallback 처리)."""
         from src.live.engine import CoreEngine
 
         class _MockEngine:
@@ -191,9 +267,8 @@ class TestFetchActualExit:
                 self.broker = MagicMock()
                 self.broker.is_live = True
                 executor = MagicMock()
-                executor.contract_size = 0.01
                 executor.exchange = MagicMock()
-                executor.exchange.fetch_my_trades = AsyncMock(
+                executor.exchange.fetch_closed_orders = AsyncMock(
                     side_effect=Exception("API rate limit")
                 )
                 self.broker.executor = executor
@@ -205,6 +280,42 @@ class TestFetchActualExit:
             "timestamp": "2026-05-06T21:15:01+00:00",
         })
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_fetch_short_position_tp_hit(self):
+        """SHORT 포지션에서 exit < entry는 TP (profit), exit > entry는 SL (loss)."""
+        from src.live.engine import CoreEngine
+
+        class _MockEngine:
+            _fetch_actual_exit = CoreEngine._fetch_actual_exit
+
+            def __init__(self):
+                self.broker = MagicMock()
+                self.broker.is_live = True
+                executor = MagicMock()
+                executor.exchange = MagicMock()
+                # SHORT 청산 = buy reduceOnly. exit < entry → TP_HIT
+                executor.exchange.fetch_closed_orders = AsyncMock(return_value=[
+                    {
+                        "info": {"reduceOnly": "true"},
+                        "side": "buy", "average": 81000.0, "status": "closed",
+                    },
+                ])
+                self.broker.executor = executor
+                self.config = {
+                    "exchange": {"symbol": "BTC/USDT:USDT"},
+                    "accounting": {"taker_fee_pct": 0.0005},
+                }
+
+        engine = _MockEngine()
+        result = await engine._fetch_actual_exit({
+            "id": 1, "side": "short", "size": 0.075, "entry_price": 82000.0,
+            "timestamp": "2026-05-06T21:15:01+00:00",
+        })
+        assert result is not None
+        _, pnl, reason = result
+        assert reason == ExitReason.TP_HIT.value
+        assert pnl > 0  # short + 가격 하락 → 수익
 
 
 # ─── I-BL011: _verify_and_restore_sl_tp ───
