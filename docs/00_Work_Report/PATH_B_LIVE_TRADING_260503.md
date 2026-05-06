@@ -361,6 +361,35 @@ python -m src.main paper --config config/ensemble.yaml
 - Circuit breaker (자연 발생 시)
 - 첫 거래 발생 (~5-10건/일 예상)
 
+**실제 운영 결과 (2026-05-05 ~ 2026-05-06, 조기 종료)**:
+
+학습 cutoff 결정은 **2026-04-01** (3-5/일 거래 빈도 추정 시 cutoff 후 가용 봉으로 OOS warm-up window 100 충족 보장. v009 → v010으로 재학습). paper 1차 시도(v010, 21:35 KST)에서 5시간 운영 중 다수 잠재 이슈 노출 → 7건 hotfix 후 재실행 반복.
+
+| 검증 포인트 | 상태 | 비고 |
+|---|---|---|
+| DataFeed 라이브 가격 수신 안정성 | ✅ 충족 | 1006 disconnect 발생 시 watchdog timeout(I-BL006 fix)으로 자동 복구 |
+| 봉 마감 → 신호 생성 흐름 | ✅ 충족 | Phase 3-D fix 후 매 봉 정상 [SIGNAL] 출력 (gap=0 일관) |
+| OOS monitor warm-up 즉시 적중률 | ✅ 충족 | samples=100, accuracy=0.8200, learned_oos_acc=0.7674, gap=-0.0526 (alpha decay 없음, ensemble 효과 +5.26%p) |
+| 호가창 fetch + parquet 저장 | ✅ 충족 | I-BL005 fix 후 봉당 1회 정상 (이전 25,376행 폭증 → 정상화) |
+| DB 기록 정확성 | ✅ 충족 | equity 봉 마감마다 정상 기록 |
+| 4 sub-plugin 정상 voting | ✅ 충족 | contributors 4/4 일관 |
+| 학습-추론 cycle 일관성 (Phase 3-D) | ✅ 충족 | 라이브 path도 `ts < now` 적용 — backtest와 정확 동일 cycle 명시 |
+| 텔레그램 ENTRY/EXIT 알림 | ⏸ 미검증 | 거래 0건 (paper 운영 중 시장 횡보 — `H:0.94+` 강한 HOLD 신호 지속). paper 시작 전 텔레그램 자체 검증 ✅ + 단위 테스트(notifier 14건) ✅로 우회 검증 |
+| 거래 진입/청산 흐름 | ⏸ 미검증 | 거래 0건. 단위 테스트(paper_executor 8건, engine_base 등)로 우회 검증 ✅ |
+| Circuit breaker 자연 발생 | ⏸ 미검증 | 자연 발생 안 함. 단위 테스트 11건으로 검증 ✅ |
+| OOS decay 알림 | ⏸ 미발생 | gap=-0.05라 임계 미달 (정상) |
+
+**조기 종료 결정 근거 (2026-05-06)**:
+- 핵심 검증 포인트 7개 충족 — paper의 본 목적(코드 통합 흐름 + 운영 절차 + 학습-추론 cycle 일관성) 달성
+- 미검증 3개는 **시장 변동성/거래 발생 의존** — paper 더 운영해도 보장 X
+- 미검증 영역은 단위 테스트로 우회 검증 + BL-2-4 진입 시 자연 검증 가능
+- 시간 비용 vs 추가 검증 가치 판단
+
+**Phase 3-D 본질 fix 효과**:
+- 라이브 운영의 신호 결정 cycle이 backtest 결과를 그대로 재현 보장
+- gap=0/1 변동성 사라짐 → 동일 시점 동일 데이터에 동일 신호 → **매매 일관성 결정론적 보장**
+- BL-2-4 (소액 실거래) 진입 시 backtest 기대값 그대로 적용 가능
+
 #### 4.2.4 소액 실거래 점진 전환 (BL-2-4, 사용자 운영)
 
 **작업** (BL-2-3 paper 1일 안정 확인 후):
@@ -425,7 +454,7 @@ python -m src.main paper --config config/ensemble.yaml
 | 2026-05-05 | └ BL-2-1 Fail-safe (notifier + CircuitBreaker + RiskManager event_bus) | ✅ 완료 | (이번 커밋) | 단위 33건. 텔레그램 .env 통합 |
 | 2026-05-05 | └ BL-2-2 호가창 인프라 (paper VWAP) | ✅ 완료 | (이번 커밋) | 단위 22건. ccxt fetch_order_book + parquet append |
 | 2026-05-05 | └ BL-2 추가 step OOS warm-up (DD''=가, EE''=yes) | ✅ 완료 | (이번 커밋) | 학습 cutoff 이후 buffer 사전 채움 + 격차 ≥ 10%p 알림 |
-| (대기) | └ BL-2-3 Paper trading 1일 | 대기 (사용자) | — | v009 재학습 → ensemble paper 1일. 통합 흐름 + 운영 절차 검증 |
+| 2026-05-06 | └ BL-2-3 Paper trading | ✅ 완료 (조기 종료) | (이번 커밋) | v010 ensemble paper 운영 + 7개 hotfix(I-BL003~I-BL007). 핵심 6개 검증 충족, 거래 흐름은 횡보장으로 미발생 — 단위 테스트로 우회 검증. §4.2.3 결과 참조 |
 | (대기) | └ BL-2-4 소액 실거래 점진 전환 | 대기 (사용자) | — | 자금 0.5-1% 시작 → 점진 확장 → 라이브 거래 시작 = 경로 B 완료 |
 | (확장) | PATH_B_LIVE_EXTENSION (별도 PATH) | 대기 | — | 다중 거래소 + ensemble walkforward + Survivorship + BP-1 데이터 carry |
 
@@ -437,9 +466,14 @@ python -m src.main paper --config config/ensemble.yaml
 |---|---|------|---|---|---|
 | I-BP001 | PATH_B_PRODUCTION carry-over (사안 H로 BP-1 스킵) | `FeeModel.estimate_funding`이 `funding_enabled=True`라도 0 반환. `engine_base.close_position`에 `funding_fee=0.0` 하드코드. 백테에 펀딩률 미반영. (PATH_B_PRODUCTION §7 동일) | src/accounting/fee_model.py + src/core/engine_base.py + src/backtest/engine.py | ~~BL-1 §3.2.6~~ → **BL 종착까지 carry-over (BL-1-5 미진입 확정)** | 미해결 — 보유 시간 평균 1.6시간으로 영향 미미 추정. **BL-2 §4.2.1 paper trading 시 펀딩률 실 비용 모니터링으로 재검증 필수** |
 | I-BL001 | BL-1-2 잠재 이슈 발견 (Multi-hypothesis 보정 step에서 calibrate_models.py 점검 중 발견) | `scripts/calibrate_models.py`가 `train.label_method` 미참조 — `generate_direction_labels`만 하드코드 사용. BP-3-3에서 `train.label_method=triple_barrier`로 학습된 v006 모델에 대해 calibrate_models.py가 direction labels로 calibrator 학습 → 모델 출력(barrier hit 확률)과 calibrator 학습 라벨(direction)의 의미적 mismatch | scripts/calibrate_models.py | **BL-1 Step B** | **✅ 해결 (BL-1 Step B + 사용자 v006/v007 재calibration)** — `build_labels_from_config` helper 사용. label_params 기록. v006/v007 모두 사용자가 재학습/재calibration 완료 |
-| I-BL002 | BL-1-3 종착 시 발견 (walkforward 평가가 4 단일 모델만 수행) | Ensemble plugin (BP-3-2)이 walkforward 평가 미수행. 단일 모델 walkforward 결과 (4 모델 26/26 positive)만으로 ensemble robust성 추정 불가. ensemble은 sub-plugin 인스턴스를 latest로 로드하므로 fold 모델별 평가 인프라가 필요 (`evaluate_models.py walkforward`가 ensemble.sub_params의 model_path를 fold_dir로 오버라이드하는 mechanism 부재) | src/strategy/plugins/ensemble.py + scripts/evaluate_models.py | BL-2 진입 전 별도 step 또는 BL-1-4 후속 | 미해결 — BL-2 paper trading 단계에서 ensemble 라이브 적용 전 walkforward 검증 권장. 단일 모델 walkforward에서 모두 robust 검증되어 우선순위 낮음 |
+| I-BL002 | BL-1-3 종착 시 발견 (walkforward 평가가 4 단일 모델만 수행) | Ensemble plugin (BP-3-2)이 walkforward 평가 미수행. 단일 모델 walkforward 결과 (4 모델 26/26 positive)만으로 ensemble robust성 추정 불가. ensemble은 sub-plugin 인스턴스를 latest로 로드하므로 fold 모델별 평가 인프라가 필요 | src/strategy/plugins/ensemble.py + scripts/evaluate_models.py | BL-2 진입 전 별도 step 또는 BL-1-4 후속 | 미해결 — BL-2 paper 단계에서 ensemble 라이브 적용 전 walkforward 검증 권장. 단일 모델 walkforward에서 모두 robust 검증되어 우선순위 낮음. **EXTENSION (BLE-2)로 carry** |
+| I-BL003 | BL-2-3 paper 시작 직후 발견 | ensemble 단독 활성 시 OOS warm-up이 ensemble buffer를 채우지 않아 paper 운영에서 warm-up 효과 없음. paper record는 strategy.name="ensemble" 1개라 sub-plugin warmup도 무용 | src/strategy/base.py + src/strategy/plugins/ensemble.py + src/live/engine.py | **BL-2-3 hotfix-A** | ✅ 해결 — `extract_train_meta` hook으로 plugin 캡슐화. 단위 10건 추가 (391→401 pass). paper 재실행 시 e2e 검증 (samples=100, gap=-0.0526) |
+| I-BL004 | BL-2-3 paper 1차 시도 후 (warmup 약 1시간) | `_warmup_one_strategy`가 매 ts마다 81 피처를 처음부터 재계산 (O(N²)). BacktestEngine은 이미 features 1회 계산 후 ctx.precomputed_features에 주입하는 패턴 보유 | src/live/engine.py | **BL-2-3 hotfix-B** | ✅ 해결 — `_features_cache` 임시 주입 + try/finally cleanup. paper 재실행 시 warmup 시간 1시간 → 1분 34초 단축 e2e 검증 |
+| I-BL005 | BL-2-3 paper 5시간 운영 후 (호가창 25,376행/4.5h, 기대치 ~18) | `_on_bar_closed`의 호가창 fetch가 `_should_process_bar` 검사 **앞**에 위치 — ccxt가 봉 진행 중 close 변동마다 _on_bar_closed 트리거 시 매번 fetch 발생 | src/live/engine.py | **BL-2-3 hotfix-C** | ✅ 해결 — 위치 이동 (단순). paper 재실행 시 호가창 정상 적재 |
+| I-BL006 | BL-2-3 paper 5시간 운영 후 (17:15 UTC 이후 새 봉 마감 미수신 ~50분 stuck) | ccxt.pro `watch_ohlcv`가 1006 disconnect 후 reconnect는 일부 성공했지만 일정 시간 후 hang 발생. except 진입 못 해 reconnect 루프 미진입 | src/data/feed.py | **BL-2-3 hotfix-D** | ✅ 해결 — `asyncio.wait_for` 120초 timeout + TimeoutError 별도 처리. 단위 3건 추가 |
+| I-BL007 | BL-2-3 paper 운영 중 발견 (ensemble HOLD 신호의 conf=1.00 빈발 → 분석 결과 라이브 추론이 backtest와 다른 cycle 가능) | sub-plugin이 진행 중 봉의 NaN row를 dropna로 우연히 제외하는 메커니즘에 의존. gap=0/1 변동성 발생 가능 → 동일 시점 동일 데이터에 다른 신호 가능 (매매 일관성 위협). 또한 sub-plugin 추론 실패 시 어떤 sub가 어떤 사유로 실패했는지 진단 정보 부재 (UX상 conf=1.00이 "확률 100% HOLD 확신"으로 오해 소지) | src/strategy/features.py + 4 sub-plugin + src/strategy/plugins/ensemble.py + src/live/engine.py | **BL-2-3 hotfix-F** (Phase 1 + 3 + 3-C + 3-D) | ✅ 해결 — Phase 1: sub-plugin fail_reason + nan_by_tf 진단. Phase 3: compute_multi_tf_features에서 진행 중 sub_tf 봉 제외. Phase 3-C: helper로 dropna 패턴 통일 (ML/DL 모두 학습-추론 일관). Phase 3-D: get_features_for_ctx 라이브 path도 `ts < now` 적용 — backtest와 정확 동일 cycle 명시 보장 (gap 변동성 제거). 단위 18건 추가 |
 
-신규 carry-over 후보 ID는 I-BL003~ 형태로 등록.
+신규 carry-over 후보 ID는 I-BL008~ 형태로 등록.
 
 ---
 
@@ -461,6 +495,39 @@ python -m src.main paper --config config/ensemble.yaml
 **라이브 채택 권장 (BL-2 시작 시)**:
 - 1순위: dl_transformer v007 + isotonic (walkforward + Regime 일관 1위)
 - 1순위 (다양성): ensemble (단일 OOS 1위, walkforward 미검증)
+
+### BL-2-3 종착 (2026-05-06) — BL-2-4 진입 준비 완료
+
+**핵심 검증 통과**:
+- ✅ DataFeed + WebSocket 안정성 (watchdog 자동 복구)
+- ✅ 봉 마감 → 신호 생성 흐름 (gap=0 일관)
+- ✅ OOS warm-up baseline (gap=-0.0526, ensemble 적중률 82%)
+- ✅ 호가창/equity/DB 기록 정상
+- ✅ 4 sub-plugin 일관 voting
+- ✅ 학습-추론 cycle 100% 일관 (Phase 3-D)
+
+**hotfix 7건 통합 완료** (I-BL003 ~ I-BL007):
+- A: ensemble warmup buffer
+- B: warmup features cache (1시간 → 1.5분)
+- C: 호가창 fetch 위치
+- D: WebSocket watchdog
+- E: 신호/포지션 모니터링 hook
+- F: sub-plugin 추론 실패 진단 + dropna 패턴 + multi-TF 진행 중 봉 제외
+- G(=Phase 3-D): 라이브 path `ts < now` 명시 cycle 통일
+
+**Carry-over** (BL-2-4 또는 EXTENSION으로):
+- I-BP001 (funding_fee 백테): BL-2-4 paper-실거래 비교 시 재검증
+- I-BL002 (ensemble walkforward): EXTENSION (BLE-2)로 carry
+- 텔레그램 ENTRY/EXIT + 거래 흐름 e2e: BL-2-4 진입 시 자연 검증
+
+**미검증 영역 우회 보장**:
+- 텔레그램: paper 시작 전 1줄 직접 테스트 + 단위 14건
+- 거래 흐름: paper_executor 8건 + engine_base 단위 테스트
+- Circuit breaker: 11건 단위 테스트
+
+**라이브 채택 결정 (BL-2-4 시작 시 그대로 사용)**:
+- 모델: v010 (4 sub-plugin 학습 cutoff 2026-04-01)
+- Strategy: ensemble (4 모델 + isotonic)
 
 ### PATH_B 종착 후 (BL-2 종착 이후)
 

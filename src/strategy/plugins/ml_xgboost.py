@@ -117,21 +117,26 @@ class MLXGBoost(StrategyModule):
         self._ensure_model()
 
         features = get_features_for_ctx(ctx, self.entry_timeframe)
-        if len(features.dropna()) < 1:
-            return Signal(side=SignalSide.HOLD)
 
         available = [c for c in self._feature_names if c in features.columns]
         if len(available) != len(self._feature_names):
+            missing = [c for c in self._feature_names if c not in features.columns]
             logger.warning(
                 "피처 불일치: 기대 %d, 가용 %d",
                 len(self._feature_names),
                 len(available),
             )
-            return Signal(side=SignalSide.HOLD)
+            return Signal(
+                side=SignalSide.HOLD,
+                meta={"fail_reason": "feature_mismatch", "missing": missing},
+            )
 
-        row = features.iloc[-1][self._feature_names].values.reshape(1, -1)
-        if np.any(np.isnan(row)):
-            return Signal(side=SignalSide.HOLD)
+        # I-BL007 Phase 3-C: dropna 적용 (학습-추론 일관)
+        from src.strategy.features import get_clean_last_row
+        row_arr, diag = get_clean_last_row(features, self._feature_names)
+        if row_arr is None:
+            return Signal(side=SignalSide.HOLD, meta=diag)
+        row = row_arr.reshape(1, -1)
 
         # XGBoost는 numpy 직접 입력 불가 — DMatrix wrapping 필요
         dmatrix = xgb.DMatrix(row, feature_names=self._feature_names)
@@ -141,7 +146,7 @@ class MLXGBoost(StrategyModule):
             probs = self._calibrator.transform(probs.reshape(1, -1))[0]
         pred_class = int(np.argmax(probs))
         confidence = float(probs[pred_class])
-        meta = {"probs": [round(float(p), 4) for p in probs]}
+        meta = {"probs": [round(float(p), 4) for p in probs], **diag}
 
         if pred_class == 2 and confidence >= self._confidence_threshold:
             return Signal(side=SignalSide.LONG, confidence=confidence, meta=meta)

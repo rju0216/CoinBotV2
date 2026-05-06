@@ -245,3 +245,61 @@ class TestSLTP:
         tp = eng.compute_take_profit(ctx, signal, sl)
         assert sl > ctx.current_price
         assert tp < ctx.current_price
+
+
+# ---- BL-2 OOS warm-up: extract_train_meta override (I-BL003 fix) ----
+
+
+class _SubWithMeta(_StubSubModel):
+    """extract_train_meta가 미리 주입된 (cutoff, acc) 반환."""
+    def __init__(self, cutoff_dt, acc):
+        super().__init__(probs=[0.1, 0.1, 0.8])
+        self._cutoff = cutoff_dt
+        self._acc = acc
+
+    def extract_train_meta(self):
+        return self._cutoff, self._acc
+
+
+class TestEnsembleExtractTrainMeta:
+    def test_aggregates_min_cutoff_mean_acc(self):
+        """4 sub-plugin 집계: cutoff=min, acc=mean."""
+        eng = _make_ensemble({"m1": [0.1, 0.1, 0.8], "m2": [0.1, 0.1, 0.8]})
+        # _make_ensemble은 _StubSubModel만 주입. _SubWithMeta로 교체.
+        eng._sub_instances["m1"] = _SubWithMeta(
+            datetime(2024, 12, 31, tzinfo=timezone.utc), 0.74
+        )
+        eng._sub_instances["m2"] = _SubWithMeta(
+            datetime(2026, 5, 4, tzinfo=timezone.utc), 0.76
+        )
+        cutoff, acc = eng.extract_train_meta()
+        assert cutoff == datetime(2024, 12, 31, tzinfo=timezone.utc)
+        assert acc == pytest.approx(0.75)
+
+    def test_partial_missing_acc(self):
+        """sub-plugin 중 일부 acc=None이어도 cutoff은 산출, acc는 가용분 평균."""
+        eng = _make_ensemble({"m1": [0.1, 0.1, 0.8], "m2": [0.1, 0.1, 0.8]})
+        eng._sub_instances["m1"] = _SubWithMeta(
+            datetime(2026, 5, 4, tzinfo=timezone.utc), 0.78
+        )
+        eng._sub_instances["m2"] = _SubWithMeta(
+            datetime(2026, 5, 4, tzinfo=timezone.utc), None
+        )
+        cutoff, acc = eng.extract_train_meta()
+        assert cutoff == datetime(2026, 5, 4, tzinfo=timezone.utc)
+        assert acc == pytest.approx(0.78)
+
+    def test_all_missing_returns_none(self):
+        """모든 sub-plugin train_meta 추출 실패 시 (None, None)."""
+        eng = _make_ensemble({"m1": [0.1, 0.1, 0.8], "m2": [0.1, 0.1, 0.8]})
+        eng._sub_instances["m1"] = _SubWithMeta(None, None)
+        eng._sub_instances["m2"] = _SubWithMeta(None, None)
+        assert eng.extract_train_meta() == (None, None)
+
+    def test_get_sub_instances_returns_dict_copy(self):
+        """get_sub_instances는 dict copy 반환 — 외부 변경이 내부 state에 영향 없음."""
+        eng = _make_ensemble({"m1": [0.1, 0.1, 0.8], "m2": [0.1, 0.1, 0.8]})
+        subs = eng.get_sub_instances()
+        assert set(subs.keys()) == {"m1", "m2"}
+        subs["m3"] = _StubSubModel(probs=[0.5, 0.3, 0.2])
+        assert "m3" not in eng._sub_instances

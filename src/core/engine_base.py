@@ -223,6 +223,7 @@ class AbstractEngine(ABC):
                 )
                 signal = strategy.generate_signal(ctx)
                 self._record_oos_signal(strategy, signal, current_price, now)
+                self._log_signal_status(strategy, signal)
                 if not signal.is_actionable:
                     continue
                 if await self.try_enter(strategy, signal, ctx, now):
@@ -240,6 +241,7 @@ class AbstractEngine(ABC):
                 )
                 signal = strategy.generate_signal(ctx)
                 self._record_oos_signal(strategy, signal, current_price, now)
+                self._log_signal_status(strategy, signal)
                 if not signal.is_actionable:
                     continue
                 if self.reverse_policy.should_reverse(
@@ -271,6 +273,31 @@ class AbstractEngine(ABC):
                     )
                     # 단계 8: 피라미딩 hook은 받되 실 청산/추가 진입 처리는 미구현.
                     # 향후 단계에서 add_to_position 흐름으로 확장 가능.
+
+    # ---- BL-2-3 hotfix-E: 신호/포지션 모니터링 hook ----
+
+    def _log_signal_status(
+        self,
+        strategy: StrategyModule,
+        signal: Signal,
+    ) -> None:
+        """generate_signal 결과를 모니터링 로그로 출력하는 hook (default no-op).
+
+        backtest는 매 봉 수만 줄 출력 회피 위해 default no-op. CoreEngine이
+        override해서 라이브/페이퍼 모드에서만 INFO 출력.
+        """
+        return None
+
+    def _log_position_status(
+        self,
+        position: Position,
+        current_price: float,
+        now: datetime,
+    ) -> None:
+        """현재 포지션 상태(side/entry/current/unrealized_pnl/hold_duration)
+        모니터링 로그 hook (default no-op). 라이브/페이퍼만 활성.
+        """
+        return None
 
     # ---- BP-2-3 OOS monitor helper ----
 

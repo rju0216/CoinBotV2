@@ -36,6 +36,43 @@ from src.utils.notifier import Notifier, build_notifier_from_config
 logger = logging.getLogger(__name__)
 
 
+def _format_failure_detail(
+    strategy_name: str,
+    unavailable_subs: dict | None,
+    fail_reason: str | None,
+    meta: dict,
+) -> str:
+    """추론 실패 case 상세 포맷 (I-BL007 Phase 3-C)."""
+    def _format_sub(name: str, info: dict) -> str:
+        reason = info.get("reason", "unknown")
+        parts = [f"{name}={reason}"]
+        nan_by_tf = info.get("nan_by_tf")
+        if nan_by_tf:
+            tf_strs = [
+                f"{tf}: {','.join(cols)}"
+                for tf, cols in nan_by_tf.items()
+            ]
+            parts.append("{" + "; ".join(tf_strs) + "}")
+        avail = info.get("available_rows")
+        req = info.get("required_lookback")
+        if avail is not None and req is not None:
+            parts.append(f"{{available:{avail}/{req}}}")
+        return " ".join(parts)
+
+    if unavailable_subs:
+        return ", ".join(
+            _format_sub(name, info)
+            for name, info in unavailable_subs.items()
+        )
+    info = {
+        "reason": fail_reason,
+        "nan_by_tf": meta.get("nan_by_tf"),
+        "available_rows": meta.get("available_rows"),
+        "required_lookback": meta.get("required_lookback"),
+    }
+    return _format_sub(strategy_name, info)
+
+
 def _candles_to_df(candles: list) -> pd.DataFrame:
     if not candles:
         return pd.DataFrame(
@@ -122,16 +159,16 @@ class CoreEngine(AbstractEngine):
     async def _warmup_oos_monitor(self) -> None:
         """학습 cutoff 이후 historical candles로 OOS monitor buffer 사전 채움.
 
-        4 단일 모델 (lightgbm/xgboost/lstm/transformer)만 — ensemble은 sub-plugin
-        결과 기반이라 sub-plugin들이 각자 warm-up하면 자연스러움. ensemble 자체는 skip.
+        I-BL003 fix: train_meta 추출은 strategy.extract_train_meta()로 위임.
+        단일 모델은 default impl이 model_path → train_meta.json 처리. ensemble은
+        sub-plugin 집계 (cutoff=min, acc=mean) override 사용. paper 운영 중
+        record_prediction되는 buffer key가 strategy.name이므로 active strategy
+        자체를 warm-up해야 buffer가 활용됨.
         """
         from src.data.historical import HistoricalDataLoader
         loader = HistoricalDataLoader(self.config)
         try:
             for strategy in self.strategies:
-                if strategy.name == "ensemble":
-                    logger.info("OOS warmup skip: %s (ensemble)", strategy.name)
-                    continue
                 try:
                     await self._warmup_one_strategy(strategy, loader)
                 except Exception as e:
@@ -143,8 +180,8 @@ class CoreEngine(AbstractEngine):
 
     async def _warmup_one_strategy(self, strategy, loader) -> None:
         """단일 strategy warm-up — train_meta로 cutoff/learned_acc 추출 + 시뮬."""
-        # 1. train_meta.json 로드 (model_dir 또는 latest.json)
-        cutoff_dt, learned_acc = self._extract_train_meta(strategy)
+        # 1. train_meta 추출 (I-BL003 fix: strategy.extract_train_meta로 위임)
+        cutoff_dt, learned_acc = strategy.extract_train_meta()
         if cutoff_dt is None:
             logger.warning(
                 "OOS warmup [%s]: train cutoff 추출 실패 — skip",
@@ -176,99 +213,91 @@ class CoreEngine(AbstractEngine):
         master_df = candles_per_tf[entry_tf]
         import pandas as pd
 
-        def signal_iter(ts_dt):
-            ts = pd.Timestamp(ts_dt).tz_convert("UTC") if pd.Timestamp(ts_dt).tz else pd.Timestamp(ts_dt, tz="UTC")
-            # ts 직전까지 slice (lookahead 차단, I-B007 패턴)
-            slice_dict = {
-                tf: df[df.index < ts] for tf, df in candles_per_tf.items()
-            }
-            # current_price = open of ts
-            try:
-                current_price = float(master_df.loc[ts, "open"])
-            except KeyError:
-                return None  # ts 미존재
-            ctx = self._build_ctx(strategy, slice_dict, current_price, 10000.0, ts_dt)
-            try:
-                signal = strategy.generate_signal(ctx)
-                return signal.side
-            except Exception as e:
-                logger.debug("warmup signal_iter [%s] ts=%s 실패: %s", strategy.name, ts_dt, e)
-                return None
-
-        # 4. monitor에 warm-up 위임. cutoff 이후 entry_tf 봉만 처리
-        # (signal_iter가 None 반환하면 record_prediction 시 SignalSide(None) 오류 → 사전 필터)
-        from src.core.enums import SignalSide
-
-        def safe_signal_iter(ts_dt):
-            side = signal_iter(ts_dt)
-            return side if side is not None else SignalSide.HOLD
-
-        result = self.oos_monitor.warmup_from_history(
-            strategy_name=strategy.name,
-            entry_timeframe=entry_tf,
-            bars=master_df,
-            signal_iter=safe_signal_iter,
-            cutoff_dt=cutoff_dt,
-            learned_oos_acc=learned_acc,
-        )
-
-        # 5. 결과 로그 + 격차 알림 (EE''=yes)
-        logger.info(
-            "OOS warmup [%s] complete: samples=%d, accuracy=%s, learned_oos_acc=%s, gap=%s",
-            strategy.name, result["samples"],
-            f"{result['accuracy']:.4f}" if result["accuracy"] is not None else None,
-            f"{result['learned_oos_acc']:.4f}" if result["learned_oos_acc"] is not None else None,
-            f"{result['gap']:+.4f}" if result["gap"] is not None else None,
-        )
-        # 격차 임계 도달 시 oos_decay publish (EE''=yes)
-        decay_threshold = float(
-            (self.config.get("live", {}) or {}).get("oos_monitoring", {}).get(
-                "warmup_decay_threshold_pct", 0.10,
-            )
-        )
-        if result["gap"] is not None and result["gap"] >= decay_threshold:
-            await self.event_bus.publish("oos_decay", {
-                "strategy": strategy.name,
-                "accuracy": result["accuracy"],
-                "threshold": self.oos_monitor.min_acc_threshold,
-                "learned_oos_acc": result["learned_oos_acc"],
-                "gap": result["gap"],
-                "warmup_samples": result["samples"],
-                "source": "warmup",
-            })
-
-    def _extract_train_meta(self, strategy) -> tuple:
-        """plugin model_path → train_meta.json 로드 → (cutoff_dt, oos_accuracy) 반환."""
-        from datetime import datetime, timezone
-        from pathlib import Path
-
-        model_path = strategy.params.get("model_path")
-        if not model_path:
-            return None, None
-        # latest.json 해석
-        model_dir = Path(model_path)
-        latest_json = model_dir.parent / "latest.json"
-        if model_dir.name == "latest" and latest_json.exists():
-            with open(latest_json) as f:
-                model_dir = Path(json.load(f)["path"])
-        elif (model_dir / "latest.json").exists():
-            with open(model_dir / "latest.json") as f:
-                model_dir = Path(json.load(f)["path"])
-
-        meta_path = model_dir / "train_meta.json"
-        if not meta_path.exists():
-            return None, None
-        with open(meta_path) as f:
-            meta = json.load(f)
-        # train_period: "2020-01-01 ~ 2024-12-31"
-        period = meta.get("train_period", "")
+        # I-BL004 fix: warmup용 features 1회 사전계산 후 self._features_cache에 임시 주입.
+        # _build_ctx가 cache 자동 lookup → plugin.generate_signal이 매 ts마다 81 피처를
+        # 처음부터 재계산(O(N²))하던 것을 1회로 축소. BacktestEngine._build_features_cache
+        # 와 동일 패턴 (DRY). warmup 종료 시 finally에서 cache 비움 → 라이브 entry path
+        # 무영향 (라이브는 매 봉 재계산이 default 의도).
+        from src.strategy.features import compute_multi_tf_features
         try:
-            end_str = period.split("~")[-1].strip()
-            cutoff_dt = datetime.fromisoformat(end_str).replace(tzinfo=timezone.utc)
-        except Exception:
-            return None, None
-        learned_acc = meta.get("oos_accuracy")
-        return cutoff_dt, float(learned_acc) if learned_acc is not None else None
+            self._features_cache[entry_tf] = compute_multi_tf_features(
+                candles_per_tf, entry_tf,
+            )
+            logger.info(
+                "OOS warmup [%s]: features cache built (entry_tf=%s, rows=%d)",
+                strategy.name, entry_tf, len(self._features_cache[entry_tf]),
+            )
+        except Exception as e:
+            logger.warning(
+                "OOS warmup [%s]: features cache build 실패 — fallback to per-bar compute: %s",
+                strategy.name, e,
+            )
+
+        try:
+            def signal_iter(ts_dt):
+                ts = pd.Timestamp(ts_dt).tz_convert("UTC") if pd.Timestamp(ts_dt).tz else pd.Timestamp(ts_dt, tz="UTC")
+                # ts 직전까지 slice (lookahead 차단, I-B007 패턴)
+                slice_dict = {
+                    tf: df[df.index < ts] for tf, df in candles_per_tf.items()
+                }
+                # current_price = open of ts
+                try:
+                    current_price = float(master_df.loc[ts, "open"])
+                except KeyError:
+                    return None  # ts 미존재
+                ctx = self._build_ctx(strategy, slice_dict, current_price, 10000.0, ts_dt)
+                try:
+                    signal = strategy.generate_signal(ctx)
+                    return signal.side
+                except Exception as e:
+                    logger.debug("warmup signal_iter [%s] ts=%s 실패: %s", strategy.name, ts_dt, e)
+                    return None
+
+            # 4. monitor에 warm-up 위임. cutoff 이후 entry_tf 봉만 처리
+            # (signal_iter가 None 반환하면 record_prediction 시 SignalSide(None) 오류 → 사전 필터)
+            from src.core.enums import SignalSide
+
+            def safe_signal_iter(ts_dt):
+                side = signal_iter(ts_dt)
+                return side if side is not None else SignalSide.HOLD
+
+            result = self.oos_monitor.warmup_from_history(
+                strategy_name=strategy.name,
+                entry_timeframe=entry_tf,
+                bars=master_df,
+                signal_iter=safe_signal_iter,
+                cutoff_dt=cutoff_dt,
+                learned_oos_acc=learned_acc,
+            )
+
+            # 5. 결과 로그 + 격차 알림 (EE''=yes)
+            logger.info(
+                "OOS warmup [%s] complete: samples=%d, accuracy=%s, learned_oos_acc=%s, gap=%s",
+                strategy.name, result["samples"],
+                f"{result['accuracy']:.4f}" if result["accuracy"] is not None else None,
+                f"{result['learned_oos_acc']:.4f}" if result["learned_oos_acc"] is not None else None,
+                f"{result['gap']:+.4f}" if result["gap"] is not None else None,
+            )
+            # 격차 임계 도달 시 oos_decay publish (EE''=yes)
+            decay_threshold = float(
+                (self.config.get("live", {}) or {}).get("oos_monitoring", {}).get(
+                    "warmup_decay_threshold_pct", 0.10,
+                )
+            )
+            if result["gap"] is not None and result["gap"] >= decay_threshold:
+                await self.event_bus.publish("oos_decay", {
+                    "strategy": strategy.name,
+                    "accuracy": result["accuracy"],
+                    "threshold": self.oos_monitor.min_acc_threshold,
+                    "learned_oos_acc": result["learned_oos_acc"],
+                    "gap": result["gap"],
+                    "warmup_samples": result["samples"],
+                    "source": "warmup",
+                })
+        finally:
+            # I-BL004 fix: warmup 종료 시 cache 비움 — 라이브 entry path가 stale 데이터
+            # 사용 안 하도록 (cache가 cutoff 시점까지만 포함, 라이브 새 봉 미반영).
+            self._features_cache.pop(entry_tf, None)
 
     def _setup_notifier_subscriptions(self) -> None:
         """BL-2-1: 주요 EventType → notifier 송신 라우팅.
@@ -579,8 +608,14 @@ class CoreEngine(AbstractEngine):
                         "threshold": cb.failure_threshold,
                     })
 
+        # 진행 중 봉 재발행이면 전략 평가 skip (I-005)
+        if not self._should_process_bar(tf, ts_ms):
+            return
+
         # BL-2-2: master timeframe BAR_CLOSED에서만 호가창 fetch (Y''=가)
         # — 다른 timeframe BAR_CLOSED 이벤트마다 fetch하면 중복
+        # I-BL005 fix: _should_process_bar 후로 이동 — ccxt가 봉 진행 중 close 변동마다
+        # _on_bar_closed를 트리거하므로 같은 ts 중복 fetch 방지 필수
         if (
             self.orderbook_collector is not None
             and tf == self.master_timeframe
@@ -590,10 +625,6 @@ class CoreEngine(AbstractEngine):
             except Exception as e:
                 logger.warning("OrderBook fetch failed: %s", e)
                 self._latest_orderbook = None
-
-        # 진행 중 봉 재발행이면 전략 평가 skip (I-005)
-        if not self._should_process_bar(tf, ts_ms):
-            return
 
         candles_slice = {t: self.data_store.get_df(t) for t in self.timeframes}
         high = float(candle["high"])
@@ -624,6 +655,11 @@ class CoreEngine(AbstractEngine):
         await self.evaluate_strategies_on_bar(
             tf, candles_slice, close, balance, now
         )
+
+        # BL-2-3 hotfix-E: 슬롯 차있을 때 master_tf 봉 마감마다 position 상태 로그.
+        # 슬롯 비었을 때는 evaluate_strategies_on_bar 안에서 _log_signal_status 호출됨.
+        if self._position is not None and tf == self.master_timeframe:
+            self._log_position_status(self._position, close, now)
 
         # BP-2-3: OOS monitor 평가 (horizon 도달한 pending prediction 채점)
         if self.oos_monitor is not None:
@@ -705,3 +741,94 @@ class CoreEngine(AbstractEngine):
         except Exception as e:
             logger.warning("fetch_funding_history failed: %s", e)
             return 0.0
+
+    # ---- BL-2-3 hotfix-E: 모니터링 hook override (라이브/페이퍼 INFO 출력) ----
+
+    def _log_signal_status(self, strategy, signal) -> None:
+        """매 entry_tf 봉 마감 시 슬롯 비었을 때 호출.
+
+        정상 inference 샘플 (dropped=0, 깔끔):
+          [SIGNAL] ensemble HOLD probs=[S:0.31 H:0.40 L:0.29] conf=0.40 threshold=0.55
+                   contributors=[ml_lightgbm, ml_xgboost, dl_lstm, dl_transformer]
+
+        I-BL007 Phase 3-C: 정상 + dropped > 0 (진행 중 봉 영향 잔존):
+          [SIGNAL] ensemble HOLD probs=[...] conf=... threshold=0.55 contributors=[...]
+                   (dropped=1, used_ts=2026-05-06 04:30:00)
+
+        I-BL007 Phase 3-C: 추론 실패 + 진단 정보:
+          [SIGNAL] ensemble HOLD (no inference: ml_lightgbm=all_features_nan
+                   {1h: body_ratio,upper_shadow; 4h: atr_pct},
+                   dl_lstm=dropna_lt_lookback {available:45/60}) threshold=0.55
+        """
+        meta = signal.meta or {}
+        probs = meta.get("probs")
+        contributors = meta.get("contributors")
+        threshold = float(strategy.params.get("confidence_threshold", 0.55))
+        conf = signal.confidence if signal.confidence is not None else 0.0
+
+        # 추론 실패 case
+        unavailable_subs = meta.get("unavailable_subs")
+        fail_reason = meta.get("fail_reason")
+        if unavailable_subs or (fail_reason and not probs):
+            detail = _format_failure_detail(
+                strategy.name, unavailable_subs, fail_reason, meta,
+            )
+            logger.info(
+                "[SIGNAL] %s %s (no inference: %s) threshold=%.2f",
+                strategy.name, signal.side.value.upper(), detail, threshold,
+            )
+            return
+
+        # 정상 case
+        probs_str = ""
+        if probs and len(probs) == 3:
+            probs_str = (
+                f" probs=[S:{probs[0]:.2f} H:{probs[1]:.2f} L:{probs[2]:.2f}]"
+            )
+        action_marker = " → ENTRY" if signal.is_actionable else ""
+        contrib_str = (
+            f" contributors={contributors}" if contributors else ""
+        )
+
+        # I-BL007 Phase 3-C: gap > 0인 경우만 진단 정보 추가 (noise 최소화)
+        # gap = 가장 최근 봉 대비 사용된 row까지의 봉 수. 0=정상, N+=진행 중 봉 영향.
+        diag_str = ""
+        gap = meta.get("gap_to_latest", 0)
+        if gap and gap > 0:
+            used_ts = meta.get("used_row_ts")
+            if used_ts is not None:
+                diag_str = f" (gap={gap}, used_ts={used_ts})"
+            else:
+                diag_str = f" (gap={gap})"
+
+        logger.info(
+            "[SIGNAL] %s %s%s conf=%.2f threshold=%.2f%s%s%s",
+            strategy.name, signal.side.value.upper(), probs_str, conf, threshold,
+            action_marker, contrib_str, diag_str,
+        )
+
+
+    def _log_position_status(self, position, current_price, now) -> None:
+        """master_tf 봉 마감 시 슬롯 차있을 때 호출.
+
+        샘플:
+          [POSITION] ensemble LONG size=0.0149 entry=67100.00 current=67235.00
+                     unrealized_pnl=+$2.01 (1h32m held)
+        """
+        from src.core.enums import PositionSide
+        hold_seconds = (now - position.entry_time).total_seconds()
+        hold_h = int(hold_seconds // 3600)
+        hold_m = int((hold_seconds % 3600) // 60)
+
+        if position.side == PositionSide.LONG:
+            unrealized = (current_price - position.entry_price) * position.size
+        else:
+            unrealized = (position.entry_price - current_price) * position.size
+
+        logger.info(
+            "[POSITION] %s %s size=%.4f entry=%.2f current=%.2f "
+            "unrealized_pnl=%+.2f (%dh%02dm held)",
+            position.strategy_name, position.side.value.upper(), position.size,
+            position.entry_price, current_price, unrealized,
+            hold_h, hold_m,
+        )

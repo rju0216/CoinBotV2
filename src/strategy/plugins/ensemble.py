@@ -39,6 +39,7 @@ config 예시 (ensemble.yaml):
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any
 
 import numpy as np
@@ -155,19 +156,40 @@ class Ensemble(StrategyModule):
         probs_list: list[np.ndarray] = []
         contributors: list[str] = []
         runtime_failed: list[str] = []
+        # I-BL007 Phase 1+3-C: sub-plugin 실패 사유 + 진단 정보 집계 (이번 봉 한정)
+        # 실패 case: {name: {"reason": ..., "nan_by_tf": ..., "available_rows": ...}}
+        # 정상 case의 진단 (rows_dropped, used_row_ts)는 sub-plugin meta에 들어있음
+        unavailable_subs: dict[str, dict] = {}
+        # 정상 contributors의 sub meta — ensemble propagate용 (모든 sub 동일 features
+        # 사용하므로 dropped/used_row_ts는 동일. 첫 번째만 추출)
+        contrib_diag: dict | None = None
         for name in active_names:
             sub = self._sub_instances[name]
             try:
                 sub_signal = sub.generate_signal(ctx)
-                probs = sub_signal.meta.get("probs") if sub_signal.meta else None
+                sub_meta = sub_signal.meta or {}
+                probs = sub_meta.get("probs")
                 if probs is None or len(probs) == 0:
-                    # early HOLD (features 부족 등) — 이번 봉만 skip, 영구 disable 아님
+                    # early HOLD — 진단 정보 집계
+                    unavailable_subs[name] = {
+                        "reason": sub_meta.get("fail_reason", "unknown"),
+                        "nan_by_tf": sub_meta.get("nan_by_tf"),
+                        "available_rows": sub_meta.get("available_rows"),
+                        "required_lookback": sub_meta.get("required_lookback"),
+                    }
                     continue
                 probs_arr = np.asarray(probs, dtype=np.float64)
                 if probs_arr.shape[0] != 3:
+                    unavailable_subs[name] = {"reason": "probs_shape_invalid"}
                     continue
                 probs_list.append(probs_arr)
                 contributors.append(name)
+                # 정상 contributors의 진단 정보 (첫 번째만 사용 — 모두 동일 features)
+                if contrib_diag is None:
+                    contrib_diag = {
+                        "gap_to_latest": sub_meta.get("gap_to_latest", 0),
+                        "used_row_ts": sub_meta.get("used_row_ts"),
+                    }
             except Exception as e:
                 logger.warning(
                     "Ensemble: sub-model '%s' 추론 실패 → 영구 skip (%s)",
@@ -175,15 +197,25 @@ class Ensemble(StrategyModule):
                 )
                 self._failed_models.add(name)
                 runtime_failed.append(name)
+                unavailable_subs[name] = {"reason": f"runtime_exception:{type(e).__name__}"}
         if runtime_failed:
             self._log_active_count_change()
 
         # 활성 sub-model 모두 이번 봉 추론 실패 시 HOLD
         if len(probs_list) == 0:
-            return Signal(side=SignalSide.HOLD)
+            return Signal(
+                side=SignalSide.HOLD,
+                meta={"unavailable_subs": unavailable_subs} if unavailable_subs else {},
+            )
         if len(probs_list) < self._min_models:
             # 봉별 min_models 미달 (영구 skip + 이번 봉 추론 실패 조합)
-            return Signal(side=SignalSide.HOLD)
+            return Signal(
+                side=SignalSide.HOLD,
+                meta={
+                    "unavailable_subs": unavailable_subs,
+                    "contributors": contributors,
+                },
+            )
 
         # Soft voting: 확률 평균
         avg_probs = np.mean(np.stack(probs_list, axis=0), axis=0)
@@ -195,6 +227,10 @@ class Ensemble(StrategyModule):
             "probs": [round(float(p), 4) for p in avg_probs],
             "contributors": contributors,
         }
+        # I-BL007 Phase 3-C: 정상 contributors의 진단 정보 propagate (gap > 0 시만 의미)
+        if contrib_diag and contrib_diag.get("gap_to_latest", 0) > 0:
+            meta["gap_to_latest"] = contrib_diag.get("gap_to_latest")
+            meta["used_row_ts"] = contrib_diag.get("used_row_ts")
 
         if pred_class == 2 and confidence >= self._confidence_threshold:
             return Signal(side=SignalSide.LONG, confidence=confidence, meta=meta)
@@ -238,3 +274,32 @@ class Ensemble(StrategyModule):
 
     def get_failed_models(self) -> list[str]:
         return sorted(self._failed_models)
+
+    def get_sub_instances(self) -> dict[str, StrategyModule]:
+        """Sub-plugin 인스턴스 dict 반환. 미초기화 시 lazy init 호출."""
+        if not self._sub_instances and not self._failed_models:
+            self._ensure_sub_models(None)
+        return dict(self._sub_instances)
+
+    # ---- BL-2 OOS warm-up hook (I-BL003 fix) ----
+
+    def extract_train_meta(self) -> tuple[datetime | None, float | None]:
+        """Sub-plugin들의 train_meta 집계 — cutoff=min(보수적), acc=mean.
+
+        ensemble 자체엔 model_path 없음. paper 운영 중 record_prediction되는
+        buffer key는 "ensemble"이므로 ensemble buffer 사전 채움 baseline 산출.
+        """
+        sub_instances = self.get_sub_instances()
+        cutoffs: list[datetime] = []
+        accs: list[float] = []
+        for sub in sub_instances.values():
+            sub_cutoff, sub_acc = sub.extract_train_meta()
+            if sub_cutoff is not None:
+                cutoffs.append(sub_cutoff)
+            if sub_acc is not None:
+                accs.append(sub_acc)
+        if not cutoffs:
+            return None, None
+        cutoff_dt = min(cutoffs)
+        learned_acc = sum(accs) / len(accs) if accs else None
+        return cutoff_dt, learned_acc

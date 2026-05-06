@@ -7,10 +7,16 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from abc import ABC, abstractmethod
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from src.core.types import ExitDecision, Position, Signal, StrategyContext
+
+logger = logging.getLogger(__name__)
 
 
 class StrategyModule(ABC):
@@ -73,3 +79,42 @@ class StrategyModule(ABC):
     ) -> Signal | None:
         """피라미딩 신호. supports_pyramiding=True일 때만 엔진이 호출."""
         return None
+
+    # ---- BL-2 OOS warm-up hook (I-BL003 fix) ----
+
+    def extract_train_meta(self) -> tuple[datetime | None, float | None]:
+        """학습 cutoff datetime + OOS Acc 반환. OOS warm-up baseline용.
+
+        Default: self.params["model_path"]에서 train_meta.json 읽음.
+        latest.json 경유도 처리. Multi-model strategy(ensemble 등)는 override해서
+        sub-plugin train_meta를 집계.
+
+        Returns:
+            (cutoff_dt, learned_oos_acc) — 추출 실패 시 (None, None)
+        """
+        model_path = self.params.get("model_path")
+        if not model_path:
+            return None, None
+        model_dir = Path(model_path)
+        latest_json = model_dir.parent / "latest.json"
+        if model_dir.name == "latest" and latest_json.exists():
+            with open(latest_json) as f:
+                model_dir = Path(json.load(f)["path"])
+        elif (model_dir / "latest.json").exists():
+            with open(model_dir / "latest.json") as f:
+                model_dir = Path(json.load(f)["path"])
+
+        meta_path = model_dir / "train_meta.json"
+        if not meta_path.exists():
+            return None, None
+        with open(meta_path) as f:
+            meta = json.load(f)
+        # train_period: "2020-01-01 ~ 2024-12-31"
+        period = meta.get("train_period", "")
+        try:
+            end_str = period.split("~")[-1].strip()
+            cutoff_dt = datetime.fromisoformat(end_str).replace(tzinfo=timezone.utc)
+        except Exception:
+            return None, None
+        learned_acc = meta.get("oos_accuracy")
+        return cutoff_dt, float(learned_acc) if learned_acc is not None else None

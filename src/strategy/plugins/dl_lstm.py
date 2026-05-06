@@ -144,23 +144,32 @@ class DLLSTM(StrategyModule):
         self._ensure_model()
 
         features = get_features_for_ctx(ctx, self.entry_timeframe)
-        if len(features.dropna()) < self._lookback:
-            return Signal(side=SignalSide.HOLD)
 
         available = [c for c in self._feature_names if c in features.columns]
         if len(available) != len(self._feature_names):
+            missing = [c for c in self._feature_names if c not in features.columns]
             logger.warning(
                 "피처 불일치: 기대 %d, 가용 %d",
                 len(self._feature_names),
                 len(available),
             )
-            return Signal(side=SignalSide.HOLD)
+            return Signal(
+                side=SignalSide.HOLD,
+                meta={"fail_reason": "feature_mismatch", "missing": missing},
+            )
 
-        # 학습과 동일 컬럼 순서로 정렬
-        features_sub = features[self._feature_names]
-        seq = make_sequence_from_recent(features_sub, self._lookback)
+        # I-BL007 Phase 3-C: dropna 적용 (학습-추론 일관)
+        from src.strategy.features import get_clean_features_for_sequence
+        features_clean, diag = get_clean_features_for_sequence(
+            features, self._feature_names, self._lookback,
+        )
+        if features_clean is None:
+            return Signal(side=SignalSide.HOLD, meta=diag)
+
+        seq = make_sequence_from_recent(features_clean, self._lookback)
         if seq is None:
-            return Signal(side=SignalSide.HOLD)
+            # dropna 후라 NaN 없는데 None 반환 → 다른 trigger
+            return Signal(side=SignalSide.HOLD, meta={"fail_reason": "sequence_invalid"})
 
         # Scaler transform: (1, L, F) → reshape (L, F) → transform → reshape back
         seq_2d = seq.reshape(-1, seq.shape[-1])
@@ -176,7 +185,7 @@ class DLLSTM(StrategyModule):
             probs = self._calibrator.transform(probs.reshape(1, -1))[0]
         pred_class = int(np.argmax(probs))
         confidence = float(probs[pred_class])
-        meta = {"probs": [round(float(p), 4) for p in probs]}
+        meta = {"probs": [round(float(p), 4) for p in probs], **diag}
 
         if pred_class == 2 and confidence >= self._confidence_threshold:
             return Signal(side=SignalSide.LONG, confidence=confidence, meta=meta)

@@ -6,10 +6,13 @@ indicators.py의 기존 함수를 조합하여 단일/멀티 타임프레임 피
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import numpy as np
 import pandas as pd
 
 from src.core.types import StrategyContext
+from src.data.historical import TF_MS
 from src.strategy.indicators import (
     compute_adx,
     compute_atr,
@@ -191,6 +194,23 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     return feat
 
 
+def _is_in_progress_bar(
+    sub_last_ts: pd.Timestamp,
+    sub_tf_ms: int,
+    now_ms: int,
+) -> bool:
+    """sub_tf의 마지막 봉이 now 시점에 진행 중인지 판별.
+
+    봉 timestamp는 봉 시작 시각 → 마감 시각 = sub_last_ts + sub_tf_ms.
+    now_ms < 마감 시각이면 진행 중. 학습 시엔 historical data라 now_ms가
+    봉 마감 시각보다 항상 미래 → 항상 False (학습-추론 일관성 유지).
+
+    I-BL007 Phase 3 fix.
+    """
+    sub_close_ms = sub_last_ts.value // 10**6 + sub_tf_ms
+    return sub_close_ms > now_ms
+
+
 def compute_multi_tf_features(
     candles: dict[str, pd.DataFrame],
     entry_tf: str,
@@ -199,13 +219,23 @@ def compute_multi_tf_features(
 
     entry_tf 피처를 기준으로, 상위 TF 피처를 forward-fill merge.
     상위 TF 피처에는 '{tf}_' 접두사를 붙여 컬럼명 충돌을 방지한다.
+
+    I-BL007 Phase 3: sub_tf 마지막 봉이 진행 중이면 그 봉을 제외하고 features
+    계산 — 진행 중 봉의 부분 OHLC가 indicator NaN을 만드는 trigger 차단.
+    학습 시(historical data)에는 now_ms가 항상 마감 시각보다 미래라 진행 중
+    판정이 발동하지 않아 동일 동작 보장.
     """
     base = compute_features(candles[entry_tf])
 
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
     for tf, df in candles.items():
-        if tf == entry_tf:
+        if tf == entry_tf or df.empty:
             continue
-        tf_feat = compute_features(df).add_prefix(f"{tf}_")
+        df_use = df
+        if tf in TF_MS and _is_in_progress_bar(df.index[-1], TF_MS[tf], now_ms):
+            df_use = df.iloc[:-1]
+        tf_feat = compute_features(df_use).add_prefix(f"{tf}_")
         base = base.join(
             tf_feat.reindex(base.index).ffill(),
             how="left",
@@ -226,19 +256,123 @@ def get_feature_names(
     return all_names
 
 
+# ─── I-BL007 Phase 3-C: dropna 헬퍼 + 진단 정보 ───
+
+
+_KNOWN_TF_PREFIXES = ("1m", "5m", "15m", "1h", "4h", "1d")
+
+
+def _group_nan_by_tf(columns: list[str]) -> dict[str, list[str]]:
+    """NaN 컬럼명 리스트를 timeframe prefix별로 그룹화.
+
+    예: ['1h_body_ratio', '4h_atr_pct', 'rsi_14'] →
+        {'1h': ['body_ratio'], '4h': ['atr_pct'], 'entry_tf': ['rsi_14']}
+    """
+    grouped: dict[str, list[str]] = {}
+    for col in columns:
+        matched = None
+        for prefix in _KNOWN_TF_PREFIXES:
+            if col.startswith(f"{prefix}_"):
+                matched = prefix
+                break
+        if matched:
+            grouped.setdefault(matched, []).append(col[len(matched) + 1:])
+        else:
+            grouped.setdefault("entry_tf", []).append(col)
+    return grouped
+
+
+def get_clean_last_row(
+    features: pd.DataFrame,
+    feature_names: list[str],
+) -> tuple[np.ndarray | None, dict]:
+    """dropna로 NaN row 제외 후 마지막 row + 진단 정보 반환.
+
+    학습 코드는 features.dropna() 후 학습 (train_*.py). 추론 시 동일 패턴 적용
+    하여 학습-추론 일관성 보장. 진행 중 봉이 NaN row를 만들면 dropna로 제외되어
+    직전 마감 봉의 features가 사용됨.
+
+    diag["gap_to_latest"]: 가장 최근 봉 대비 사용된 row까지의 봉 수.
+      - 0: 가장 최근 봉 사용 (이상적)
+      - 1: 1봉 전 사용 (진행 중 봉 제외 발생)
+      - N+: N봉 전 사용 (진행 중 봉 영향 잔존)
+    long indicator(200 EMA 등) 자연 NaN은 used_ts 이전 row만 영향이라 카운트 X.
+
+    Returns:
+        (row_array, diagnostic_meta)
+        - row_array: (F,) ndarray, None이면 가용 row 0개
+        - diag: gap_to_latest + used_row_ts (정상) 또는 fail_reason + nan_by_tf (실패)
+    """
+    subset = features[feature_names]
+    clean = subset.dropna()
+
+    if len(clean) < 1:
+        last_row_nan = subset.iloc[-1].isna() if len(subset) > 0 else None
+        nan_cols = (
+            [c for c in feature_names if last_row_nan is not None and last_row_nan[c]]
+            if last_row_nan is not None
+            else feature_names
+        )
+        return None, {
+            "fail_reason": "all_features_nan",
+            "nan_by_tf": _group_nan_by_tf(nan_cols),
+        }
+
+    used_ts = clean.index[-1]
+    gap_to_latest = int((subset.index > used_ts).sum())
+    return clean.iloc[-1].values, {
+        "gap_to_latest": gap_to_latest,
+        "used_row_ts": used_ts,
+    }
+
+
+def get_clean_features_for_sequence(
+    features: pd.DataFrame,
+    feature_names: list[str],
+    lookback: int,
+) -> tuple[pd.DataFrame | None, dict]:
+    """DL 모델용: dropna로 NaN row 제외 후 lookback 충족 검증.
+
+    Returns:
+        (clean_subset, diag) — clean_subset이 None이면 lookback 미달
+    """
+    subset = features[feature_names]
+    clean = subset.dropna()
+
+    if len(clean) < lookback:
+        return None, {
+            "fail_reason": "dropna_lt_lookback",
+            "available_rows": len(clean),
+            "required_lookback": lookback,
+        }
+
+    used_ts = clean.index[-1]
+    gap_to_latest = int((subset.index > used_ts).sum())
+    return clean, {
+        "gap_to_latest": gap_to_latest,
+        "used_row_ts": used_ts,
+    }
+
+
 def get_features_for_ctx(
     ctx: StrategyContext,
     entry_tf: str,
 ) -> pd.DataFrame:
-    """ctx 시점(ctx.now)까지의 멀티TF 피처 반환.
+    """ctx 시점(ctx.now) 미만의 멀티TF 피처 반환.
 
     백테 모드: BacktestEngine이 OOS 전체 features를 ctx.precomputed_features에
               주입한 상태 → 여기서 ctx.now 미만으로 cutoff (lookahead 방어).
-    라이브 모드: ctx.precomputed_features=None → 매 호출마다 즉시 계산.
-
-    plugin 코드는 모드 무관하게 이 helper만 호출하면 된다.
+    라이브 모드: ctx.precomputed_features=None → 매 호출마다 즉시 계산. 단 동일하게
+              ts < now 필터링 적용 (I-BL007 Phase 3-D) — 봉 t+1 시작 시점의 진행 중
+              entry_tf 봉을 features에서 명시적 제외하여 학습/backtest와 동일 cycle
+              보장. 신호: 봉 t의 features → 봉 t+1 시작가에 진입 (학습-추론 일관).
+              이전엔 진행 중 봉의 NaN trigger를 dropna로 우연히 제외했으나,
+              본 fix로 메커니즘 명시화 → gap=0/1 변동성 제거.
     """
     cache = ctx.precomputed_features
     if cache is not None:
         return cache.loc[cache.index < ctx.now]
-    return compute_multi_tf_features(ctx.candles, entry_tf)
+    full = compute_multi_tf_features(ctx.candles, entry_tf)
+    if full.empty:
+        return full
+    return full.loc[full.index < ctx.now]
