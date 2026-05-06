@@ -432,18 +432,51 @@ class CoreEngine(AbstractEngine):
             return
 
         # 2) 거래소 없음 + DB 있음 → DB의 open trades 사후 청산 처리
+        # I-BL013 fix: 거래소 trade history에서 실제 청산 정보 fetch 시도.
+        # SL/TP 자동 청산 케이스에서 정확한 exit_price/pnl 복원. fetch 실패 시 fallback
+        # (SL 가격 추정 + WARNING — 사용자가 OKX 웹에서 정확한 PnL 확인 후 수동 update 권장).
         if exchange_pos is None and open_trades:
             logger.warning(
-                "DB has %d open trades but exchange has none. Closing them.",
+                "DB has %d open trades but exchange has none. "
+                "Attempting to fetch actual exit data from exchange...",
                 len(open_trades),
             )
             for trade in open_trades:
+                exit_data = await self._fetch_actual_exit(trade)
+                if exit_data is not None:
+                    actual_exit_price, actual_pnl, actual_reason = exit_data
+                    logger.info(
+                        "Trade %d: 거래소에서 청산 정보 복원 — exit=%.2f pnl=%+.2f reason=%s",
+                        trade["id"], actual_exit_price, actual_pnl, actual_reason,
+                    )
+                else:
+                    # Fallback: SL/TP 가격 추정 (수수료/슬리피지 누락)
+                    sl = trade.get("stop_loss")
+                    tp = trade.get("take_profit")
+                    fallback_price = sl if sl is not None else (tp or trade["entry_price"])
+                    side_sign = 1 if trade["side"] == "long" else -1
+                    actual_exit_price = fallback_price
+                    actual_pnl = (
+                        (fallback_price - trade["entry_price"])
+                        * trade["size"] * side_sign
+                    )
+                    actual_reason = ExitReason.ENGINE_SHUTDOWN.value
+                    logger.warning(
+                        "Trade %d: 거래소 청산 정보 fetch 실패 — SL 가격 추정 사용 "
+                        "(exit=%.2f, pnl=%+.2f, 수수료/슬리피지 누락). "
+                        "OKX 웹에서 정확한 PnL 확인 후 수동 update 권장.",
+                        trade["id"], actual_exit_price, actual_pnl,
+                    )
+                pnl_pct = (
+                    actual_pnl / trade["entry_price"] * 100
+                    if trade["entry_price"] > 0 else 0.0
+                )
                 await self.data_store.close_trade(
                     trade_id=trade["id"],
-                    exit_price=trade["entry_price"],
-                    pnl=0.0,
-                    pnl_pct=0.0,
-                    exit_reason=ExitReason.ENGINE_SHUTDOWN.value,
+                    exit_price=actual_exit_price,
+                    pnl=actual_pnl,
+                    pnl_pct=pnl_pct,
+                    exit_reason=actual_reason,
                 )
             return
 
@@ -520,6 +553,162 @@ class CoreEngine(AbstractEngine):
             status.value,
             trade_id,
         )
+
+        # I-BL011 fix: 거래소 conditional order(SL/TP) 살아있는지 검증 + 누락 시 재등록
+        if self.broker.is_live and self._position is not None:
+            await self._verify_and_restore_sl_tp()
+
+    async def _verify_and_restore_sl_tp(self) -> None:
+        """I-BL011: 거래소의 SL/TP conditional order 생존 검증 + 누락 시 재등록.
+
+        재시작 시 거래소가 conditional order를 유지하는 게 일반적이지만 보장 X
+        (사용자 수동 cancel, 거래소 정책 변경 등). 누락 시 자금 위험 노출이라
+        포지션 복원 후 검증 + 재등록 권장.
+        """
+        if self._position is None:
+            return
+        sl = self._position.stop_loss
+        tp = self._position.take_profit
+        if sl is None and tp is None:
+            logger.warning(
+                "Position restored without SL/TP (orphan). "
+                "Engine-level check_candle_sl_tp 미작동 — 거래소 conditional order에 의존."
+            )
+            return
+
+        executor = getattr(self.broker, "executor", None)
+        if executor is None or not hasattr(executor, "exchange"):
+            return
+
+        try:
+            symbol = self.config["exchange"]["symbol"]
+            # ccxt fetch_open_orders + algo orders 둘 다 시도
+            orders = await executor.exchange.fetch_open_orders(symbol)
+        except Exception as e:
+            logger.warning(
+                "fetch_open_orders 실패 — SL/TP 검증 skip (거래소 정상 가정): %s", e
+            )
+            return
+
+        sl_alive = False
+        tp_alive = False
+        for order in orders:
+            info = order.get("info") or {}
+            # OKX: algo order의 slTriggerPx/tpTriggerPx로 SL/TP 식별
+            sl_trigger = info.get("slTriggerPx") or order.get("stopLossPrice")
+            tp_trigger = info.get("tpTriggerPx") or order.get("takeProfitPrice")
+            if sl is not None and sl_trigger:
+                try:
+                    if abs(float(sl_trigger) - sl) / sl < 0.001:  # 0.1% 허용
+                        sl_alive = True
+                except (TypeError, ValueError):
+                    pass
+            if tp is not None and tp_trigger:
+                try:
+                    if abs(float(tp_trigger) - tp) / tp < 0.001:
+                        tp_alive = True
+                except (TypeError, ValueError):
+                    pass
+
+        if sl is not None and not sl_alive:
+            logger.warning(
+                "SL conditional order missing on exchange — re-registering @ %.2f", sl
+            )
+            try:
+                await self.broker.place_stop_loss(
+                    self._position.side, sl, self._position.size,
+                )
+            except Exception as e:
+                logger.error("SL re-registration failed: %s", e)
+        if tp is not None and not tp_alive:
+            logger.warning(
+                "TP conditional order missing on exchange — re-registering @ %.2f", tp
+            )
+            try:
+                await self.broker.place_take_profit(
+                    self._position.side, tp, self._position.size,
+                )
+            except Exception as e:
+                logger.error("TP re-registration failed: %s", e)
+        if sl_alive and tp_alive:
+            logger.info("SL/TP conditional orders verified alive on exchange")
+
+    async def _fetch_actual_exit(
+        self, trade: dict,
+    ) -> tuple[float, float, str] | None:
+        """I-BL013: 거래소에서 trade의 실제 청산 정보 fetch (best-effort).
+
+        ccxt fetch_my_trades로 trade의 entry timestamp 이후 reduceOnly 체결을 찾아
+        (exit_price, pnl, reason) 반환. paper/sandbox 또는 fetch 실패 시 None.
+
+        Returns:
+            (exit_price, pnl, reason) 또는 None (실패 시 caller가 fallback)
+        """
+        if not self.broker.is_live:
+            return None
+        try:
+            executor = getattr(self.broker, "executor", None)
+            if executor is None or not hasattr(executor, "exchange"):
+                return None
+
+            from datetime import datetime
+            try:
+                entry_dt = datetime.fromisoformat(trade["timestamp"])
+                since_ms = int(entry_dt.timestamp() * 1000)
+            except Exception:
+                since_ms = None
+
+            symbol = self.config["exchange"]["symbol"]
+            raw_trades = await executor.exchange.fetch_my_trades(
+                symbol, since=since_ms, limit=50,
+            )
+
+            entry_size = float(trade["size"])
+            entry_side_str = trade["side"]
+            close_side_str = "sell" if entry_side_str == "long" else "buy"
+
+            # reduceOnly + 반대 방향 체결 찾기 (가장 최근)
+            for t in reversed(raw_trades):
+                info = t.get("info") or {}
+                is_reduce = (
+                    str(info.get("reduceOnly", "")).lower() == "true"
+                    or str(info.get("reduceonly", "")).lower() == "true"
+                )
+                t_side = str(t.get("side", "")).lower()
+                t_amount = float(t.get("amount") or 0)
+                if (
+                    t_side == close_side_str
+                    and abs(t_amount * executor.contract_size - entry_size) < 1e-4
+                    and (is_reduce or True)  # OKX info의 reduceOnly key 변동 가능 — 방향+수량 매칭만으로도 충분
+                ):
+                    exit_price = float(t.get("price") or 0)
+                    fee_cost = float((t.get("fee") or {}).get("cost") or 0)
+                    side_sign = 1 if entry_side_str == "long" else -1
+                    gross_pnl = (
+                        (exit_price - float(trade["entry_price"]))
+                        * entry_size * side_sign
+                    )
+                    # 진입 수수료도 차감 (taker fee 추정 — fetch_my_trades에서 진입 trade도 찾을 수 있지만 단순화)
+                    entry_fee_estimate = (
+                        float(trade["entry_price"]) * entry_size * 0.0005
+                    )
+                    net_pnl = gross_pnl - fee_cost - entry_fee_estimate
+                    # 청산 사유 추정: SL_HIT (exit < entry) for long, opposite for short
+                    if side_sign == 1:
+                        reason = (
+                            ExitReason.SL_HIT.value if exit_price < float(trade["entry_price"])
+                            else ExitReason.TP_HIT.value
+                        )
+                    else:
+                        reason = (
+                            ExitReason.SL_HIT.value if exit_price > float(trade["entry_price"])
+                            else ExitReason.TP_HIT.value
+                        )
+                    return exit_price, net_pnl, reason
+            return None
+        except Exception as e:
+            logger.warning("fetch_my_trades 실패 (best-effort): %s", e)
+            return None
 
     @staticmethod
     def _match_trade_to_exchange(

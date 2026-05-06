@@ -162,6 +162,78 @@ class TestLiveExecutorCallDelegation:
         await executor.close()
 
     @pytest.mark.asyncio
+    async def test_close_position_skipped_when_exchange_already_closed(self, monkeypatch):
+        """I-BL010: 거래소가 이미 청산했으면 redundant 주문 skip."""
+        from src.core.enums import OrderType, PositionSide
+        from src.execution.live_executor import LiveExecutor
+
+        config = {
+            "exchange": {
+                "symbol": "BTC/USDT:USDT",
+                "api_key": "test", "secret": "test", "passphrase": "test",
+                "sandbox": True,
+            },
+            "risk": {"circuit_breaker": {"enabled": False}},
+        }
+        executor = LiveExecutor(config)
+
+        # get_position이 None 반환 (거래소 ∅)
+        async def mock_get_position():
+            return None
+        executor.get_position = mock_get_position
+
+        # create_order는 호출되지 않아야 함 — 호출되면 테스트 실패
+        async def mock_create_order(*args, **kwargs):
+            raise AssertionError("create_order called despite empty position")
+        executor.exchange.create_order = mock_create_order
+
+        result = await executor.close_position(
+            PositionSide.LONG, 0.075,
+            order_type=OrderType.MARKET,
+        )
+        assert result["info"]["already_closed"] is True
+        assert result["filled"] == 0
+        await executor.close()
+
+    @pytest.mark.asyncio
+    async def test_close_position_proceeds_when_position_exists(self, monkeypatch):
+        """I-BL010: 거래소 포지션 있으면 정상 close 흐름 진행."""
+        from src.core.enums import OrderType, PositionSide
+        from src.execution import live_executor as live_module
+        from src.execution.live_executor import LiveExecutor
+
+        config = {
+            "exchange": {
+                "symbol": "BTC/USDT:USDT",
+                "api_key": "test", "secret": "test", "passphrase": "test",
+                "sandbox": True,
+            },
+            "risk": {"circuit_breaker": {"enabled": False}},
+        }
+        executor = LiveExecutor(config)
+        executor.contract_size = 0.01
+
+        # get_position이 포지션 반환
+        async def mock_get_position():
+            return {"side": PositionSide.LONG, "size": 0.075, "entry_price": 67000.0}
+        executor.get_position = mock_get_position
+
+        # _retry_api mock — create_order 호출 캡처
+        captured = {}
+        async def mock_retry(func, *args, circuit_breaker=None, **kwargs):
+            captured["called"] = True
+            captured["args"] = args
+            return {"id": "test_order", "filled": 7.5}
+        monkeypatch.setattr(live_module, "_retry_api", mock_retry)
+
+        result = await executor.close_position(
+            PositionSide.LONG, 0.075, order_type=OrderType.MARKET,
+        )
+        assert captured["called"] is True
+        assert result["id"] == "test_order"
+        await executor.close()
+
+    @pytest.mark.asyncio
     async def test_call_circuit_breaker_disabled(self, monkeypatch):
         """circuit_breaker=False config 시 None이 _retry_api에 전달됨."""
         from src.execution import live_executor as live_module

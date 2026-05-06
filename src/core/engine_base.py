@@ -507,10 +507,38 @@ class AbstractEngine(ABC):
 
         # 거래소/시뮬 청산
         # BL-2-2: paper 모드에서 호가창 가용 시 VWAP 침투 가격 사용 (silent fallback)
-        await self.broker.close_position(
-            pos.side, pos.size, fill_price=exit_price,
-            orderbook=getattr(self, "_latest_orderbook", None),
-        )
+        # I-BL012 fix: broker.close_position이 exception 발생해도 시스템 상태 정리 진행.
+        # 거래소 SL/TP 자동 청산 후 redundant close 시도 같은 case에서 ExchangeError가 발생해도
+        # self._position 정리 + DB close + event publish가 안 되는 mismatch 방지.
+        # 거래소 상태 검증 후: 거래소 ∅ → 이미 청산된 상태로 정상 진행 / 거래소 O → propagate.
+        try:
+            await self.broker.close_position(
+                pos.side, pos.size, fill_price=exit_price,
+                orderbook=getattr(self, "_latest_orderbook", None),
+            )
+        except Exception as e:
+            logger.warning("broker.close_position failed: %s — verifying exchange state", e)
+            try:
+                actual = await self.broker.get_position()
+            except Exception as inner:
+                logger.error(
+                    "Cannot verify exchange position state after close failure: %s. "
+                    "Propagating original error — manual intervention may be required.",
+                    inner,
+                )
+                raise e from inner
+            if actual is not None:
+                # 거래소에 포지션 살아있음 → 진짜 청산 실패. exception propagate
+                logger.error(
+                    "broker.close_position failed AND exchange still has position. "
+                    "Manual intervention required.",
+                )
+                raise
+            # 거래소 ∅ → 이미 청산된 상태. 시스템 상태 정리는 정상 진행
+            logger.warning(
+                "Exchange shows no position — treating as already closed (likely SL/TP "
+                "auto-triggered). Proceeding with system state cleanup."
+            )
 
         # 수수료·PnL 정산 — FeeModel 단일 공식
         fees = self.fee_model.estimate_round_trip(

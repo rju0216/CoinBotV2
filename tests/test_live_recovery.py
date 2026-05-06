@@ -1,0 +1,312 @@
+"""라이브 모드 recovery 영역 단위 테스트 (I-BL011/I-BL012/I-BL013).
+
+- I-BL012: engine_base.close_position의 broker.close_position 실패 시 강건성
+- I-BL013: _restore_state case 2의 fetch_actual_exit 정확성
+- I-BL011: SL/TP conditional order 검증 + 재등록
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from src.core.enums import ExitReason, PositionSide, PositionStatus
+from src.core.types import Position
+
+
+# ─── I-BL012: close_position 강건성 ───
+
+
+class TestEngineCloseRobustness:
+    """engine_base.close_position이 broker.close_position 실패 시에도 시스템 정리."""
+
+    @pytest.mark.asyncio
+    async def test_close_proceeds_when_broker_fails_but_exchange_empty(self):
+        """broker.close_position exception + 거래소 ∅ → 시스템 상태 정리 진행."""
+        from src.core.engine_base import AbstractEngine
+        from src.accounting.fee_model import FeeModel
+
+        # 최소 mock engine
+        class _MockEngine:
+            close_position = AbstractEngine.close_position
+
+            def __init__(self):
+                self._position = Position(
+                    side=PositionSide.LONG, size=0.075, entry_price=82000.0,
+                    entry_time=datetime(2026, 5, 6, 21, 15, tzinfo=timezone.utc),
+                    strategy_name="ensemble", stop_loss=81700.0, take_profit=83000.0,
+                    trade_id=1, status=PositionStatus.OPEN,
+                )
+                self.broker = MagicMock()
+                self.broker.cancel_all_orders = AsyncMock()
+                # close_position이 ExchangeError 같은 exception 발생
+                self.broker.close_position = AsyncMock(
+                    side_effect=Exception("simulated 51169 reject")
+                )
+                # get_position이 None (이미 청산)
+                self.broker.get_position = AsyncMock(return_value=None)
+                self.broker.get_balance = AsyncMock(return_value=3370.0)
+                self.fee_model = FeeModel(taker_fee_pct=0.0005, slippage_pct=0.0)
+                self.risk_manager = MagicMock()
+                self.risk_manager.add_pnl = MagicMock()
+                self.risk_manager.update_equity = MagicMock()
+                self.strategy_by_name = {}
+                self.event_bus = MagicMock()
+                self.event_bus.publish = AsyncMock()
+                self._record_trade_close = AsyncMock()
+                self._latest_orderbook = None
+
+        engine = _MockEngine()
+        # 정상 진행해야 함 (exception propagate X)
+        await engine.close_position(
+            exit_price=81707.2, reason=ExitReason.SL_HIT, funding_fee=0.0,
+        )
+
+        # 시스템 상태 정리 확인
+        assert engine._position is None  # 정리 완료
+        assert engine._record_trade_close.called  # DB close 호출
+        assert engine.event_bus.publish.called  # 이벤트 publish 호출
+        assert engine.risk_manager.add_pnl.called  # PnL 누적
+
+    @pytest.mark.asyncio
+    async def test_close_propagates_when_exchange_still_has_position(self):
+        """broker.close_position exception + 거래소 O → 진짜 청산 실패. exception propagate."""
+        from src.core.engine_base import AbstractEngine
+        from src.accounting.fee_model import FeeModel
+
+        class _MockEngine:
+            close_position = AbstractEngine.close_position
+
+            def __init__(self):
+                self._position = Position(
+                    side=PositionSide.LONG, size=0.075, entry_price=82000.0,
+                    entry_time=datetime(2026, 5, 6, tzinfo=timezone.utc),
+                    strategy_name="ensemble", stop_loss=81700.0, take_profit=83000.0,
+                    trade_id=1, status=PositionStatus.OPEN,
+                )
+                self.broker = MagicMock()
+                self.broker.cancel_all_orders = AsyncMock()
+                self.broker.close_position = AsyncMock(
+                    side_effect=Exception("real network failure")
+                )
+                # 거래소에 포지션 살아있음
+                self.broker.get_position = AsyncMock(return_value={
+                    "side": PositionSide.LONG, "size": 0.075, "entry_price": 82000.0,
+                })
+                self.broker.get_balance = AsyncMock(return_value=3370.0)
+                self.fee_model = FeeModel(taker_fee_pct=0.0005, slippage_pct=0.0)
+                self.risk_manager = MagicMock()
+                self.strategy_by_name = {}
+                self.event_bus = MagicMock()
+                self.event_bus.publish = AsyncMock()
+                self._record_trade_close = AsyncMock()
+                self._latest_orderbook = None
+
+        engine = _MockEngine()
+
+        with pytest.raises(Exception, match="real network failure"):
+            await engine.close_position(
+                exit_price=81707.2, reason=ExitReason.SL_HIT,
+            )
+        # 진짜 실패 — 시스템 상태 그대로 (사용자 manual 개입 영역)
+        assert engine._position is not None
+        assert not engine._record_trade_close.called
+
+
+# ─── I-BL013: _restore_state case 2 fetch_actual_exit ───
+
+
+class TestFetchActualExit:
+    """_fetch_actual_exit이 거래소 trade history에서 정확한 청산 정보 추출."""
+
+    @pytest.mark.asyncio
+    async def test_fetch_returns_actual_exit_data(self):
+        """fetch_my_trades에서 reduceOnly 체결 찾아 exit_price/pnl 반환."""
+        from src.live.engine import CoreEngine
+
+        class _MockEngine:
+            _fetch_actual_exit = CoreEngine._fetch_actual_exit
+
+            def __init__(self):
+                self.broker = MagicMock()
+                self.broker.is_live = True
+                executor = MagicMock()
+                executor.contract_size = 0.01
+                executor.exchange = MagicMock()
+                # OKX 청산 trade mock — sell side, reduceOnly, 7.5 contracts
+                executor.exchange.fetch_my_trades = AsyncMock(return_value=[
+                    {
+                        "info": {"reduceOnly": "true"},
+                        "side": "sell",
+                        "amount": 7.5,
+                        "price": 81707.2,
+                        "fee": {"cost": 3.06},
+                    },
+                ])
+                self.broker.executor = executor
+                self.config = {"exchange": {"symbol": "BTC/USDT:USDT"}}
+
+        engine = _MockEngine()
+        trade = {
+            "id": 1, "side": "long", "size": 0.075,
+            "entry_price": 82159.5, "stop_loss": 81710.28, "take_profit": 83057.95,
+            "timestamp": "2026-05-06T21:15:01+00:00",
+        }
+        result = await engine._fetch_actual_exit(trade)
+        assert result is not None
+        exit_price, pnl, reason = result
+        assert exit_price == 81707.2
+        # gross_pnl = (81707.2 - 82159.5) × 0.075 = -33.92
+        # net_pnl = -33.92 - 3.06 (청산 fee) - 3.08 (진입 fee 추정) ≈ -40.06
+        assert pnl < -38.0 and pnl > -42.0  # 대략 -40 근처
+        assert reason == ExitReason.SL_HIT.value  # exit < entry → SL
+
+    @pytest.mark.asyncio
+    async def test_fetch_returns_none_on_paper_mode(self):
+        """paper 모드에서는 fetch 시도 안 함 (None 반환)."""
+        from src.live.engine import CoreEngine
+
+        class _MockEngine:
+            _fetch_actual_exit = CoreEngine._fetch_actual_exit
+
+            def __init__(self):
+                self.broker = MagicMock()
+                self.broker.is_live = False
+
+        engine = _MockEngine()
+        result = await engine._fetch_actual_exit({"id": 1})
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_fetch_returns_none_on_api_failure(self):
+        """fetch_my_trades exception 시 None 반환 (caller가 fallback 처리)."""
+        from src.live.engine import CoreEngine
+
+        class _MockEngine:
+            _fetch_actual_exit = CoreEngine._fetch_actual_exit
+
+            def __init__(self):
+                self.broker = MagicMock()
+                self.broker.is_live = True
+                executor = MagicMock()
+                executor.contract_size = 0.01
+                executor.exchange = MagicMock()
+                executor.exchange.fetch_my_trades = AsyncMock(
+                    side_effect=Exception("API rate limit")
+                )
+                self.broker.executor = executor
+                self.config = {"exchange": {"symbol": "BTC/USDT:USDT"}}
+
+        engine = _MockEngine()
+        result = await engine._fetch_actual_exit({
+            "id": 1, "side": "long", "size": 0.075, "entry_price": 82000.0,
+            "timestamp": "2026-05-06T21:15:01+00:00",
+        })
+        assert result is None
+
+
+# ─── I-BL011: _verify_and_restore_sl_tp ───
+
+
+class TestVerifyAndRestoreSLTP:
+    """SL/TP conditional order 생존 검증 + 누락 시 재등록."""
+
+    @pytest.mark.asyncio
+    async def test_both_alive_no_action(self):
+        """SL/TP 둘 다 거래소에 살아있으면 재등록 안 함."""
+        from src.live.engine import CoreEngine
+
+        class _MockEngine:
+            _verify_and_restore_sl_tp = CoreEngine._verify_and_restore_sl_tp
+
+            def __init__(self):
+                self._position = Position(
+                    side=PositionSide.LONG, size=0.075, entry_price=82000.0,
+                    entry_time=datetime(2026, 5, 6, tzinfo=timezone.utc),
+                    strategy_name="ensemble", stop_loss=81700.0, take_profit=83000.0,
+                )
+                self.broker = MagicMock()
+                self.broker.is_live = True
+                self.broker.place_stop_loss = AsyncMock()
+                self.broker.place_take_profit = AsyncMock()
+                executor = MagicMock()
+                executor.exchange = MagicMock()
+                # 거래소에 SL/TP 둘 다 살아있음
+                executor.exchange.fetch_open_orders = AsyncMock(return_value=[
+                    {"info": {"slTriggerPx": "81700.0"}},
+                    {"info": {"tpTriggerPx": "83000.0"}},
+                ])
+                self.broker.executor = executor
+                self.config = {"exchange": {"symbol": "BTC/USDT:USDT"}}
+
+        engine = _MockEngine()
+        await engine._verify_and_restore_sl_tp()
+        # 재등록 호출 안 됨
+        assert not engine.broker.place_stop_loss.called
+        assert not engine.broker.place_take_profit.called
+
+    @pytest.mark.asyncio
+    async def test_sl_missing_re_registers(self):
+        """SL이 거래소에 없으면 재등록 호출."""
+        from src.live.engine import CoreEngine
+
+        class _MockEngine:
+            _verify_and_restore_sl_tp = CoreEngine._verify_and_restore_sl_tp
+
+            def __init__(self):
+                self._position = Position(
+                    side=PositionSide.LONG, size=0.075, entry_price=82000.0,
+                    entry_time=datetime(2026, 5, 6, tzinfo=timezone.utc),
+                    strategy_name="ensemble", stop_loss=81700.0, take_profit=83000.0,
+                )
+                self.broker = MagicMock()
+                self.broker.is_live = True
+                self.broker.place_stop_loss = AsyncMock()
+                self.broker.place_take_profit = AsyncMock()
+                executor = MagicMock()
+                executor.exchange = MagicMock()
+                # SL 누락 (TP만 있음)
+                executor.exchange.fetch_open_orders = AsyncMock(return_value=[
+                    {"info": {"tpTriggerPx": "83000.0"}},
+                ])
+                self.broker.executor = executor
+                self.config = {"exchange": {"symbol": "BTC/USDT:USDT"}}
+
+        engine = _MockEngine()
+        await engine._verify_and_restore_sl_tp()
+        assert engine.broker.place_stop_loss.called
+        assert not engine.broker.place_take_profit.called
+
+    @pytest.mark.asyncio
+    async def test_fetch_failure_skip_silently(self):
+        """fetch_open_orders 실패 시 재등록 시도 안 함 (거래소 정상 가정)."""
+        from src.live.engine import CoreEngine
+
+        class _MockEngine:
+            _verify_and_restore_sl_tp = CoreEngine._verify_and_restore_sl_tp
+
+            def __init__(self):
+                self._position = Position(
+                    side=PositionSide.LONG, size=0.075, entry_price=82000.0,
+                    entry_time=datetime(2026, 5, 6, tzinfo=timezone.utc),
+                    strategy_name="ensemble", stop_loss=81700.0, take_profit=83000.0,
+                )
+                self.broker = MagicMock()
+                self.broker.is_live = True
+                self.broker.place_stop_loss = AsyncMock()
+                self.broker.place_take_profit = AsyncMock()
+                executor = MagicMock()
+                executor.exchange = MagicMock()
+                executor.exchange.fetch_open_orders = AsyncMock(
+                    side_effect=Exception("API error")
+                )
+                self.broker.executor = executor
+                self.config = {"exchange": {"symbol": "BTC/USDT:USDT"}}
+
+        engine = _MockEngine()
+        # exception propagate 안 됨, 재등록도 안 함
+        await engine._verify_and_restore_sl_tp()
+        assert not engine.broker.place_stop_loss.called
+        assert not engine.broker.place_take_profit.called

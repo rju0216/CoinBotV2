@@ -271,6 +271,24 @@ class LiveExecutor:
         fill_price: float | None = None,
         order_type: OrderType = OrderType.MARKET,
     ) -> dict:
+        # I-BL010 fix: 거래소가 이미 청산했는지 사전 확인 (SL/TP 자동 청산 등).
+        # 거래소 포지션 ∅이면 redundant 주문 skip — OKX의 reduceOnly reject(51169)로 인한
+        # ExchangeError 회피 + 불필요한 API call 차단.
+        try:
+            actual = await self.get_position()
+        except Exception as e:
+            # get_position 실패 시 정상 close 흐름 진행 (best-effort)
+            logger.warning(
+                "close_position: 거래소 포지션 사전 확인 실패 — 정상 close 진행: %s", e,
+            )
+            actual = {"placeholder": True}
+        if actual is None:
+            logger.info(
+                "close_position skipped: exchange position already closed "
+                "(SL/TP triggered or external close)"
+            )
+            return {"info": {"already_closed": True}, "amount": 0, "filled": 0}
+
         close_side = _close_order_side(side)
         contracts = self._btc_to_contracts(size)
         params = {"tdMode": "cross", "reduceOnly": True}

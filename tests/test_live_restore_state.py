@@ -56,6 +56,7 @@ def _build_engine(active: list[str] | None = None) -> CoreEngine:
 
     # broker/data_store mock
     eng.broker = MagicMock()
+    eng.broker.is_live = False  # paper mode (I-BL013 fetch_actual_exit이 None 반환 → fallback)
     eng.broker.get_balance = AsyncMock(return_value=10000.0)
     eng.broker.get_position = AsyncMock(return_value=None)
 
@@ -102,7 +103,12 @@ async def test_clean_startup_no_position(_isolated_registry):
 
 @pytest.mark.asyncio
 async def test_db_open_but_exchange_empty_closes_stale(_isolated_registry):
-    """시나리오 2: 거래소 ∅ + DB O → DB trades 사후 closed 처리."""
+    """시나리오 2: 거래소 ∅ + DB O → DB trades 사후 closed 처리.
+
+    I-BL013 fix 후: paper 모드(is_live=False)이므로 fetch_actual_exit None 반환 →
+    fallback 동작 (SL 가격 추정 + WARNING). entry=67000, SL=66500, size=0.1, long.
+    pnl = (66500 - 67000) × 0.1 = -50.
+    """
     eng = _build_engine(active=["macross"])
     eng.data_store.get_open_trades = AsyncMock(
         return_value=[_fake_trade(id=42)]
@@ -111,7 +117,9 @@ async def test_db_open_but_exchange_empty_closes_stale(_isolated_registry):
     eng.data_store.close_trade.assert_called_once()
     call_kwargs = eng.data_store.close_trade.call_args.kwargs
     assert call_kwargs["trade_id"] == 42
-    assert call_kwargs["pnl"] == 0.0
+    # I-BL013 fallback: SL 가격 추정 + 단순 PnL (수수료/슬리피지 누락)
+    assert call_kwargs["exit_price"] == 66500
+    assert call_kwargs["pnl"] == pytest.approx(-50.0)
     assert call_kwargs["exit_reason"] == "engine_shutdown"
     assert eng.position is None
 
