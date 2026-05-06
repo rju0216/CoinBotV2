@@ -472,8 +472,9 @@ python -m src.main paper --config config/ensemble.yaml
 | I-BL005 | BL-2-3 paper 5시간 운영 후 (호가창 25,376행/4.5h, 기대치 ~18) | `_on_bar_closed`의 호가창 fetch가 `_should_process_bar` 검사 **앞**에 위치 — ccxt가 봉 진행 중 close 변동마다 _on_bar_closed 트리거 시 매번 fetch 발생 | src/live/engine.py | **BL-2-3 hotfix-C** | ✅ 해결 — 위치 이동 (단순). paper 재실행 시 호가창 정상 적재 |
 | I-BL006 | BL-2-3 paper 5시간 운영 후 (17:15 UTC 이후 새 봉 마감 미수신 ~50분 stuck) | ccxt.pro `watch_ohlcv`가 1006 disconnect 후 reconnect는 일부 성공했지만 일정 시간 후 hang 발생. except 진입 못 해 reconnect 루프 미진입 | src/data/feed.py | **BL-2-3 hotfix-D** | ✅ 해결 — `asyncio.wait_for` 120초 timeout + TimeoutError 별도 처리. 단위 3건 추가 |
 | I-BL007 | BL-2-3 paper 운영 중 발견 (ensemble HOLD 신호의 conf=1.00 빈발 → 분석 결과 라이브 추론이 backtest와 다른 cycle 가능) | sub-plugin이 진행 중 봉의 NaN row를 dropna로 우연히 제외하는 메커니즘에 의존. gap=0/1 변동성 발생 가능 → 동일 시점 동일 데이터에 다른 신호 가능 (매매 일관성 위협). 또한 sub-plugin 추론 실패 시 어떤 sub가 어떤 사유로 실패했는지 진단 정보 부재 (UX상 conf=1.00이 "확률 100% HOLD 확신"으로 오해 소지) | src/strategy/features.py + 4 sub-plugin + src/strategy/plugins/ensemble.py + src/live/engine.py | **BL-2-3 hotfix-F** (Phase 1 + 3 + 3-C + 3-D) | ✅ 해결 — Phase 1: sub-plugin fail_reason + nan_by_tf 진단. Phase 3: compute_multi_tf_features에서 진행 중 sub_tf 봉 제외. Phase 3-C: helper로 dropna 패턴 통일 (ML/DL 모두 학습-추론 일관). Phase 3-D: get_features_for_ctx 라이브 path도 `ts < now` 적용 — backtest와 정확 동일 cycle 명시 보장 (gap 변동성 제거). 단위 18건 추가 |
+| I-BL008 | BL-2-4 진입 직전 라이브 모드 코드 점검 중 발견 | `LiveExecutor._call` 메서드가 자기 자신을 무한 재귀 호출 (`return await self._call(...)`) → 라이브 모드 시작 시 첫 ccxt API 호출(`set_leverage`)에서 즉시 RecursionError. paper 모드는 LiveExecutor 미사용이라 미발견. circuit_breaker 단위 테스트도 `_retry_api` 모듈 함수 직접 호출만 검증해 `_call` path 미검증 | src/execution/live_executor.py | **BL-2-4 진입 직전 hotfix** | ✅ 해결 — `self._call` → `_retry_api` 모듈 함수 호출로 정정. 단위 테스트 2건 추가 (mock으로 `_call` → `_retry_api` 호출 검증, 434→436 pass) |
 
-신규 carry-over 후보 ID는 I-BL008~ 형태로 등록.
+신규 carry-over 후보 ID는 I-BL009~ 형태로 등록.
 
 ---
 

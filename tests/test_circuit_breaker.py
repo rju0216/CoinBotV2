@@ -108,3 +108,88 @@ class TestRetryApiWithCircuitBreaker:
             await _retry_api(boom, retries=1, circuit_breaker=cb)
         # ccxt 예외 아니라 카운터 증가 안 함
         assert cb.consecutive_failures == 0
+
+
+# ─── I-BL008: LiveExecutor._call이 _retry_api를 호출하는지 검증 ───
+
+
+class TestLiveExecutorCallDelegation:
+    """I-BL008 fix 검증: _call → _retry_api (자기 재귀 아님)."""
+
+    @pytest.mark.asyncio
+    async def test_call_delegates_to_retry_api(self, monkeypatch):
+        """_call이 _retry_api 모듈 함수를 호출 (자기 자신 재귀가 아님)."""
+        from src.execution import live_executor as live_module
+        from src.execution.live_executor import LiveExecutor
+
+        # _retry_api mock — 호출 인자 캡처
+        captured: dict = {}
+
+        async def mock_retry_api(func, *args, circuit_breaker=None, **kwargs):
+            captured["func"] = func
+            captured["args"] = args
+            captured["circuit_breaker"] = circuit_breaker
+            captured["kwargs"] = kwargs
+            return "mocked_result"
+
+        monkeypatch.setattr(live_module, "_retry_api", mock_retry_api)
+
+        # LiveExecutor 인스턴스 생성 (ccxt 실 호출 없이)
+        config = {
+            "exchange": {
+                "symbol": "BTC/USDT:USDT",
+                "api_key": "test",
+                "secret": "test",
+                "passphrase": "test",
+                "leverage": 5,
+                "sandbox": True,
+            },
+            "risk": {"circuit_breaker": {"enabled": True, "failure_threshold": 5}},
+        }
+        executor = LiveExecutor(config)
+
+        async def dummy_func(*a, **k):
+            return "should_not_be_called"
+
+        result = await executor._call(dummy_func, "arg1", kw1="value1")
+
+        assert result == "mocked_result"
+        assert captured["func"] is dummy_func
+        assert captured["args"] == ("arg1",)
+        assert captured["circuit_breaker"] is executor.circuit_breaker
+        assert captured["kwargs"] == {"kw1": "value1"}
+
+        await executor.close()
+
+    @pytest.mark.asyncio
+    async def test_call_circuit_breaker_disabled(self, monkeypatch):
+        """circuit_breaker=False config 시 None이 _retry_api에 전달됨."""
+        from src.execution import live_executor as live_module
+        from src.execution.live_executor import LiveExecutor
+
+        captured: dict = {}
+
+        async def mock_retry_api(func, *args, circuit_breaker=None, **kwargs):
+            captured["circuit_breaker"] = circuit_breaker
+            return None
+
+        monkeypatch.setattr(live_module, "_retry_api", mock_retry_api)
+
+        config = {
+            "exchange": {
+                "symbol": "BTC/USDT:USDT",
+                "api_key": "test",
+                "secret": "test",
+                "passphrase": "test",
+                "sandbox": True,
+            },
+            "risk": {"circuit_breaker": {"enabled": False}},
+        }
+        executor = LiveExecutor(config)
+        assert executor.circuit_breaker is None
+
+        async def dummy(): return None
+        await executor._call(dummy)
+
+        assert captured["circuit_breaker"] is None
+        await executor.close()

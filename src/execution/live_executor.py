@@ -163,8 +163,11 @@ class LiveExecutor:
         )
 
     async def _call(self, func, *args, **kwargs):
-        """모든 ccxt API 호출의 단일 진입점. _retry_api + circuit breaker 통합."""
-        return await self._call(
+        """모든 ccxt API 호출의 단일 진입점. _retry_api + circuit breaker 통합.
+
+        I-BL008 fix: 자기 자신 재귀 호출 → 모듈 함수 _retry_api 호출로 정정.
+        """
+        return await _retry_api(
             func, *args, circuit_breaker=self.circuit_breaker, **kwargs,
         )
 
