@@ -299,6 +299,17 @@ class AbstractEngine(ABC):
         """
         return None
 
+    def _log_account_status(
+        self,
+        balance: float,
+        current_price: float,
+    ) -> None:
+        """현재 계정 재정 상태(balance/equity/unrealized/daily_pnl/dd) 모니터링
+        로그 hook (default no-op). 라이브/페이퍼만 활성. master_tf 봉 마감 시
+        포지션 유무 무관 호출.
+        """
+        return None
+
     # ---- BP-2-3 OOS monitor helper ----
 
     def _record_oos_signal(

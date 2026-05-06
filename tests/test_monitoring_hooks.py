@@ -272,6 +272,90 @@ class TestSignalStatusDiagnostic:
         assert "available:45/60" in msg
 
 
+class TestAccountStatusLog:
+    """BL-2-4 hotfix-G: 계정 재정 상태 로그 검증."""
+
+    def test_no_position_basic_output(self, caplog):
+        """포지션 없을 때 — balance=equity, unrealized=0, dd=0."""
+        from unittest.mock import MagicMock
+        from src.risk.manager import RiskManager
+
+        rm = RiskManager({"risk": {"max_daily_loss_pct": 0.05}})
+        rm.set_initial_balance(1000.0)
+        rm.daily_pnl = 0.0
+
+        # MockEngine — 필요 attr만 주입
+        engine = MagicMock()
+        engine.risk_manager = rm
+        engine._position = None
+
+        CoreEngine._log_account_status(engine, 1000.0, 67000.0)
+
+        # 마지막 INFO 로그 확인 (caplog는 자동으로 src.live.engine logger 캡처)
+        with caplog.at_level(logging.INFO, logger="src.live.engine"):
+            CoreEngine._log_account_status(engine, 1000.0, 67000.0)
+        msg = caplog.records[-1].message
+        assert "[ACCOUNT]" in msg
+        assert "balance=$1000.00" in msg
+        assert "equity=$1000.00" in msg
+        assert "unrealized=+0.00" in msg
+        assert "daily_pnl=+0.00" in msg
+        assert "dd=0.00%" in msg
+
+    def test_long_position_unrealized_profit(self, caplog):
+        """LONG 포지션 + 가격 상승 → unrealized 양수, equity 증가."""
+        from unittest.mock import MagicMock
+        from src.core.enums import PositionSide
+        from src.core.types import Position
+        from src.risk.manager import RiskManager
+
+        rm = RiskManager({"risk": {"max_daily_loss_pct": 0.05}})
+        rm.set_initial_balance(1000.0)
+        rm.daily_pnl = 5.30
+
+        position = Position(
+            side=PositionSide.LONG,
+            size=0.05,
+            entry_price=67000.0,
+            entry_time=datetime(2026, 5, 6, 18, 0, tzinfo=timezone.utc),
+            strategy_name="ensemble",
+        )
+        engine = MagicMock()
+        engine.risk_manager = rm
+        engine._position = position
+
+        with caplog.at_level(logging.INFO, logger="src.live.engine"):
+            CoreEngine._log_account_status(engine, 1000.0, 67100.0)
+        msg = caplog.records[-1].message
+        # (67100-67000) × 0.05 = 5.00
+        assert "unrealized=+5.00" in msg
+        # equity = 1000 + 5 = 1005.00
+        assert "equity=$1005.00" in msg
+        assert "daily_pnl=+5.30" in msg
+
+    def test_drawdown_pct_calculation(self, caplog):
+        """peak_equity 대비 dd% 계산 정확성."""
+        from unittest.mock import MagicMock
+        from src.risk.manager import RiskManager
+
+        rm = RiskManager({"risk": {"max_daily_loss_pct": 0.05}})
+        rm.set_initial_balance(1000.0)
+        rm.peak_equity = 1100.0  # 이전 peak
+        rm.daily_pnl = -50.0
+
+        engine = MagicMock()
+        engine.risk_manager = rm
+        engine._position = None
+
+        with caplog.at_level(logging.INFO, logger="src.live.engine"):
+            CoreEngine._log_account_status(engine, 990.0, 67000.0)
+        msg = caplog.records[-1].message
+        # dd = (1100 - 990) / 1100 = 10.00%
+        assert "dd=10.00%" in msg
+        assert "balance=$990.00" in msg
+        assert "daily_pnl=-50.00" in msg
+
+
 class TestAbstractEngineDefaultNoOp:
     """AbstractEngine default hook이 no-op이라 backtest에 영향 없음 검증."""
 
@@ -303,4 +387,14 @@ class TestAbstractEngineDefaultNoOp:
         assert result is None
         assert not any(
             "[POSITION]" in r.message for r in caplog.records
+        )
+
+    def test_default_log_account_status_returns_none(self, caplog):
+        """BL-2-4 hotfix-G: AbstractEngine default no-op (backtest 무영향)."""
+        from src.core.engine_base import AbstractEngine
+        with caplog.at_level(logging.INFO):
+            result = AbstractEngine._log_account_status(None, 1000.0, 67000.0)
+        assert result is None
+        assert not any(
+            "[ACCOUNT]" in r.message for r in caplog.records
         )

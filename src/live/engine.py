@@ -661,6 +661,10 @@ class CoreEngine(AbstractEngine):
         if self._position is not None and tf == self.master_timeframe:
             self._log_position_status(self._position, close, now)
 
+        # BL-2-4 hotfix-G: master_tf 봉 마감마다 계정 재정 상태 로그 (포지션 무관)
+        if tf == self.master_timeframe:
+            self._log_account_status(balance, close)
+
         # BP-2-3: OOS monitor 평가 (horizon 도달한 pending prediction 채점)
         if self.oos_monitor is not None:
             try:
@@ -831,4 +835,34 @@ class CoreEngine(AbstractEngine):
             position.strategy_name, position.side.value.upper(), position.size,
             position.entry_price, current_price, unrealized,
             hold_h, hold_m,
+        )
+
+    def _log_account_status(self, balance, current_price) -> None:
+        """master_tf 봉 마감 시 계정 재정 상태 출력 (포지션 유무 무관).
+
+        샘플 (포지션 없음):
+          [ACCOUNT] balance=$1234.56 equity=$1234.56 unrealized=+0.00 daily_pnl=+0.00 dd=0.00%
+
+        샘플 (포지션 보유 + 미실현 수익):
+          [ACCOUNT] balance=$1234.56 equity=$1236.57 unrealized=+2.01 daily_pnl=+5.30 dd=0.50%
+        """
+        from src.core.enums import PositionSide
+        unrealized = 0.0
+        if self._position is not None:
+            if self._position.side == PositionSide.LONG:
+                unrealized = (
+                    current_price - self._position.entry_price
+                ) * self._position.size
+            else:
+                unrealized = (
+                    self._position.entry_price - current_price
+                ) * self._position.size
+
+        equity = balance + unrealized
+        daily_pnl = self.risk_manager.daily_pnl
+        dd_pct = self.risk_manager.current_drawdown_pct(equity) * 100
+
+        logger.info(
+            "[ACCOUNT] balance=$%.2f equity=$%.2f unrealized=%+.2f daily_pnl=%+.2f dd=%.2f%%",
+            balance, equity, unrealized, daily_pnl, dd_pct,
         )

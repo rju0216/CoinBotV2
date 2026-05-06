@@ -177,7 +177,11 @@ class LiveExecutor:
         self.contract_size = float(market.get("contractSize", 1.0) or 1.0)
         await self._call(self.exchange.set_leverage, self.leverage, self.symbol)
         try:
-            await self._call(self.exchange.set_margin_mode, "cross", self.symbol)
+            # I-BL009 fix: OKX setMarginMode가 lever 파라미터 요구 (1-125 범위)
+            await self._call(
+                self.exchange.set_margin_mode, "cross", self.symbol,
+                params={"lever": str(self.leverage)},
+            )
         except Exception as e:
             logger.warning("set_margin_mode: %s (may already be set)", e)
         logger.info(
