@@ -81,10 +81,14 @@ class TelegramNotifier(Notifier):
                 self._fallback_warned = True
             await LogNotifier().send(level, title, message, **meta)
             return
-        # 비동기 HTTP — aiohttp 의존성 추가 부담. 단순화: requests 동기 호출을 to_thread로
-        text = f"*[{level}] {title}*\n{message}"
+        # I-BL014 fix: parse_mode 제거 + plain text. Markdown V1 파서가 메시지 내
+        # 특수 문자(`-`, `$`, 긴 float 등)와 충돌 시 400 Bad Request reject 발생
+        # (예: EXIT 메시지의 `net_pnl=$-40.71` + meta의 매우 긴 float pnl). plain
+        # text는 모든 문자 안전 처리.
+        text = f"[{level}] {title}\n{message}"
         if meta:
-            text += f"\n\n_meta_: `{meta}`"
+            meta_str = ", ".join(f"{k}={v}" for k, v in meta.items())
+            text += f"\n\nmeta: {meta_str}"
         try:
             await asyncio.to_thread(self._send_sync, text)
         except Exception as e:
@@ -94,10 +98,10 @@ class TelegramNotifier(Notifier):
         import urllib.parse
         import urllib.request
         url = self.API_URL.format(token=self.bot_token)
+        # I-BL014 fix: parse_mode 제거 — plain text 사용
         data = urllib.parse.urlencode({
             "chat_id": self.chat_id,
             "text": text,
-            "parse_mode": "Markdown",
         }).encode("utf-8")
         req = urllib.request.Request(url, data=data, method="POST")
         with urllib.request.urlopen(req, timeout=5) as resp:
