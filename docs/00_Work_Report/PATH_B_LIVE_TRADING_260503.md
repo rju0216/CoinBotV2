@@ -463,6 +463,7 @@ python -m src.main paper --config config/ensemble.yaml
 | 2026-05-08 | └ BL-2-4 hotfix-K: I-BL015 외부 청산 동기화 | ✅ 완료 | 841790c | 거래소 외부 청산(SL/TP spike, manual, 강제) 자동 동기화. LONG/SHORT 모두 커버. 단위 4건 (459 pass) |
 | 진행 중 | └ BL-2-4 라이브 운영 (사용자) | 진행 중 | — | 자금 점진 확장은 사용자 자율. 1-2주 안정 후 BL-2-4 종착 결정 |
 | (carry) | └ I-BL016: _restore_state case 2 daily_pnl 누적 | 미해결 | — | I-BL015 후속 (낮은 우선순위) |
+| (carry) | └ I-BL017: DEVELOPER_GUIDE.md 갱신 (BL-2-1~2-4 hotfix 반영) | 미해결 | — | 다음 세션에서 진행. 갱신 영역 9개 + 우선순위 4단계 정리됨. ~100분 작업 견적 |
 | (확장) | PATH_B_LIVE_EXTENSION (별도 PATH) | 대기 | — | 다중 거래소 + ensemble walkforward + Survivorship + BP-1 데이터 carry |
 
 ---
@@ -488,8 +489,9 @@ python -m src.main paper --config config/ensemble.yaml
 | I-BL014 | BL-2-4 두 번째 SL 청산 시 발견 | `TelegramNotifier`가 `parse_mode=Markdown` 사용. 메시지 내 특수 문자(`-`, `$`, 긴 float 등) + Markdown V1 파서의 까다로움으로 EXIT 메시지(예: `net_pnl=$-40.71` + meta의 `pnl=-40.71368847497047`)에서 텔레그램 API 400 Bad Request reject. ENTRY는 정상 작동. 결과: 사용자가 청산 알림 누락 — 라이브 모니터링 가시성 저하. 자금/DB는 정상 | src/utils/notifier.py | **BL-2-4 hotfix-J** | ✅ 해결 — `parse_mode` 제거 + plain text 사용. meta 포맷 plain key=value. 모든 특수 문자 안전 처리. 단위 테스트 2건 추가 (453→455 pass) |
 | I-BL015 | BL-2-4 SHORT TP spike 청산 시 발견 (12:05 사례) | 거래소가 우리 모르게 포지션 청산하는 4가지 case (LONG/SHORT 모두 동일 패턴): SL/TP spike 청산(봉 OHLC 범위 밖 짧은 가격 spike), 사용자 manual close, 거래소 강제 청산(margin call). 봉 OHLC 기반 `check_candle_sl_tp`가 인지 못함 → 매 봉마다 self._position 살아있다고 판단, 거래소엔 ∅ → 잘못된 [POSITION]/[ACCOUNT] 로그, DB OPEN 누적, 텔레그램 EXIT 누락, daily_pnl 누락, **새 진입 기회 손실** | src/live/engine.py | **BL-2-4 hotfix-K** | ✅ 해결 — `_on_bar_closed`에 master_tf 봉 마감 시 `broker.get_position()` 동기화 추가. 거래소 ∅ 인지 시 `_sync_unexpected_close` 호출 → I-BL013 `_fetch_actual_exit` 재사용으로 정확한 청산 정보 fetch → `_close_with_funding` 정상 close 흐름 (I-BL010 skip + DB close + 알림 + daily_pnl 누적). LONG/SHORT 자동 커버 (broker.get_position이 side 무관). 단위 4건 추가 (455→459 pass) |
 | I-BL016 (carry) | I-BL015 분석 중 발견 | `_restore_state` case 2(거래소 ∅ + DB O 재시작 시점)에서 DB는 close되지만 `risk_manager.daily_pnl`에 누적 안 됨 → daily_loss_limit 정확성 영향. 같은 날 재시작 vs 다른 날 재시작 정책 결정 필요 | src/live/engine.py + src/risk/manager.py | **BL-2-4 hotfix-L (예정)** | 미해결 — I-BL015 후속 작업. I-BL015의 `_sync_unexpected_close`는 정상 close 흐름 통해 daily_pnl 자동 누적 (별도 fix 필요 없음). 단 _restore_state case 2 영역만 carry |
+| I-BL017 (carry) | BL-2-4 hotfix-K commit 직후 발견 (DEVELOPER_GUIDE 점검) | `docs/01_Guides/DEVELOPER_GUIDE.md`가 BL-2-1 ~ BL-2-4 hotfix들을 반영 못함. 봉 마감 흐름(§5.1)·청산 흐름(§5.3) 내용이 hotfix 전 상태. 재시작 복원·cycle 일관성·진단 패턴·새 모듈 추가 시 패턴 등 다수 누락. 새 plugin/알림채널/거래소 추가 시 가이드 부족 | docs/01_Guides/DEVELOPER_GUIDE.md | **다음 세션에서 진행 (BL-2-4 hotfix-M)** | 미해결 (carry-over) — 갱신 영역 9개 상세 정리됨 (대화 로그 보존). 우선순위 + 견적: ① §5.1 봉 마감 + §5.3 청산 (25분) ② §5.4 재시작 복원 + §5.5 cycle 일관성 신규 (30분) ③ §4.3 hook + §4.5 Signal.meta + §3 extract_train_meta (20분) ④ §10 새 모듈 패턴 + §11 디버깅 팁 (25분). 합계 ~100분 |
 
-신규 carry-over 후보 ID는 I-BL017~ 형태로 등록.
+신규 carry-over 후보 ID는 I-BL018~ 형태로 등록.
 
 ---
 
