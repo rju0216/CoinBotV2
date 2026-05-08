@@ -633,6 +633,67 @@ class CoreEngine(AbstractEngine):
         if sl_alive and tp_alive:
             logger.info("SL/TP conditional orders verified alive on exchange")
 
+    def _position_to_trade_dict(self) -> dict:
+        """I-BL015: self._position을 _fetch_actual_exit 호환 trade dict로 변환."""
+        pos = self._position
+        return {
+            "id": pos.trade_id,
+            "side": pos.side.value,  # "long" 또는 "short"
+            "size": pos.size,
+            "entry_price": pos.entry_price,
+            "stop_loss": pos.stop_loss,
+            "take_profit": pos.take_profit,
+            "timestamp": pos.entry_time.isoformat(),
+        }
+
+    async def _sync_unexpected_close(self, last_known_price: float, now: datetime) -> None:
+        """I-BL015: 거래소가 우리 모르게 청산한 포지션 동기화.
+
+        라이브 운영 중 다음 case에서 봉 OHLC 기반 check_candle_sl_tp가 인지 못함:
+        1) SL/TP spike만 도달 (봉 OHLC 범위 밖)
+        2) 사용자 manual close (OKX 웹)
+        3) 거래소 강제 청산 (margin call, liquidation)
+
+        흐름:
+        - I-BL013 _fetch_actual_exit으로 정확한 exit_price/reason fetch
+        - 실패 시 last_known_price + ENGINE_SHUTDOWN fallback
+        - _close_with_funding 호출 → 정상 close 흐름 진행
+          - I-BL010이 거래소 ∅ 인지 → close_position skip
+          - I-BL012 강건성 path → DB close + event publish + self._position=None
+          - 텔레그램 EXIT 알림 발송
+          - daily_pnl 누적
+        """
+        if self._position is None:
+            return
+
+        trade_dict = self._position_to_trade_dict()
+        exit_data = await self._fetch_actual_exit(trade_dict)
+
+        if exit_data is not None:
+            exit_price, _, reason_str = exit_data
+            try:
+                reason = ExitReason(reason_str)
+            except ValueError:
+                reason = ExitReason.SL_HIT
+            logger.warning(
+                "Position closed externally — syncing: exit=%.2f reason=%s "
+                "(detected via exchange position ∅ at bar close)",
+                exit_price, reason.value,
+            )
+        else:
+            # Fallback: 거래소 trade history fetch 실패 시 last_known_price 사용
+            exit_price = last_known_price
+            reason = ExitReason.ENGINE_SHUTDOWN
+            logger.warning(
+                "Position closed externally but exchange trade history fetch failed. "
+                "Using fallback (last_price=%.2f, reason=engine_shutdown). "
+                "OKX 웹에서 정확한 exit/PnL 확인 후 수동 update 권장.",
+                exit_price,
+            )
+
+        # _close_with_funding 호출 → 정상 close 흐름 (I-BL010 skip + DB close + event)
+        await self._close_with_funding(exit_price, reason, now)
+
     async def _fetch_actual_exit(
         self, trade: dict,
     ) -> tuple[float, float, str] | None:
@@ -829,6 +890,25 @@ class CoreEngine(AbstractEngine):
         now = pd.to_datetime(
             candle["timestamp"], unit="ms", utc=True
         ).to_pydatetime()
+
+        # I-BL015: 라이브 모드에서 거래소 포지션 상태 사전 동기화 (master_tf만).
+        # 거래소가 우리 모르게 청산한 4가지 case(SL/TP spike, manual close, 강제 청산)
+        # 차단. 봉 OHLC 기반 check_candle_sl_tp는 spike를 인지 못함.
+        if (
+            self.broker.is_live
+            and tf == self.master_timeframe
+            and self._position is not None
+        ):
+            try:
+                actual = await self.broker.get_position()
+            except Exception as e:
+                logger.warning(
+                    "get_position 실패 — 동기화 skip (거래소 정상 가정): %s", e
+                )
+                actual = {"placeholder": True}
+            if actual is None:
+                # 거래소 ∅ → 우리 모르게 청산. 동기화 후 SL/TP 캔들 검사 skip
+                await self._sync_unexpected_close(close, now)
 
         # 1) SL/TP 캔들 체결 검사 (엔진 담당 정책 (a))
         if self._position is not None:

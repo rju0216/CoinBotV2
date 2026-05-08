@@ -321,6 +321,100 @@ class TestFetchActualExit:
 # ─── I-BL011: _verify_and_restore_sl_tp ───
 
 
+class TestSyncUnexpectedClose:
+    """I-BL015: 거래소가 모르게 청산한 포지션 동기화 (LONG/SHORT 모두)."""
+
+    def _make_engine(self, side: PositionSide):
+        """공통 mock engine 빌더."""
+        from src.live.engine import CoreEngine
+
+        class _MockEngine:
+            _position_to_trade_dict = CoreEngine._position_to_trade_dict
+            _sync_unexpected_close = CoreEngine._sync_unexpected_close
+
+            def __init__(self):
+                self._position = Position(
+                    side=side,
+                    size=0.075,
+                    entry_price=82000.0,
+                    entry_time=datetime(2026, 5, 8, 12, 0, tzinfo=timezone.utc),
+                    strategy_name="ensemble",
+                    stop_loss=82500.0 if side == PositionSide.SHORT else 81500.0,
+                    take_profit=81000.0 if side == PositionSide.SHORT else 83000.0,
+                    trade_id=1,
+                )
+                self.broker = MagicMock()
+                self.broker.is_live = True
+                self._fetch_actual_exit = AsyncMock()
+                self._close_with_funding = AsyncMock()
+
+        return _MockEngine()
+
+    @pytest.mark.asyncio
+    async def test_short_tp_spike_sync_long_path(self):
+        """SHORT TP spike 청산 — fetch 성공 시 정확한 exit/reason 사용."""
+        engine = self._make_engine(PositionSide.SHORT)
+        engine._fetch_actual_exit.return_value = (
+            81000.0, 60.39, ExitReason.TP_HIT.value,
+        )
+        await engine._sync_unexpected_close(
+            last_known_price=81100.0,
+            now=datetime(2026, 5, 8, 12, 15, tzinfo=timezone.utc),
+        )
+        # _close_with_funding 호출됨 (정상 close 흐름)
+        assert engine._close_with_funding.called
+        call_args = engine._close_with_funding.call_args
+        assert call_args.args[0] == 81000.0  # exit_price (fetch에서)
+        assert call_args.args[1] == ExitReason.TP_HIT  # reason
+
+    @pytest.mark.asyncio
+    async def test_long_sl_spike_sync(self):
+        """LONG SL spike 청산 — fetch 성공 시 정확한 정보."""
+        engine = self._make_engine(PositionSide.LONG)
+        engine._fetch_actual_exit.return_value = (
+            81500.0, -40.0, ExitReason.SL_HIT.value,
+        )
+        await engine._sync_unexpected_close(
+            last_known_price=81600.0,
+            now=datetime(2026, 5, 8, 12, 15, tzinfo=timezone.utc),
+        )
+        call_args = engine._close_with_funding.call_args
+        assert call_args.args[0] == 81500.0
+        assert call_args.args[1] == ExitReason.SL_HIT
+
+    @pytest.mark.asyncio
+    async def test_fetch_failure_uses_fallback(self, caplog):
+        """fetch 실패 시 last_known_price + ENGINE_SHUTDOWN fallback."""
+        import logging
+        engine = self._make_engine(PositionSide.LONG)
+        engine._fetch_actual_exit.return_value = None  # fetch 실패
+        with caplog.at_level(logging.WARNING):
+            await engine._sync_unexpected_close(
+                last_known_price=81600.0,
+                now=datetime(2026, 5, 8, 12, 15, tzinfo=timezone.utc),
+            )
+        call_args = engine._close_with_funding.call_args
+        assert call_args.args[0] == 81600.0  # last_known_price
+        assert call_args.args[1] == ExitReason.ENGINE_SHUTDOWN
+        # WARNING 로그 출력
+        assert any(
+            "exchange trade history fetch failed" in r.message
+            for r in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    async def test_position_to_trade_dict(self):
+        """_position_to_trade_dict이 _fetch_actual_exit 호환 dict 반환."""
+        engine = self._make_engine(PositionSide.SHORT)
+        d = engine._position_to_trade_dict()
+        assert d["side"] == "short"
+        assert d["size"] == 0.075
+        assert d["entry_price"] == 82000.0
+        assert d["stop_loss"] == 82500.0
+        assert d["take_profit"] == 81000.0
+        assert d["timestamp"] == "2026-05-08T12:00:00+00:00"
+
+
 class TestVerifyAndRestoreSLTP:
     """SL/TP conditional order 생존 검증 + 누락 시 재등록."""
 
