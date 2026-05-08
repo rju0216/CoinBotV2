@@ -377,6 +377,67 @@ ORPHAN 상태에서는 전략의 `update_stop_loss`·`should_force_exit` 훅이 
 `Ctrl+C` 시 graceful shutdown — broker/data_store close, 현재 포지션은 그대로
 유지(거래소 SL/TP pending 주문이 청산을 담당).
 
+### 6.5 라이브 운영 중 자동 인지·복구 (BL-2-4 hotfix 효과)
+
+라이브 모드는 거래소(tick 기반) vs 엔진(봉 OHLC 기반)의 시간 해상도 차이 때문에
+다음 case에서 시스템이 자동으로 거래소 상태를 ground truth로 동기화한다:
+
+| Case | 자동 동작 |
+|---|---|
+| SL/TP **봉 내 도달** | 봉 마감 시 `check_candle_sl_tp` 인지 → 정상 close |
+| SL/TP **spike만 도달** | 봉 마감 시 `broker.get_position()` 거래소 ∅ 인지 → `_sync_unexpected_close` 자동 호출 |
+| 사용자 **manual close** (OKX 웹) | 동일 — 거래소 ∅ 인지 후 동기화 |
+| 거래소 **강제 청산** (margin call) | 동일 |
+| 재시작 시 거래소 ∅ + DB OPEN | `_restore_state` case 2 + `_fetch_actual_exit`로 정확한 청산 정보 복원 |
+
+자동 동기화 시 거래소 trade history(`fetch_closed_orders`)에서 정확한
+exit_price/pnl/reason fetch → DB close + 텔레그램 EXIT 알림 + daily_pnl 누적.
+LONG/SHORT 모두 동일 동작.
+
+### 6.6 라이브 운영 모니터링 로그
+
+15m 봉 마감마다 자동 출력 (master_timeframe 기준):
+
+```
+[SIGNAL] ensemble HOLD probs=[S:0.05 H:0.92 L:0.03] conf=0.92 threshold=0.55 contributors=[...]
+[ACCOUNT] balance=$X.XX equity=$X.XX unrealized=+/-$X.XX daily_pnl=+/-$X.XX dd=X.XX%
+[POSITION] ensemble LONG/SHORT size=... entry=... current=... unrealized_pnl=... (XhYZm held)  # 보유 시
+```
+
+진입/청산 발생 시 추가:
+```
+[SIGNAL] ... → ENTRY contributors=[...]    # 진입 결정
+INFO  Opened long/short X.XXXX BTC (XX contracts) market
+INFO  SL set: sell/buy XX contracts @ XXXX.XX
+INFO  TP set: sell/buy XX contracts @ XXXX.XX
+... (보유 중) ...
+INFO  close_position skipped: exchange position already closed (SL/TP triggered or external close)  # I-BL010 효과
+INFO  [EXIT [ensemble] sl_hit/tp_hit] net_pnl=$+/-XX.XX | meta={...}
+```
+
+### 6.7 텔레그램 알림 종류
+
+| 알림 | 발송 조건 |
+|---|---|
+| `ENTRY [strategy]` | 신규 진입 |
+| `EXIT [strategy] reason: net_pnl=$X` | 청산 (TP/SL/timeout/외부 청산) |
+| `Drawdown lock triggered` | dd ≥ max_drawdown_pct |
+| `Daily loss limit reached` | daily_pnl ≤ -max_daily_loss_pct |
+| `Circuit breaker OPEN` | API 5회 연속 실패 |
+| `OOS decay [strategy]` | 적중률 < min_acc_threshold |
+
+`.env`의 `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` 설정 + `config.live.notifications.channels: ["log", "telegram"]` 시 활성.
+plain text 형식 (Markdown 사용 안 함, 모든 특수 문자 안전).
+
+### 6.8 OKX 계정 권한 + 마진 모드
+
+라이브 시작 전 OKX:
+- API key의 `Trade` 권한 활성 (Read-only 불가)
+- USDT-margined Perpetual swap 거래 활성
+- `config.exchange.leverage` 값으로 margin mode 자동 cross 설정
+
+`tdMode: cross`가 매 주문에 명시되므로 거래소 default와 무관.
+
 ---
 
 ## 7. 데이터 캐시

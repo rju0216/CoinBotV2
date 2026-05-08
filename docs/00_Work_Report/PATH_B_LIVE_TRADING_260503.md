@@ -454,8 +454,15 @@ python -m src.main paper --config config/ensemble.yaml
 | 2026-05-05 | └ BL-2-1 Fail-safe (notifier + CircuitBreaker + RiskManager event_bus) | ✅ 완료 | (이번 커밋) | 단위 33건. 텔레그램 .env 통합 |
 | 2026-05-05 | └ BL-2-2 호가창 인프라 (paper VWAP) | ✅ 완료 | (이번 커밋) | 단위 22건. ccxt fetch_order_book + parquet append |
 | 2026-05-05 | └ BL-2 추가 step OOS warm-up (DD''=가, EE''=yes) | ✅ 완료 | (이번 커밋) | 학습 cutoff 이후 buffer 사전 채움 + 격차 ≥ 10%p 알림 |
-| 2026-05-06 | └ BL-2-3 Paper trading | ✅ 완료 (조기 종료) | (이번 커밋) | v010 ensemble paper 운영 + 7개 hotfix(I-BL003~I-BL007). 핵심 6개 검증 충족, 거래 흐름은 횡보장으로 미발생 — 단위 테스트로 우회 검증. §4.2.3 결과 참조 |
-| (대기) | └ BL-2-4 소액 실거래 점진 전환 | 대기 (사용자) | — | 자금 0.5-1% 시작 → 점진 확장 → 라이브 거래 시작 = 경로 B 완료 |
+| 2026-05-06 | └ BL-2-3 Paper trading | ✅ 완료 (조기 종료) | 467b00c | v010 ensemble paper 운영 + 7개 hotfix(I-BL003~I-BL007). 핵심 6개 검증 충족, 거래 흐름은 횡보장으로 미발생 — 단위 테스트로 우회 검증. §4.2.3 결과 참조 |
+| 2026-05-06 | └ BL-2-4 사전준비: I-BL008 fix | ✅ 완료 | 84d3708 | LiveExecutor `_call` 무한 재귀 → 라이브 즉시 crash 차단. 단위 2건 (391→436 진행 중) |
+| 2026-05-06 | └ BL-2-4 hotfix-G: I-BL009 + [ACCOUNT] 로그 | ✅ 완료 | 93e1fe9 | `set_margin_mode` lever 파라미터 + 매 15m 재정 상태 모니터링. 단위 4건 (440 pass) |
+| 2026-05-06 | └ BL-2-4 hotfix-H: I-BL010~I-BL013 첫 SL 청산 사고 묶음 | ✅ 완료 | 0655acf | close_position skip + 강건성 + conditional order 검증 + DB recovery. 단위 10건 (450 pass) |
+| 2026-05-07 | └ BL-2-4 hotfix-I: I-BL013 본질 fix (fetch_closed_orders) | ✅ 완료 | 4fd250e | fetch_my_trades → fetch_closed_orders. PnL 정확도 9배 향상. 단위 3건 추가 (453 pass) |
+| 2026-05-07 | └ BL-2-4 hotfix-J: I-BL014 텔레그램 plain text | ✅ 완료 | 7854116 | parse_mode 제거 → EXIT 알림 정상 도착. 단위 2건 (455 pass) |
+| 2026-05-08 | └ BL-2-4 hotfix-K: I-BL015 외부 청산 동기화 | ✅ 완료 | 841790c | 거래소 외부 청산(SL/TP spike, manual, 강제) 자동 동기화. LONG/SHORT 모두 커버. 단위 4건 (459 pass) |
+| 진행 중 | └ BL-2-4 라이브 운영 (사용자) | 진행 중 | — | 자금 점진 확장은 사용자 자율. 1-2주 안정 후 BL-2-4 종착 결정 |
+| (carry) | └ I-BL016: _restore_state case 2 daily_pnl 누적 | 미해결 | — | I-BL015 후속 (낮은 우선순위) |
 | (확장) | PATH_B_LIVE_EXTENSION (별도 PATH) | 대기 | — | 다중 거래소 + ensemble walkforward + Survivorship + BP-1 데이터 carry |
 
 ---
@@ -537,6 +544,30 @@ python -m src.main paper --config config/ensemble.yaml
 **라이브 채택 결정 (BL-2-4 시작 시 그대로 사용)**:
 - 모델: v010 (4 sub-plugin 학습 cutoff 2026-04-01)
 - Strategy: ensemble (4 모델 + isotonic)
+
+### BL-2-4 진행 상황 (2026-05-06 ~ 진행 중)
+
+**라이브 운영 시작**: 2026-05-06 18:43 KST. OKX 계정 USDT 자동 조회 (시작 자금 ~$3,370).
+
+**거래 발생 + 자동 처리 검증**:
+- Trade 1: LONG entry $82,159.50 → SL $81,707.20 청산 → pnl=-$40.85 (OKX 정확값 -$40.71 시스템 기록)
+- Trade 2: 두 번째 SL 청산 → 텔레그램 EXIT 알림 누락 발견 (I-BL014 trigger)
+- Trade 3: SHORT TP spike 청산 ($79,139.10 / +$60.39) → 외부 청산 인지 누락 발견 (I-BL015 trigger)
+
+**hotfix 진행 흐름**:
+- BL-2-4 진입 직전: I-BL008 fix
+- 라이브 첫 가동: I-BL009 (set_margin_mode WARNING) + `[ACCOUNT]` 로그 추가
+- 첫 SL 청산 사고: I-BL010~I-BL013 묶음 (close_position skip + 강건성 + DB recovery)
+- 본질 fix: I-BL013을 fetch_my_trades → fetch_closed_orders로 정확도 강화
+- 텔레그램: I-BL014 (Markdown → plain text)
+- SHORT TP spike 사고: I-BL015 (거래소 외부 청산 자동 동기화)
+
+**잠재 이슈 carry-over**:
+- I-BL016: `_restore_state` case 2의 daily_pnl 누적 (낮은 우선순위, 같은 날 재시작 시점에만 의미)
+
+**종착 결정 권장 시점** (사용자 판단):
+- 1-2주 안정 운영 + 거래 ≥ 20-30건 누적 + 이상 알림 0
+- 또는 자금 점진 확장 후 안정 검증 완료 시점
 
 ### PATH_B 종착 후 (BL-2 종착 이후)
 
