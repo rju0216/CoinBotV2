@@ -435,22 +435,29 @@ class CoreEngine(AbstractEngine):
         # I-BL013 fix: 거래소 trade history에서 실제 청산 정보 fetch 시도.
         # SL/TP 자동 청산 케이스에서 정확한 exit_price/pnl 복원. fetch 실패 시 fallback
         # (SL 가격 추정 + WARNING — 사용자가 OKX 웹에서 정확한 PnL 확인 후 수동 update 권장).
+        # I-BL016 fix (BL-2-4 hotfix-L): same-day(UTC) 청산이면 risk_manager.daily_pnl
+        # 누적. daily_loss_limit 정확성 보장. 결정 (B-3 나/B-4 나):
+        #   - 텔레그램 EXIT 알림 발송 안 함 (시작 시점 noise/지연 알림 혼란 회피)
+        #   - update_equity 추가 호출 안 함 (라인 423 초기 호출이 broker.get_balance
+        #     ground truth 기반이라 충분, 추가 호출은 effectively no-op)
         if exchange_pos is None and open_trades:
             logger.warning(
                 "DB has %d open trades but exchange has none. "
                 "Attempting to fetch actual exit data from exchange...",
                 len(open_trades),
             )
+            now_utc = datetime.now(timezone.utc)
             for trade in open_trades:
                 exit_data = await self._fetch_actual_exit(trade)
+                exit_ts_ms: int | None
                 if exit_data is not None:
-                    actual_exit_price, actual_pnl, actual_reason = exit_data
+                    actual_exit_price, actual_pnl, actual_reason, exit_ts_ms = exit_data
                     logger.info(
                         "Trade %d: 거래소에서 청산 정보 복원 — exit=%.2f pnl=%+.2f reason=%s",
                         trade["id"], actual_exit_price, actual_pnl, actual_reason,
                     )
                 else:
-                    # Fallback: SL/TP 가격 추정 (수수료/슬리피지 누락)
+                    # Fallback: SL/TP 가격 추정 (수수료/슬리피지 누락, timestamp 부재)
                     sl = trade.get("stop_loss")
                     tp = trade.get("take_profit")
                     fallback_price = sl if sl is not None else (tp or trade["entry_price"])
@@ -461,6 +468,7 @@ class CoreEngine(AbstractEngine):
                         * trade["size"] * side_sign
                     )
                     actual_reason = ExitReason.ENGINE_SHUTDOWN.value
+                    exit_ts_ms = None
                     logger.warning(
                         "Trade %d: 거래소 청산 정보 fetch 실패 — SL 가격 추정 사용 "
                         "(exit=%.2f, pnl=%+.2f, 수수료/슬리피지 누락). "
@@ -478,6 +486,27 @@ class CoreEngine(AbstractEngine):
                     pnl_pct=pnl_pct,
                     exit_reason=actual_reason,
                 )
+
+                # I-BL016: same-day(UTC) 청산이면 daily_pnl 누적
+                # timestamp 부재(fetch fallback)는 보수적으로 different-day 가정 → skip
+                if exit_ts_ms is not None:
+                    exit_dt = datetime.fromtimestamp(exit_ts_ms / 1000, tz=timezone.utc)
+                    same_day = exit_dt.date() == now_utc.date()
+                else:
+                    same_day = False
+                if same_day:
+                    self.risk_manager.add_pnl(actual_pnl)
+                    logger.info(
+                        "Trade %d: same-day(UTC) 청산 인지 — daily_pnl 누적 "
+                        "(+%.2f, total=%+.2f)",
+                        trade["id"], actual_pnl, self.risk_manager.daily_pnl,
+                    )
+                else:
+                    logger.info(
+                        "Trade %d: different-day(UTC) 청산 — daily_pnl 누적 skip "
+                        "(exit_ts_ms=%s, restart_date=%s)",
+                        trade["id"], exit_ts_ms, now_utc.date().isoformat(),
+                    )
             return
 
         # 3) 거래소 있음 + 전략 0개 → 에러 중단 (정책 7 (a))
@@ -670,7 +699,8 @@ class CoreEngine(AbstractEngine):
         exit_data = await self._fetch_actual_exit(trade_dict)
 
         if exit_data is not None:
-            exit_price, _, reason_str = exit_data
+            # I-BL016: 운영 중이라 timestamp 미사용 (now ≈ 청산 시각, same-day 보장)
+            exit_price, _, reason_str, _ = exit_data
             try:
                 reason = ExitReason(reason_str)
             except ValueError:
@@ -696,18 +726,24 @@ class CoreEngine(AbstractEngine):
 
     async def _fetch_actual_exit(
         self, trade: dict,
-    ) -> tuple[float, float, str] | None:
+    ) -> tuple[float, float, str, int | None] | None:
         """I-BL013: 거래소에서 trade의 실제 청산 정보 fetch.
 
         ccxt `fetch_closed_orders`로 reduceOnly + 반대 방향 closed order 찾아
-        (exit_price, pnl, reason) 반환. fetch_my_trades보다 reduceOnly 식별이 정확
-        (진단 결과 fetch_my_trades는 reduceOnly key 누락).
+        (exit_price, pnl, reason, exit_ts_ms) 반환. fetch_my_trades보다 reduceOnly
+        식별이 정확 (진단 결과 fetch_my_trades는 reduceOnly key 누락).
 
         PnL = (exit - entry) × size × side_sign - 진입_fee - 청산_fee
         - 수수료는 config의 taker_fee_pct로 추정 (실제 OKX 표시값과 ~$0.5 오차 가능)
 
+        I-BL016 (BL-2-4 hotfix-L): exit_ts_ms 추가 반환 — `_restore_state` case 2의
+        same-day(UTC) 판정에 사용. 운영 중 `_sync_unexpected_close`는 미사용 (now ≈
+        청산 시각이라 same-day 보장).
+
         Returns:
-            (exit_price, pnl, reason) 또는 None (paper 모드/fetch 실패 시 caller가 fallback)
+            (exit_price, pnl, reason, exit_ts_ms) 또는 None.
+            exit_ts_ms: ccxt order의 timestamp (UTC ms). order에 timestamp 없으면 None.
+            None 반환: paper 모드/fetch 실패 시 caller가 fallback.
         """
         if not self.broker.is_live:
             return None
@@ -772,7 +808,9 @@ class CoreEngine(AbstractEngine):
                         ExitReason.SL_HIT.value if exit_price > entry_price
                         else ExitReason.TP_HIT.value
                     )
-                return exit_price, net_pnl, reason
+                # I-BL016: ccxt order의 timestamp (UTC ms). caller(case 2)가 same-day 판정에 사용
+                exit_ts_ms = o.get("timestamp")
+                return exit_price, net_pnl, reason, exit_ts_ms
             return None
         except Exception as e:
             logger.warning("fetch_closed_orders 실패 (best-effort): %s", e)

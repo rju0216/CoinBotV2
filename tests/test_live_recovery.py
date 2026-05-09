@@ -157,7 +157,8 @@ class TestFetchActualExit:
         }
         result = await engine._fetch_actual_exit(trade)
         assert result is not None
-        exit_price, pnl, reason = result
+        # I-BL016: 4-튜플로 확장 (exit_price, pnl, reason, exit_ts_ms)
+        exit_price, pnl, reason, _ = result
         assert exit_price == pytest.approx(81707.297)
         # gross = (81707.297 - 82159.5) × 0.075 = -33.915
         # entry_fee = 82159.5 × 0.075 × 0.0005 = 3.081
@@ -202,7 +203,7 @@ class TestFetchActualExit:
             "timestamp": "2026-05-06T21:15:01+00:00",
         })
         assert result is not None
-        exit_price, _, _ = result
+        exit_price, _, _, _ = result
         # 진입 order(82170)이 아닌 reduceOnly=true 청산 order(81707) 선택
         assert exit_price == pytest.approx(81707.297)
 
@@ -313,7 +314,7 @@ class TestFetchActualExit:
             "timestamp": "2026-05-06T21:15:01+00:00",
         })
         assert result is not None
-        _, pnl, reason = result
+        _, pnl, reason, _ = result
         assert reason == ExitReason.TP_HIT.value
         assert pnl > 0  # short + 가격 하락 → 수익
 
@@ -354,8 +355,10 @@ class TestSyncUnexpectedClose:
     async def test_short_tp_spike_sync_long_path(self):
         """SHORT TP spike 청산 — fetch 성공 시 정확한 exit/reason 사용."""
         engine = self._make_engine(PositionSide.SHORT)
+        # I-BL016: 4-튜플 (exit_price, pnl, reason, exit_ts_ms). 운영 중 _sync_unexpected_close
+        # 는 timestamp 미사용이라 None 으로 mock
         engine._fetch_actual_exit.return_value = (
-            81000.0, 60.39, ExitReason.TP_HIT.value,
+            81000.0, 60.39, ExitReason.TP_HIT.value, None,
         )
         await engine._sync_unexpected_close(
             last_known_price=81100.0,
@@ -372,7 +375,7 @@ class TestSyncUnexpectedClose:
         """LONG SL spike 청산 — fetch 성공 시 정확한 정보."""
         engine = self._make_engine(PositionSide.LONG)
         engine._fetch_actual_exit.return_value = (
-            81500.0, -40.0, ExitReason.SL_HIT.value,
+            81500.0, -40.0, ExitReason.SL_HIT.value, None,
         )
         await engine._sync_unexpected_close(
             last_known_price=81600.0,

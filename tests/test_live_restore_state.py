@@ -6,7 +6,7 @@ mock을 통해 검증한다.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -108,6 +108,9 @@ async def test_db_open_but_exchange_empty_closes_stale(_isolated_registry):
     I-BL013 fix 후: paper 모드(is_live=False)이므로 fetch_actual_exit None 반환 →
     fallback 동작 (SL 가격 추정 + WARNING). entry=67000, SL=66500, size=0.1, long.
     pnl = (66500 - 67000) × 0.1 = -50.
+
+    I-BL016: timestamp 부재(fetch fallback) → 보수적으로 different-day 가정,
+    daily_pnl 누적 skip.
     """
     eng = _build_engine(active=["macross"])
     eng.data_store.get_open_trades = AsyncMock(
@@ -122,6 +125,79 @@ async def test_db_open_but_exchange_empty_closes_stale(_isolated_registry):
     assert call_kwargs["pnl"] == pytest.approx(-50.0)
     assert call_kwargs["exit_reason"] == "engine_shutdown"
     assert eng.position is None
+    # I-BL016: fetch fallback path는 timestamp 부재 → daily_pnl 누적 안 됨
+    assert eng.risk_manager.daily_pnl == 0.0
+
+
+@pytest.mark.asyncio
+async def test_case2_same_day_exit_accrues_daily_pnl(_isolated_registry):
+    """I-BL016 (BL-2-4 hotfix-L): case 2 same-day(UTC) 청산 →
+    risk_manager.daily_pnl 누적."""
+    eng = _build_engine(active=["macross"])
+    eng.data_store.get_open_trades = AsyncMock(
+        return_value=[_fake_trade(id=50)]
+    )
+    # _fetch_actual_exit mock — same-day(UTC) timestamp 반환
+    now_utc = datetime.now(timezone.utc)
+    same_day_ts_ms = int(now_utc.timestamp() * 1000)
+    eng._fetch_actual_exit = AsyncMock(
+        return_value=(66800.0, -20.0, "sl_hit", same_day_ts_ms)
+    )
+    await eng._restore_state()
+    # add_pnl 호출 → daily_pnl 누적
+    assert eng.risk_manager.daily_pnl == pytest.approx(-20.0)
+    # close_trade도 호출 (DB 정리는 same/different-day 무관)
+    eng.data_store.close_trade.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_case2_different_day_exit_skips_daily_pnl(_isolated_registry):
+    """I-BL016: case 2 different-day(UTC) 청산 → daily_pnl 누적 skip
+    (DB 정리는 진행)."""
+    eng = _build_engine(active=["macross"])
+    eng.data_store.get_open_trades = AsyncMock(
+        return_value=[_fake_trade(id=51)]
+    )
+    # _fetch_actual_exit mock — 1일 전 timestamp 반환
+    yesterday = datetime.now(timezone.utc) - timedelta(days=1)
+    different_day_ts_ms = int(yesterday.timestamp() * 1000)
+    eng._fetch_actual_exit = AsyncMock(
+        return_value=(66800.0, -20.0, "sl_hit", different_day_ts_ms)
+    )
+    await eng._restore_state()
+    # different-day → add_pnl 호출 안 됨
+    assert eng.risk_manager.daily_pnl == 0.0
+    # close_trade는 호출됨 (DB 정리는 진행)
+    eng.data_store.close_trade.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_case2_mixed_same_and_different_day(_isolated_registry):
+    """I-BL016: case 2 다중 trade 혼합 — same-day pnl 만 누적."""
+    eng = _build_engine(active=["macross"])
+    eng.data_store.get_open_trades = AsyncMock(
+        return_value=[
+            _fake_trade(id=60),  # 첫 호출: same-day
+            _fake_trade(id=61),  # 두 번째 호출: different-day
+        ]
+    )
+    now_utc = datetime.now(timezone.utc)
+    same_ts = int(now_utc.timestamp() * 1000)
+    diff_ts = int((now_utc - timedelta(days=1)).timestamp() * 1000)
+    call_count = {"n": 0}
+
+    async def mock_fetch(trade):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return (67100.0, 30.0, "tp_hit", same_ts)
+        return (66500.0, -50.0, "sl_hit", diff_ts)
+
+    eng._fetch_actual_exit = mock_fetch
+    await eng._restore_state()
+    # same-day +30 만 누적, different-day -50 은 skip
+    assert eng.risk_manager.daily_pnl == pytest.approx(30.0)
+    # close_trade는 두 trade 모두 호출됨
+    assert eng.data_store.close_trade.call_count == 2
 
 
 @pytest.mark.asyncio
