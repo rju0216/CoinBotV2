@@ -202,6 +202,15 @@ class AbstractEngine(ABC):
         3) 슬롯이 차있고 reverse_policy != ignore 이면 reverse 검사
         4) 슬롯이 차있고 보유 전략이 supports_pyramiding 이면 generate_pyramid_signal
         """
+        # I-BL018 (BL-2-4 hotfix-N): 자정 경계 인식 시 daily_pnl reset.
+        # 백테/페이퍼/라이브 일관 적용 (CLAUDE.md 라이브-백테 일관성 원칙).
+        if self.risk_manager.maybe_reset_for_new_day(now):
+            logger.info(
+                "[RiskManager] new UTC day boundary — daily_pnl reset "
+                "(last_reset_date=%s)",
+                self.risk_manager.last_reset_date,
+            )
+
         # 1) on_bar_close 훅
         for strategy in self.strategies:
             if (
