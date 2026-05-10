@@ -1062,16 +1062,17 @@ class CoreEngine(AbstractEngine):
 
     # ---- BL-2-3 hotfix-E: 모니터링 hook override (라이브/페이퍼 INFO 출력) ----
 
-    def _log_signal_status(self, strategy, signal) -> None:
+    def _log_signal_status(self, strategy, signal, bar_context=None) -> None:
         """매 entry_tf 봉 마감 시 슬롯 비었을 때 호출.
 
-        정상 inference 샘플 (dropped=0, 깔끔):
-          [SIGNAL] ensemble HOLD probs=[S:0.31 H:0.40 L:0.29] conf=0.40 threshold=0.55
+        정상 inference 샘플 (BLE-7-1 후, sub_probs + bar 컨텍스트 추가):
+          [SIGNAL] ensemble HOLD probs=[S:0.05 H:0.92 L:0.03] conf=0.92 threshold=0.55
                    contributors=[ml_lightgbm, ml_xgboost, dl_lstm, dl_transformer]
+                   sub_probs={ml_lightgbm:[S:0.04 H:0.93 L:0.03] ...}
+                   bar=80050.00 (Δ-0.12% prev) range=0.15%
 
         I-BL007 Phase 3-C: 정상 + dropped > 0 (진행 중 봉 영향 잔존):
-          [SIGNAL] ensemble HOLD probs=[...] conf=... threshold=0.55 contributors=[...]
-                   (dropped=1, used_ts=2026-05-06 04:30:00)
+          [SIGNAL] ... (gap=1, used_ts=2026-05-06 04:30:00)
 
         I-BL007 Phase 3-C: 추론 실패 + 진단 정보:
           [SIGNAL] ensemble HOLD (no inference: ml_lightgbm=all_features_nan
@@ -1108,8 +1109,34 @@ class CoreEngine(AbstractEngine):
             f" contributors={contributors}" if contributors else ""
         )
 
+        # BLE-7-1: sub_probs 풀 [S:H:L] 표기 (ensemble 만 셋팅, 단일 모델 plugin 은 None)
+        sub_probs_str = ""
+        sub_probs = meta.get("sub_probs")
+        if sub_probs:
+            parts = [
+                f"{name}:[S:{p[0]:.2f} H:{p[1]:.2f} L:{p[2]:.2f}]"
+                for name, p in sub_probs.items() if p and len(p) == 3
+            ]
+            if parts:
+                sub_probs_str = " sub_probs={" + " ".join(parts) + "}"
+
+        # BLE-7-1: bar 컨텍스트 — close + Δ% (prev) + range%
+        bar_str = ""
+        if bar_context:
+            close = bar_context.get("close")
+            prev = bar_context.get("prev_close")
+            high = bar_context.get("high")
+            low = bar_context.get("low")
+            if close is not None:
+                bar_str = f" bar={close:.2f}"
+                if prev is not None and prev > 0:
+                    delta_pct = (close - prev) / prev * 100
+                    bar_str += f" (Δ{delta_pct:+.2f}% prev)"
+                if high is not None and low is not None and low > 0:
+                    range_pct = (high - low) / low * 100
+                    bar_str += f" range={range_pct:.2f}%"
+
         # I-BL007 Phase 3-C: gap > 0인 경우만 진단 정보 추가 (noise 최소화)
-        # gap = 가장 최근 봉 대비 사용된 row까지의 봉 수. 0=정상, N+=진행 중 봉 영향.
         diag_str = ""
         gap = meta.get("gap_to_latest", 0)
         if gap and gap > 0:
@@ -1120,18 +1147,20 @@ class CoreEngine(AbstractEngine):
                 diag_str = f" (gap={gap})"
 
         logger.info(
-            "[SIGNAL] %s %s%s conf=%.2f threshold=%.2f%s%s%s",
+            "[SIGNAL] %s %s%s conf=%.2f threshold=%.2f%s%s%s%s%s",
             strategy.name, signal.side.value.upper(), probs_str, conf, threshold,
-            action_marker, contrib_str, diag_str,
+            action_marker, contrib_str, sub_probs_str, bar_str, diag_str,
         )
 
 
     def _log_position_status(self, position, current_price, now) -> None:
         """master_tf 봉 마감 시 슬롯 차있을 때 호출.
 
+        BLE-7-1: SL/TP 가격 + 현재가 대비 Δ% 추가.
         샘플:
           [POSITION] ensemble LONG size=0.0149 entry=67100.00 current=67235.00
                      unrealized_pnl=+$2.01 (1h32m held)
+                     SL=66500.00 (-1.09% from current) TP=68000.00 (+1.14%)
         """
         from src.core.enums import PositionSide
         hold_seconds = (now - position.entry_time).total_seconds()
@@ -1143,22 +1172,37 @@ class CoreEngine(AbstractEngine):
         else:
             unrealized = (position.entry_price - current_price) * position.size
 
+        # BLE-7-1: SL/TP 거리 표기 (None 일 수 있음 — orphan 등)
+        sl_tp_str = ""
+        if current_price > 0:
+            parts = []
+            if position.stop_loss is not None:
+                sl_delta = (position.stop_loss - current_price) / current_price * 100
+                parts.append(
+                    f"SL={position.stop_loss:.2f} ({sl_delta:+.2f}% from current)"
+                )
+            if position.take_profit is not None:
+                tp_delta = (position.take_profit - current_price) / current_price * 100
+                parts.append(f"TP={position.take_profit:.2f} ({tp_delta:+.2f}%)")
+            if parts:
+                sl_tp_str = " " + " ".join(parts)
+
         logger.info(
             "[POSITION] %s %s size=%.4f entry=%.2f current=%.2f "
-            "unrealized_pnl=%+.2f (%dh%02dm held)",
+            "unrealized_pnl=%+.2f (%dh%02dm held)%s",
             position.strategy_name, position.side.value.upper(), position.size,
             position.entry_price, current_price, unrealized,
-            hold_h, hold_m,
+            hold_h, hold_m, sl_tp_str,
         )
 
     def _log_account_status(self, balance, current_price) -> None:
         """master_tf 봉 마감 시 계정 재정 상태 출력 (포지션 유무 무관).
 
-        샘플 (포지션 없음):
-          [ACCOUNT] balance=$1234.56 equity=$1234.56 unrealized=+0.00 daily_pnl=+0.00 dd=0.00%
-
-        샘플 (포지션 보유 + 미실현 수익):
-          [ACCOUNT] balance=$1234.56 equity=$1236.57 unrealized=+2.01 daily_pnl=+5.30 dd=0.50%
+        BLE-7-1: daily_pnl 한도 + DD 락 거리 (% + 절대값 $).
+        샘플:
+          [ACCOUNT] balance=$3381.82 equity=$3381.82 unrealized=+0.00
+                    daily_pnl=+33.97 (limit -$169.09 / 0% reached)
+                    dd=0.00% / -$0.00 (lock -35% / -$1183.64, 0% reached)
         """
         from src.core.enums import PositionSide
         unrealized = 0.0
@@ -1173,10 +1217,30 @@ class CoreEngine(AbstractEngine):
                 ) * self._position.size
 
         equity = balance + unrealized
-        daily_pnl = self.risk_manager.daily_pnl
-        dd_pct = self.risk_manager.current_drawdown_pct(equity) * 100
+        rm = self.risk_manager
+        daily_pnl = rm.daily_pnl
+        dd_pct = rm.current_drawdown_pct(equity) * 100
+
+        # BLE-7-1: daily 한도 거리 — 한도 절대값 + 도달 % (한도는 음수 의미)
+        daily_limit_abs = -(balance * rm.max_daily_loss_pct)  # 예: -169.09
+        daily_reached_pct = (
+            min(100.0, abs(daily_pnl / daily_limit_abs) * 100)
+            if daily_pnl < 0 and daily_limit_abs < 0 else 0.0
+        )
+
+        # BLE-7-1: DD 락 거리 — % + 절대값 ($) + 락 한도 % + 절대값 + 도달 %
+        dd_abs = max(0.0, rm.peak_equity - equity)  # 절대값 (음수 부호는 텍스트로)
+        dd_lock_pct = rm.max_drawdown_pct * 100  # 35% 등
+        dd_lock_abs = rm.peak_equity * rm.max_drawdown_pct  # 락 한도 절대값
+        dd_reached_pct = (
+            min(100.0, dd_pct / dd_lock_pct * 100) if dd_lock_pct > 0 else 0.0
+        )
 
         logger.info(
-            "[ACCOUNT] balance=$%.2f equity=$%.2f unrealized=%+.2f daily_pnl=%+.2f dd=%.2f%%",
-            balance, equity, unrealized, daily_pnl, dd_pct,
+            "[ACCOUNT] balance=$%.2f equity=$%.2f unrealized=%+.2f "
+            "daily_pnl=%+.2f (limit -$%.2f / %.0f%% reached) "
+            "dd=%.2f%% / -$%.2f (lock -%.0f%% / -$%.2f, %.0f%% reached)",
+            balance, equity, unrealized,
+            daily_pnl, abs(daily_limit_abs), daily_reached_pct,
+            dd_pct, dd_abs, dd_lock_pct, dd_lock_abs, dd_reached_pct,
         )

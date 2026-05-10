@@ -226,6 +226,11 @@ class Ensemble(StrategyModule):
         meta = {
             "probs": [round(float(p), 4) for p in avg_probs],
             "contributors": contributors,
+            # BLE-7-1: sub-plugin 별 probs 노출 — 사용자 진단 가시성. contributors 와 동일 순서
+            "sub_probs": {
+                name: [round(float(p), 4) for p in probs]
+                for name, probs in zip(contributors, probs_list)
+            },
         }
         # I-BL007 Phase 3-C: 정상 contributors의 진단 정보 propagate (gap > 0 시만 의미)
         if contrib_diag and contrib_diag.get("gap_to_latest", 0) > 0:

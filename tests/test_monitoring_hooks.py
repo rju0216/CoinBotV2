@@ -398,3 +398,138 @@ class TestAbstractEngineDefaultNoOp:
         assert not any(
             "[ACCOUNT]" in r.message for r in caplog.records
         )
+
+
+class TestBLE71SignalEnhancement:
+    """BLE-7-1: _log_signal_status 의 sub_probs + bar_context 출력 검증."""
+
+    def test_sub_probs_full_format(self, caplog):
+        """ensemble sub_probs 풀 [S:H:L] 표기 확인."""
+        strategy = _StubStrategy("ensemble", threshold=0.55)
+        signal = Signal(
+            side=SignalSide.HOLD,
+            confidence=0.92,
+            meta={
+                "probs": [0.05, 0.92, 0.03],
+                "contributors": ["ml_lightgbm", "ml_xgboost"],
+                "sub_probs": {
+                    "ml_lightgbm": [0.04, 0.93, 0.03],
+                    "ml_xgboost": [0.06, 0.91, 0.03],
+                },
+            },
+        )
+        with caplog.at_level(logging.INFO, logger="src.live.engine"):
+            CoreEngine._log_signal_status(None, strategy, signal)
+        msg = caplog.records[-1].message
+        assert "sub_probs={" in msg
+        assert "ml_lightgbm:[S:0.04 H:0.93 L:0.03]" in msg
+        assert "ml_xgboost:[S:0.06 H:0.91 L:0.03]" in msg
+
+    def test_bar_context_with_delta_and_range(self, caplog):
+        """bar_context 인자가 close + Δ% + range% 출력."""
+        strategy = _StubStrategy("ensemble", threshold=0.55)
+        signal = Signal(
+            side=SignalSide.HOLD,
+            confidence=0.92,
+            meta={"probs": [0.05, 0.92, 0.03]},
+        )
+        bar_context = {
+            "close": 80050.0, "prev_close": 80150.0, "high": 80100.0, "low": 79980.0,
+        }
+        with caplog.at_level(logging.INFO, logger="src.live.engine"):
+            CoreEngine._log_signal_status(None, strategy, signal, bar_context)
+        msg = caplog.records[-1].message
+        assert "bar=80050.00" in msg
+        # Δ = (80050-80150)/80150 = -0.1247%
+        assert "(Δ-0.12% prev)" in msg
+        # range = (80100-79980)/79980 = 0.150%
+        assert "range=0.15%" in msg
+
+    def test_bar_context_none_no_bar_str(self, caplog):
+        """bar_context=None 이면 bar 출력 안 함 (backward-compat)."""
+        strategy = _StubStrategy("ensemble", threshold=0.55)
+        signal = Signal(
+            side=SignalSide.HOLD,
+            confidence=0.40,
+            meta={"probs": [0.31, 0.40, 0.29]},
+        )
+        with caplog.at_level(logging.INFO, logger="src.live.engine"):
+            CoreEngine._log_signal_status(None, strategy, signal, None)
+        msg = caplog.records[-1].message
+        assert "bar=" not in msg
+
+
+class TestBLE71PositionSLTP:
+    """BLE-7-1: _log_position_status 의 SL/TP 거리 출력 검증."""
+
+    def test_sl_tp_distance_long_position(self, caplog):
+        entry_time = datetime(2026, 5, 9, 0, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 5, 9, 14, 15, tzinfo=timezone.utc)
+        position = Position(
+            side=PositionSide.LONG,
+            size=0.0680,
+            entry_price=79687.60,
+            entry_time=entry_time,
+            strategy_name="ensemble",
+            stop_loss=79100.00,
+            take_profit=80800.00,
+        )
+        current_price = 80050.00
+        with caplog.at_level(logging.INFO, logger="src.live.engine"):
+            CoreEngine._log_position_status(None, position, current_price, now)
+        msg = caplog.records[-1].message
+        # SL 거리: (79100-80050)/80050 = -1.187%
+        assert "SL=79100.00 (-1.19% from current)" in msg
+        # TP 거리: (80800-80050)/80050 = +0.937%
+        assert "TP=80800.00 (+0.94%)" in msg
+
+    def test_sl_tp_none_no_distance_str(self, caplog):
+        """orphan 등 SL/TP 없으면 SL/TP 출력 안 함."""
+        entry_time = datetime(2026, 5, 9, 0, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 5, 9, 14, 15, tzinfo=timezone.utc)
+        position = Position(
+            side=PositionSide.LONG,
+            size=0.05, entry_price=80000.0, entry_time=entry_time,
+            strategy_name="_unknown",
+            stop_loss=None, take_profit=None,
+        )
+        with caplog.at_level(logging.INFO, logger="src.live.engine"):
+            CoreEngine._log_position_status(None, position, 80100.0, now)
+        msg = caplog.records[-1].message
+        assert "SL=" not in msg
+        assert "TP=" not in msg
+
+
+class TestBLE71AccountRiskDistance:
+    """BLE-7-1: _log_account_status 의 daily 한도/DD 락 거리 출력 검증."""
+
+    def test_account_risk_distances(self, caplog):
+        from src.risk.manager import RiskManager
+        rm = RiskManager({"risk": {
+            "max_daily_loss_pct": 0.05,
+            "max_drawdown_pct": 0.35,
+            "max_position_size_btc": 1.0,
+            "max_concurrent_positions": 1,
+        }})
+        rm.set_initial_balance(3500.0)
+        rm.peak_equity = 3500.0
+        rm.daily_pnl = -50.0  # 일일 -$50, 한도 -$175 → 28.6% reached
+
+        # _log_account_status 직접 호출 — self.risk_manager + self._position 만 사용
+        class _Stub:
+            risk_manager = rm
+            _position = None
+        with caplog.at_level(logging.INFO, logger="src.live.engine"):
+            CoreEngine._log_account_status(_Stub(), 3450.0, 80000.0)
+        msg = caplog.records[-1].message
+        # daily 한도: 3450 × 0.05 = 172.50
+        assert "limit -$172.50" in msg
+        # daily reached: |-50/-172.5| = 29% (반올림)
+        assert "29% reached" in msg or "28% reached" in msg
+        # DD 락 한도: 3500 × 0.35 = 1225.00
+        assert "lock -35%" in msg
+        assert "-$1225.00" in msg
+        # equity = 3450 + 0 = 3450, dd = (3500-3450)/3500 = 1.43%
+        assert "dd=1.43%" in msg
+        # dd 절대값: 3500-3450 = 50.00
+        assert "-$50.00" in msg

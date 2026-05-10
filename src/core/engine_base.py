@@ -211,6 +211,19 @@ class AbstractEngine(ABC):
                 self.risk_manager.last_reset_date,
             )
 
+        # BLE-7-1: bar_context — _log_signal_status 의 가격 컨텍스트 출력용.
+        # 백테에선 _log_signal_status default no-op 이라 미사용 (오버헤드 거의 0)
+        df = candles_per_tf.get(bar_close_tf)
+        bar_context: dict | None = None
+        if df is not None and len(df) >= 1:
+            last_row = df.iloc[-1]
+            bar_context = {
+                "close": current_price,
+                "prev_close": float(df.iloc[-2]["close"]) if len(df) >= 2 else None,
+                "high": float(last_row["high"]),
+                "low": float(last_row["low"]),
+            }
+
         # 1) on_bar_close 훅
         for strategy in self.strategies:
             if (
@@ -232,7 +245,7 @@ class AbstractEngine(ABC):
                 )
                 signal = strategy.generate_signal(ctx)
                 self._record_oos_signal(strategy, signal, current_price, now)
-                self._log_signal_status(strategy, signal)
+                self._log_signal_status(strategy, signal, bar_context)
                 if not signal.is_actionable:
                     continue
                 if await self.try_enter(strategy, signal, ctx, now):
@@ -250,7 +263,7 @@ class AbstractEngine(ABC):
                 )
                 signal = strategy.generate_signal(ctx)
                 self._record_oos_signal(strategy, signal, current_price, now)
-                self._log_signal_status(strategy, signal)
+                self._log_signal_status(strategy, signal, bar_context)
                 if not signal.is_actionable:
                     continue
                 if self.reverse_policy.should_reverse(
@@ -289,11 +302,15 @@ class AbstractEngine(ABC):
         self,
         strategy: StrategyModule,
         signal: Signal,
+        bar_context: dict | None = None,
     ) -> None:
         """generate_signal 결과를 모니터링 로그로 출력하는 hook (default no-op).
 
         backtest는 매 봉 수만 줄 출력 회피 위해 default no-op. CoreEngine이
         override해서 라이브/페이퍼 모드에서만 INFO 출력.
+
+        BLE-7-1: bar_context = {"close", "prev_close", "high", "low"} 또는 None.
+        라이브 [SIGNAL] 로그에 가격 컨텍스트 출력에 사용.
         """
         return None
 
