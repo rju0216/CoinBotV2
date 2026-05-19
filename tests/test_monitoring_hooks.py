@@ -41,7 +41,8 @@ class TestSignalStatusLog:
         msg = caplog.records[-1].message
         assert "[SIGNAL] ensemble HOLD" in msg
         assert "probs=[S:0.31 H:0.40 L:0.29]" in msg
-        assert "conf=0.40" in msg
+        # BLE-7-1 보강: conf class label (argmax=H, 0.40)
+        assert "conf=H:0.40" in msg
         assert "threshold=0.55" in msg
         assert "contributors=" in msg
         assert "→ ENTRY" not in msg  # HOLD라 actionable 아님
@@ -498,6 +499,61 @@ class TestBLE71PositionSLTP:
         msg = caplog.records[-1].message
         assert "SL=" not in msg
         assert "TP=" not in msg
+
+
+class TestBLE71ConfClassLabel:
+    """BLE-7-1 보강: conf class label (S/H/L) 표기 검증.
+
+    signal.side 와 별개로 probs argmax 의 class 표기. threshold 미달 시
+    signal.side=HOLD 라도 conf 가 다른 class(L/S) 의 점수일 수 있음 — 사용자
+    혼란 영역의 본질 검증.
+    """
+
+    def test_conf_class_hold_argmax(self, caplog):
+        """probs argmax=H 인 정상 case — conf=H:0.92."""
+        strategy = _StubStrategy("ensemble", threshold=0.55)
+        signal = Signal(
+            side=SignalSide.HOLD,
+            confidence=0.92,
+            meta={"probs": [0.05, 0.92, 0.03]},
+        )
+        with caplog.at_level(logging.INFO, logger="src.live.engine"):
+            CoreEngine._log_signal_status(None, strategy, signal)
+        msg = caplog.records[-1].message
+        assert "conf=H:0.92" in msg
+
+    def test_conf_class_long_argmax_threshold_below(self, caplog):
+        """probs argmax=L 인데 threshold 미달 → signal=HOLD + conf=L:0.55
+        (사용자 혼란 본질: signal.side ≠ argmax class)."""
+        strategy = _StubStrategy("ensemble", threshold=0.60)
+        # probs argmax=L (0.55), 하지만 threshold 미달이라 signal=HOLD
+        # confidence 는 argmax class 의 점수 (0.55)
+        signal = Signal(
+            side=SignalSide.HOLD,
+            confidence=0.55,
+            meta={"probs": [0.05, 0.40, 0.55]},
+        )
+        with caplog.at_level(logging.INFO, logger="src.live.engine"):
+            CoreEngine._log_signal_status(None, strategy, signal)
+        msg = caplog.records[-1].message
+        # signal.side=HOLD 가 메시지 앞에 표기
+        assert "[SIGNAL] ensemble HOLD" in msg
+        # conf 는 argmax class (L) 의 점수로 표기 — 핵심
+        assert "conf=L:0.55" in msg
+
+    def test_conf_no_probs_fallback(self, caplog):
+        """probs 없으면 (단일 plugin meta None 등) class label 없이 fallback."""
+        strategy = _StubStrategy("ml_lightgbm")
+        signal = Signal(side=SignalSide.HOLD, confidence=0.0, meta=None)
+        with caplog.at_level(logging.INFO, logger="src.live.engine"):
+            CoreEngine._log_signal_status(None, strategy, signal)
+        msg = caplog.records[-1].message
+        # probs 없으면 conf=0.00 형태 (class label 없음, backward-compat)
+        assert "conf=0.00" in msg
+        # class label prefix 형식은 없어야 함
+        assert "conf=H:" not in msg
+        assert "conf=L:" not in msg
+        assert "conf=S:" not in msg
 
 
 class TestBLE71AccountRiskDistance:

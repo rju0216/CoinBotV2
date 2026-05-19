@@ -1092,21 +1092,29 @@ class CoreEngine(AbstractEngine):
             detail = _format_failure_detail(
                 strategy.name, unavailable_subs, fail_reason, meta,
             )
+            # BLE-7-1 보강: 끝 \n 으로 다음 record 와 빈 줄 분리
             logger.info(
-                "[SIGNAL] %s %s (no inference: %s) threshold=%.2f",
+                "[SIGNAL] %s %s (no inference: %s) threshold=%.2f\n",
                 strategy.name, signal.side.value.upper(), detail, threshold,
             )
             return
 
         # 정상 case
         probs_str = ""
+        # BLE-7-1 보강: conf class label — probs argmax 기반 (S/H/L). signal.side 와
+        # 다를 수 있음 (threshold 미달 시 argmax=L 이어도 signal=HOLD)
+        conf_str = f"conf={conf:.2f}"
         if probs and len(probs) == 3:
             probs_str = (
                 f" probs=[S:{probs[0]:.2f} H:{probs[1]:.2f} L:{probs[2]:.2f}]"
             )
+            pred_idx = max(range(3), key=lambda i: probs[i])
+            pred_label = ["S", "H", "L"][pred_idx]
+            conf_str = f"conf={pred_label}:{conf:.2f}"
         action_marker = " → ENTRY" if signal.is_actionable else ""
+        # BLE-7-1 보강: 옵셔널 부분을 멀티라인으로 (\n + 9 space, [SIGNAL] prefix 정렬)
         contrib_str = (
-            f" contributors={contributors}" if contributors else ""
+            f"\n         contributors={contributors}" if contributors else ""
         )
 
         # BLE-7-1: sub_probs 풀 [S:H:L] 표기 (ensemble 만 셋팅, 단일 모델 plugin 은 None)
@@ -1118,7 +1126,7 @@ class CoreEngine(AbstractEngine):
                 for name, p in sub_probs.items() if p and len(p) == 3
             ]
             if parts:
-                sub_probs_str = " sub_probs={" + " ".join(parts) + "}"
+                sub_probs_str = "\n         sub_probs={" + " ".join(parts) + "}"
 
         # BLE-7-1: bar 컨텍스트 — close + Δ% (prev) + range%
         bar_str = ""
@@ -1128,7 +1136,7 @@ class CoreEngine(AbstractEngine):
             high = bar_context.get("high")
             low = bar_context.get("low")
             if close is not None:
-                bar_str = f" bar={close:.2f}"
+                bar_str = f"\n         bar={close:.2f}"
                 if prev is not None and prev > 0:
                     delta_pct = (close - prev) / prev * 100
                     bar_str += f" (Δ{delta_pct:+.2f}% prev)"
@@ -1142,13 +1150,13 @@ class CoreEngine(AbstractEngine):
         if gap and gap > 0:
             used_ts = meta.get("used_row_ts")
             if used_ts is not None:
-                diag_str = f" (gap={gap}, used_ts={used_ts})"
+                diag_str = f"\n         (gap={gap}, used_ts={used_ts})"
             else:
-                diag_str = f" (gap={gap})"
+                diag_str = f"\n         (gap={gap})"
 
         logger.info(
-            "[SIGNAL] %s %s%s conf=%.2f threshold=%.2f%s%s%s%s%s",
-            strategy.name, signal.side.value.upper(), probs_str, conf, threshold,
+            "[SIGNAL] %s %s%s %s threshold=%.2f%s%s%s%s%s\n",
+            strategy.name, signal.side.value.upper(), probs_str, conf_str, threshold,
             action_marker, contrib_str, sub_probs_str, bar_str, diag_str,
         )
 
@@ -1173,6 +1181,7 @@ class CoreEngine(AbstractEngine):
             unrealized = (position.entry_price - current_price) * position.size
 
         # BLE-7-1: SL/TP 거리 표기 (None 일 수 있음 — orphan 등)
+        # BLE-7-1 보강: \n + 11 space ([POSITION] prefix 정렬)
         sl_tp_str = ""
         if current_price > 0:
             parts = []
@@ -1185,14 +1194,14 @@ class CoreEngine(AbstractEngine):
                 tp_delta = (position.take_profit - current_price) / current_price * 100
                 parts.append(f"TP={position.take_profit:.2f} ({tp_delta:+.2f}%)")
             if parts:
-                sl_tp_str = " " + " ".join(parts)
+                sl_tp_str = "\n           " + " ".join(parts)
 
         logger.info(
-            "[POSITION] %s %s size=%.4f entry=%.2f current=%.2f "
-            "unrealized_pnl=%+.2f (%dh%02dm held)%s",
+            "[POSITION] %s %s size=%.4f entry=%.2f current=%.2f"
+            "\n           unrealized_pnl=%+.2f (%dh%02dm held)%s\n",
             position.strategy_name, position.side.value.upper(), position.size,
-            position.entry_price, current_price, unrealized,
-            hold_h, hold_m, sl_tp_str,
+            position.entry_price, current_price,
+            unrealized, hold_h, hold_m, sl_tp_str,
         )
 
     def _log_account_status(self, balance, current_price) -> None:
@@ -1236,10 +1245,11 @@ class CoreEngine(AbstractEngine):
             min(100.0, dd_pct / dd_lock_pct * 100) if dd_lock_pct > 0 else 0.0
         )
 
+        # BLE-7-1 보강: 멀티라인 (\n + 10 space, [ACCOUNT] prefix 정렬) + 끝 \n
         logger.info(
-            "[ACCOUNT] balance=$%.2f equity=$%.2f unrealized=%+.2f "
-            "daily_pnl=%+.2f (limit -$%.2f / %.0f%% reached) "
-            "dd=%.2f%% / -$%.2f (lock -%.0f%% / -$%.2f, %.0f%% reached)",
+            "[ACCOUNT] balance=$%.2f equity=$%.2f unrealized=%+.2f"
+            "\n          daily_pnl=%+.2f (limit -$%.2f / %.0f%% reached)"
+            "\n          dd=%.2f%% / -$%.2f (lock -%.0f%% / -$%.2f, %.0f%% reached)\n",
             balance, equity, unrealized,
             daily_pnl, abs(daily_limit_abs), daily_reached_pct,
             dd_pct, dd_abs, dd_lock_pct, dd_lock_abs, dd_reached_pct,
