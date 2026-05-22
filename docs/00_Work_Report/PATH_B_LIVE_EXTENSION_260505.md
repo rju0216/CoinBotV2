@@ -82,7 +82,8 @@ Phase BLE-6 (라이브-백테 정합성 검증 — 신설)
 Phase BLE-7 (운영 모니터링 강화 — 신설, 2026-05-10)
 ├─ BLE-7-1 콘솔/파일 로그 정보량 보강 (sub_probs / bar 컨텍스트 / 위험 한도 거리 / SL/TP 거리)
 ├─ BLE-7-2 텔레그램 알림 정보량 보강 (콘솔 로그와 일관 유지)
-├─ (향후) BLE-7-3+ 일일 리포트 자동 발송, OOS Decay 자동 알람 임계 강화 등
+├─ BLE-7-3 잔고 입금 처리 가이드 (CLAUDE.md + data/deposits.json 메모 인프라)
+├─ (향후) BLE-7-4+ 일일 리포트 자동 발송, OOS Decay 자동 알람 임계 강화 등
 └─ 라이브 운영 누적 시 의미 ↑ 영역 누적
 ```
 
@@ -355,11 +356,22 @@ BL-2-4 본 검증 항목 "paper-실 거래 격차 정량" 후속. 라이브 누�
 
 진입 조건: BLE-7-1 1-2일 라이브 모니터링 안정화 + 사용자 텔레그램 사용 패턴 파악 후.
 
-#### 9.2.3 향후 BLE-7-3+ (선택, 운영 누적 후 결정)
+#### 9.2.3 BLE-7-3 잔고 입금 처리 가이드 (2026-05-23 진행)
+
+라이브 운영 중 사용자가 OKX 잔고 *추가 입금* 시 발생할 수 있는 영역 정리:
+- PnL/daily_pnl 인식 안 됨 검증 (외부 입금은 거래 이벤트 아님)
+- peak_equity 재시작 시점 자동 갱신 (`_restore_state` 의 `update_equity(balance)`)
+- DB `bot_meta.initial_balance` 수동 update (수익률 기준 재설정)
+- 입금 메모 영구 기록 (`data/deposits.json`, git untracked)
+
+구체 절차는 `CLAUDE.md` 의 "잔고 입금 처리 가이드" sub-section 참조 (Phase 1 Claude 자동 snapshot / Phase 2 사용자 수행 / Phase 3 Claude 자동 기록·검증).
+
+#### 9.2.4 향후 BLE-7-4+ (선택, 운영 누적 후 결정)
 - 일일 리포트 자동 발송 (텔레그램 / 이메일)
 - OOS Decay 자동 알람 임계 세분화
 - 모델 stale 감지 + 자동 재학습 trigger
 - 라이브 metrics 추출 (Grafana 등 대시보드 연동)
+- 입금 기록 자동화 (deposits 테이블 + 자동 marker)
 
 이 영역들은 운영 누적 (1-2개월+) 후 필요성 명확해질 때 별도 step 으로 추가.
 
@@ -394,8 +406,9 @@ BL-2-4 본 검증 항목 "paper-실 거래 격차 정량" 후속. 라이브 누�
 | (대기) | Phase BLE-6: 라이브-백테 정합성 검증 (신설) | 대기 | — | 라이브 거래 ≥ 30건 / 운영 ≥ 1개월 누적 후 baseline 측정. 다른 BLE 진행 시 baseline 재활용 |
 | 진행 중 | Phase BLE-7: 운영 모니터링 강화 (신설, 1순위) | 진행 중 | — | BLE-7-1 ✅ 완료 / BLE-7-2 대기 / BLE-7-3+ 향후 |
 | 2026-05-10 | └ BLE-7-1: 콘솔/파일 로그 보강 | ✅ 완료 | 25e1b41 | ensemble.py meta sub_probs 추가 + `_log_signal_status` 시그니처 확장 (bar_context dict) + `_log_position_status` SL/TP 거리 + `_log_account_status` daily 한도/DD 락 거리 (% + 절대값). 단위 6건 신규 추가 (TestBLE71*), 회귀 466→472 pass |
-| 2026-05-10 | └ BLE-7-1 보강: 가독성 + conf class | ✅ 완료 | (이번 커밋) | 라이브 며칠 운영 후 발견 — 한 줄 출력이라 가독성 ↓ + conf 가 어느 class(S/H/L) 점수인지 불명확. 멀티라인 (\n + prefix 별 9/10/11 space 들여쓰기) + 라인 사이 빈 줄 + conf=H:0.92 형식 (probs argmax 기반 — signal.side ≠ argmax 가능한 threshold 미달 case 도 직관). 단위 3건 신규 (TestBLE71ConfClassLabel) + 기존 1건 흡수, 회귀 472→475 pass |
+| 2026-05-10 | └ BLE-7-1 보강: 가독성 + conf class | ✅ 완료 | 99f002d | 라이브 며칠 운영 후 발견 — 한 줄 출력이라 가독성 ↓ + conf 가 어느 class(S/H/L) 점수인지 불명확. 멀티라인 (\n + prefix 별 9/10/11 space 들여쓰기) + 라인 사이 빈 줄 + conf=H:0.92 형식 (probs argmax 기반 — signal.side ≠ argmax 가능한 threshold 미달 case 도 직관). 단위 3건 신규 (TestBLE71ConfClassLabel) + 기존 1건 흡수, 회귀 472→475 pass |
 | (대기) | └ BLE-7-2: 텔레그램 알림 보강 | 대기 | — | BLE-7-1 안정화 1-2일 후 진행. I-BL014 회귀 영역 (plain text 정합성) |
+| 2026-05-23 | └ BLE-7-3: 잔고 입금 처리 가이드 | ✅ 완료 | (이번 커밋) | CLAUDE.md "잔고 입금 처리 가이드" sub-section 신설 (Phase 1 Claude 자동 snapshot / Phase 2 사용자 수행 / Phase 3 자동 기록·검증). `data/deposits.json` 메모 인프라 (git untracked). 향후 입금 자동 처리 흐름 확립 |
 
 ---
 

@@ -133,6 +133,105 @@ python -m pytest tests/ -q
 
 ---
 
+## 잔고 입금 처리 가이드 (BLE-7-3)
+
+사용자가 OKX 잔고 입금 의사를 표명하면 (예: "입금할거야", "잔고 늘릴게") 다음 3 phase 절차를 따른다. 메모 기록 파일: `data/deposits.json` (git untracked).
+
+### Phase 1 — Claude 자동 snapshot (의사 표명 직후)
+
+DB 에서 입금 전 상태 추출 후 사용자에게 입금량·KST 일시·(선택) 메모 확인 요청. 라이브 운영 중이면 graceful shutdown 직전 또는 직후 시점에 수행 (마지막 equity row 가 신뢰할 수 있는 상태).
+
+```bash
+python -c "
+import sqlite3, json
+con = sqlite3.connect('data/coinbot_live.db')
+initial = con.execute(\"SELECT value FROM bot_meta WHERE key='initial_balance'\").fetchone()
+last_eq = con.execute(\"SELECT timestamp, balance, total_equity FROM equity ORDER BY id DESC LIMIT 1\").fetchone()
+peak = con.execute(\"SELECT MAX(total_equity) FROM equity\").fetchone()
+print(json.dumps({
+    'initial_db': float(initial[0]) if initial else None,
+    'last_eq_ts': last_eq[0] if last_eq else None,
+    'balance_before': float(last_eq[1]) if last_eq else None,
+    'peak_before': float(peak[0]) if peak and peak[0] else None,
+}, indent=2))
+"
+```
+
+### Phase 2 — 사용자 수행 가이드
+
+1. **라이브 graceful shutdown**: `Ctrl+C` (포지션 보유 안전 — 거래소 SL/TP conditional order 유지)
+2. **OKX 웹 입금 후 USDT 증가 확인**
+3. **라이브 재시작**: `python -m src.main live --config config/ensemble.yaml`
+4. **첫 [ACCOUNT] 로그 출력 (~15분 이내) 대기 후** Claude 에게 입금 amount (USDT) + 입금 완료 KST 일시 (+ 선택 메모) 알림
+
+### Phase 3 — Claude 자동 기록·검증 (사용자 알림 후)
+
+1. **DB 신 snapshot 조회 + 검증**
+
+   ```bash
+   python -c "
+   import sqlite3, json
+   con = sqlite3.connect('data/coinbot_live.db')
+   last_eq = con.execute(\"SELECT timestamp, balance, total_equity FROM equity ORDER BY id DESC LIMIT 1\").fetchone()
+   print(json.dumps({
+       'last_eq_ts_after': last_eq[0],
+       'balance_after': float(last_eq[1]),
+       'total_equity_after': float(last_eq[2]),
+   }, indent=2))
+   "
+   ```
+
+   - `balance_after - balance_before ≈ amount_usdt` 일치 확인 (수수료/오차 ~1 USDT 허용)
+   - 불일치 시 사용자에게 alert (입금 일치성 점검 필요)
+
+2. **DB `bot_meta.initial_balance` SQL update** (수익률 기준 재설정)
+
+   ```bash
+   python -c "
+   import sqlite3
+   con = sqlite3.connect('data/coinbot_live.db')
+   con.execute(\"UPDATE bot_meta SET value=? WHERE key='initial_balance'\", ('<balance_after>',))
+   con.commit()
+   print('initial_balance updated to', con.execute(\"SELECT value FROM bot_meta WHERE key='initial_balance'\").fetchone())
+   "
+   ```
+
+3. **`data/deposits.json` 에 entry append**
+
+   ```bash
+   python -c "
+   import json, os
+   from datetime import datetime, timezone
+   path = 'data/deposits.json'
+   if os.path.exists(path):
+       with open(path) as f: data = json.load(f)
+   else:
+       data = {'deposits': []}
+   entry = {
+       'ts_utc': '<KST→UTC 변환된 ISO timestamp>',
+       'ts_kst': '<사용자 제공 KST 일시>',
+       'amount_usdt': <사용자 제공 amount>,
+       'balance_before': <Phase 1 balance_before>,
+       'balance_after': <Phase 3 balance_after>,
+       'peak_before': <Phase 1 peak_before>,
+       'initial_db_before': <Phase 1 initial_db>,
+       'initial_db_after': <balance_after>,
+       'note': '<사용자 제공 메모 (선택)>',
+   }
+   data['deposits'].append(entry)
+   with open(path, 'w') as f: json.dump(data, f, indent=2, ensure_ascii=False)
+   print('appended:', entry)
+   "
+   ```
+
+4. **검증 결과 사용자 보고**: balance 증가량 일치 / daily_pnl 영향 0 / peak 자동 갱신 (재시작 시점에 `_restore_state` 의 `update_equity` 가 즉시 갱신) / `data/deposits.json` 누적 entry 표기
+
+### 향후 분석 시 활용
+
+수익률 추적·equity_curve 분석 시 Claude 가 `data/deposits.json` 자동 참조하여 입금 차감 처리. 거래 PnL 만의 추적은 `SELECT SUM(pnl) FROM trades WHERE status='closed'` (입금 무관, 거래 손익만). 입금 시점 이후 PnL 은 `WHERE timestamp > '<최근 입금 ts_utc>'` 조건 추가.
+
+---
+
 ## 신규 전략 추가 워크플로 (요약)
 
 상세는 `docs/01_Guides/DEVELOPER_GUIDE.md`.
