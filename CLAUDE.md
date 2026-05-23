@@ -85,6 +85,13 @@ git diff --stat   # 미커밋 변경이 있다면
 - `src/backtest/engine.py` — BacktestEngine + write_reports
 - `src/strategy/plugins/` — 전략 플러그인 폴더 (auto-discovery)
 - `src/strategy/base.py` — StrategyModule 추상
+- `src/live/trade_sync.py` — TradeSyncer (BLE-6-1, OKX 실값 DB sync)
+
+### 6. 운영 메타 파일 (data/, git untracked)
+
+- `data/coinbot_live.db` — 라이브 trades / equity / bot_meta
+- `data/deposits.json` — 잔고 입금 메모 (BLE-7-3 가이드 영역)
+- 라이브 운영 누적 분석 시 둘 다 참조
 
 ---
 

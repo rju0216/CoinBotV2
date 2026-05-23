@@ -396,13 +396,28 @@ LONG/SHORT 모두 동일 동작.
 
 ### 6.6 라이브 운영 모니터링 로그
 
-15m 봉 마감마다 자동 출력 (master_timeframe 기준):
+15m 봉 마감마다 자동 출력 (master_timeframe 기준). BLE-7-1 보강 후 멀티라인 + `conf=H:0.92` 형식 (probs argmax class label) + sub_probs / bar 컨텍스트 / 위험 한도 거리 / SL·TP 거리 추가:
 
 ```
-[SIGNAL] ensemble HOLD probs=[S:0.05 H:0.92 L:0.03] conf=0.92 threshold=0.55 contributors=[...]
-[ACCOUNT] balance=$X.XX equity=$X.XX unrealized=+/-$X.XX daily_pnl=+/-$X.XX dd=X.XX%
-[POSITION] ensemble LONG/SHORT size=... entry=... current=... unrealized_pnl=... (XhYZm held)  # 보유 시
+[SIGNAL] ensemble HOLD probs=[S:0.05 H:0.92 L:0.03] conf=H:0.92 threshold=0.55
+         contributors=[ml_lightgbm, ml_xgboost, dl_lstm, dl_transformer]
+         sub_probs={ml_lightgbm:[S:0.04 H:0.93 L:0.03] ml_xgboost:[...] dl_lstm:[...] dl_transformer:[...]}
+         bar=80050.00 (Δ-0.12% prev) range=0.15%
+
+[ACCOUNT] balance=$X.XX equity=$X.XX unrealized=+/-$X.XX
+          daily_pnl=+/-$X.XX (limit -$XXX.XX / N% reached)
+          dd=X.XX% / -$X.XX (lock -35% / -$XXXX.XX, N% reached)
+
+[POSITION] ensemble LONG/SHORT size=... entry=... current=...
+           unrealized_pnl=+/-X.XX (XhYZm held)
+           SL=XXXXX.XX (-X.XX% from current) TP=XXXXX.XX (+X.XX%)
 ```
+
+핵심 정보:
+- `conf=H:0.92` 의 **H/S/L** = probs argmax class label. `signal.side` 와 다를 수 있음 (threshold 미달 시 argmax=L 이어도 signal=HOLD, 그때 `conf=L:0.55` 표기). 직관 해석용
+- `sub_probs` = 4 sub-plugin 별 probs — 변동 출처 모델 식별 (ensemble 만 표기, 단일 모델 plugin 은 미포함)
+- `daily_pnl (... reached)` = 일일 손실 한도까지 도달 % (% 기준 `risk.max_daily_loss_pct`, 자동 확장)
+- `dd ... (lock ...)` = peak 대비 drawdown + 한도 (`risk.max_drawdown_pct`) 거리 절대값/도달%
 
 진입/청산 발생 시 추가:
 ```

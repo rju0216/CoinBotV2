@@ -281,12 +281,24 @@ BAR_CLOSED 이벤트
    - broker exception 발생 시 거래소 상태 검증 (I-BL012):
      - 거래소 ∅ → 시스템 정리 진행 (이미 청산된 상태)
      - 거래소 O → propagate (수동 개입 필요)
-3. `fee_model.estimate_round_trip` + `calc_pnl` — 수수료 + LONG/SHORT PnL
+   - **반환된 ccxt `order.id` 추출 → `exit_order_id` 로 DB 저장** (BLE-6-1, OKX sync 매칭용)
+3. `fee_model.estimate_round_trip` + `calc_pnl` — 수수료 + LONG/SHORT PnL (엔진 추정)
 4. `_record_trade_close` — Live: DB / 백테: 메모리 (메모리는 종료 시 trades.csv로 출력)
-5. `risk_manager.add_pnl + update_equity`
+5. `risk_manager.add_pnl + update_equity` (엔진 추정 net_pnl 메모리 누적)
 6. `strategy.on_position_closed(position, net_pnl)`
 7. `EventBus.publish(POSITION_CLOSED)` — `CoreEngine`이 subscribe해서
    notifier 로 EXIT 알림 송신 (plain text, I-BL014 회귀 방지)
+
+**라이브 전용 후속** (`CoreEngine._close_with_funding`, BLE-6-1):
+8. `sync_all_unsynced(broker, data_store, symbol)` 호출 — 미sync trade batch 처리:
+   - DB 의 `synced_at IS NULL` 미sync trade 조회
+   - ccxt `fetch_my_trades` 1회 호출 (since = earliest_ts - 60s margin)
+   - order_id 별 그룹화 + aggregate (다중 fill 대비, volume-weighted avg + fee USDT 합산)
+   - id 우선 매칭 (entry/exit_order_id) → fallback 시간/방향/size(±0.005 BTC)/reduceOnly
+   - 매칭 성공 시 OKX 실값으로 `trades.entry_price/exit_price/trading_fee/pnl` UPDATE + `synced_at`
+   - 매칭 실패 시 WARNING + `synced_at NULL 유지` → 다음 시점 재시도
+
+→ **단계 5 의 메모리 `daily_pnl` 은 엔진 추정값**, 단계 8 의 sync 가 DB 의 `trades.pnl` 만 OKX 실값으로 갱신 — *메모리와 DB 어긋남* (I-BLE001 fix 예정 영역).
 
 ### 5.4 재시작 복원 — `_restore_state` (라이브 전용)
 
