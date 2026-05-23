@@ -74,10 +74,16 @@ Phase BLE-5 (I-BP001 funding_fee 백테 통합 — 신설)
 └─ 백테 결과 정확성 보강 (BLE-4 와 분리 가능, 펀딩률 데이터 베이스 공유)
 
 Phase BLE-6 (라이브-백테 정합성 검증 — 신설)
-├─ 라이브 누적 거래 vs 같은 기간 백테 결과 비교
-├─ paper-실 거래 격차 정량 (BL-2-4 본 검증 항목 후속)
-├─ 거래별 fee/slippage/funding 차이 분석
-└─ baseline 정합성 리포트 (다른 BLE 진행 시 영향 측정 baseline)
+├─ BLE-6-1 라이브 DB OKX sync 인프라 (prerequisite, 2026-05-23 진행)
+│   ├─ trades 테이블에 entry_order_id/exit_order_id/synced_at 컬럼
+│   ├─ open/close 시 ccxt order id 추출·저장
+│   ├─ TradeSyncer (src/live/trade_sync.py) — 미sync batch 처리
+│   └─ CoreEngine._close_with_funding 끝에 sync trigger (라이브 전용)
+└─ BLE-6-2 라이브 vs 백테 정합성 비교 (BLE-6-1 종착 후)
+    ├─ 라이브 누적 거래 vs 같은 기간 백테 결과 비교
+    ├─ paper-실 거래 격차 정량 (BL-2-4 본 검증 항목 후속)
+    ├─ 거래별 fee/slippage/funding 차이 분석
+    └─ baseline 정합성 리포트 (다른 BLE 진행 시 영향 측정 baseline)
 
 Phase BLE-7 (운영 모니터링 강화 — 신설, 2026-05-10)
 ├─ BLE-7-1 콘솔/파일 로그 정보량 보강 (sub_probs / bar 컨텍스트 / 위험 한도 거리 / SL/TP 거리)
@@ -293,8 +299,28 @@ BL-2-4 본 검증 항목 "paper-실 거래 격차 정량" 후속. 라이브 누�
 
 ### 8.3 작업 항목
 
-#### 8.3.1 라이브 거래 데이터 추출
-- `data/coinbot_*.db` 의 trades 테이블 export
+#### 8.3.0 BLE-6-1 라이브 DB OKX sync 인프라 (prerequisite, 2026-05-23 진행)
+
+BLE-6 본 비교의 baseline 정확성을 위해 라이브 DB 의 거래 수치를 OKX 실값으로 sync 하는 인프라 우선 구축.
+
+**배경**: $341 누락 발견 — trades.pnl 합 (+$165) vs 실제 잔액 변화 (-$176) 차이. 원인: DB 의 entry_price/exit_price/trading_fee 가 엔진 추정값 (봉 close 가격 + config taker_fee_pct 추정) 이고 OKX 실 체결가/fee 와 다름.
+
+**해결**: TradeSyncer 인프라 신설 — 라이브 close 직후 미sync trade 일괄 처리. 신규 거래는 ccxt order id 로 정확 매칭, 기존 15건은 시간/방향/size/reduceOnly fallback 매칭 후 OKX id 도 같이 저장 (이후 id 기반).
+
+**결정 사안 (확정)**:
+- D=가: trades 테이블 신규 컬럼 3개 (entry_order_id / exit_order_id / synced_at)
+- E=가: close 직후 batch sync (미sync 전체)
+- F=가, L=가: 기존 15건은 자동 sync 메커니즘에 자연 흡수 (단일 메커니즘)
+- G=나: CoreEngine._close_with_funding 끝에 sync trigger (라이브 전용, 백테/페이퍼 영향 0)
+- H=가: await sync_all_unsynced 동기 호출
+- I=가: 시간 매칭 margin ±60초
+- J=가: 매칭 실패 시 WARNING + synced_at NULL 유지
+- K=가: sync 함수 시작점에 broker.is_live 가드
+- M=가: USDT fee 만 sync, 다른 currency 면 WARNING + 0 처리
+- N=가': size tolerance ±0.005 BTC (1 contract 의 half, round 영향 안전 흡수)
+
+#### 8.3.1 BLE-6-2 라이브 거래 데이터 추출 (BLE-6-1 종착 후)
+- `data/coinbot_*.db` 의 trades 테이블 export (sync 완료 데이터)
 - 진입/청산 시각·가격·size·pnl·fee 등 추출
 
 #### 8.3.2 같은 기간 백테 실행
@@ -403,7 +429,9 @@ BL-2-4 본 검증 항목 "paper-실 거래 격차 정량" 후속. 라이브 누�
 | (대기) | Phase BLE-3: Survivorship | 대기 | — | 다른 코인 학습 + 비교 |
 | (조건부) | Phase BLE-4: BP-1 데이터 carry | 조건부 | — | 데이터 인프라 준비 시. v005 학습 |
 | (대기) | Phase BLE-5: I-BP001 funding_fee 백테 통합 (신설) | 대기 | — | PATH_B_LIVE_TRADING 종착 시 carry. 라이브 펀딩률 모니터링 데이터 누적 후 처리 |
-| (대기) | Phase BLE-6: 라이브-백테 정합성 검증 (신설) | 대기 | — | 라이브 거래 ≥ 30건 / 운영 ≥ 1개월 누적 후 baseline 측정. 다른 BLE 진행 시 baseline 재활용 |
+| 진행 중 | Phase BLE-6: 라이브-백테 정합성 검증 (신설) | 진행 중 | — | BLE-6-1 ✅ 완료 / BLE-6-2 대기 |
+| 2026-05-23 | └ BLE-6-1: 라이브 DB OKX sync 인프라 | ✅ 완료 | (이번 커밋) | trades 테이블에 entry_order_id/exit_order_id/synced_at 컬럼 추가 + ccxt order id 추출 흐름 + TradeSyncer 모듈 (src/live/trade_sync.py) + CoreEngine._close_with_funding 끝 sync trigger. id 매칭 + 시간/방향/size fallback (±60s, ±0.005 BTC). 단위 6건 신규 (TestTradeSync), 회귀 475→481 pass. 라이브 다음 close 시점에 기존 15건 자동 retroactive sync 예정 |
+| (대기) | └ BLE-6-2: 라이브 vs 백테 정합성 비교 | 대기 | — | BLE-6-1 sync 완료 후 라이브 거래 ≥ 30건 / 운영 ≥ 1개월 누적 후 baseline 측정 |
 | 진행 중 | Phase BLE-7: 운영 모니터링 강화 (신설, 1순위) | 진행 중 | — | BLE-7-1 ✅ 완료 / BLE-7-2 대기 / BLE-7-3+ 향후 |
 | 2026-05-10 | └ BLE-7-1: 콘솔/파일 로그 보강 | ✅ 완료 | 25e1b41 | ensemble.py meta sub_probs 추가 + `_log_signal_status` 시그니처 확장 (bar_context dict) + `_log_position_status` SL/TP 거리 + `_log_account_status` daily 한도/DD 락 거리 (% + 절대값). 단위 6건 신규 추가 (TestBLE71*), 회귀 466→472 pass |
 | 2026-05-10 | └ BLE-7-1 보강: 가독성 + conf class | ✅ 완료 | 99f002d | 라이브 며칠 운영 후 발견 — 한 줄 출력이라 가독성 ↓ + conf 가 어느 class(S/H/L) 점수인지 불명확. 멀티라인 (\n + prefix 별 9/10/11 space 들여쓰기) + 라인 사이 빈 줄 + conf=H:0.92 형식 (probs argmax 기반 — signal.side ≠ argmax 가능한 threshold 미달 case 도 직관). 단위 3건 신규 (TestBLE71ConfClassLabel) + 기존 1건 흡수, 회귀 472→475 pass |

@@ -72,6 +72,8 @@ class Position:
     trade_id: int | None = None
     status: PositionStatus = PositionStatus.OPEN
     meta: dict[str, Any] = field(default_factory=dict)
+    # BLE-6-1: 라이브 진입 시 OKX exchange order id (paper 도 fake id 가능)
+    entry_order_id: str | None = None
 
     @property
     def is_open(self) -> bool:

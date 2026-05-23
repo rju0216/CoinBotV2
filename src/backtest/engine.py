@@ -259,6 +259,7 @@ class BacktestEngine(AbstractEngine):
         stop_loss: float | None,
         take_profit: float | None,
         now: datetime,
+        entry_order_id: str | None = None,
     ) -> int:
         self._next_trade_id += 1
         tid = self._next_trade_id
@@ -286,6 +287,7 @@ class BacktestEngine(AbstractEngine):
         funding_fee: float,
         exit_reason: str,
         now: datetime,
+        exit_order_id: str | None = None,
     ) -> None:
         rec = self._open_trades.pop(trade_id, None)
         if rec is None:

@@ -1005,6 +1005,27 @@ class CoreEngine(AbstractEngine):
             exit_price, reason, funding_fee=funding, now=now
         )
 
+        # BLE-6-1: 라이브 close 직후 batch sync (best-effort, 라이브 전용).
+        # paper/backtest 영향 0 — sync 함수 자체에 broker.is_live 가드 (K=가)
+        if self.broker.is_live:
+            from src.live.trade_sync import sync_all_unsynced
+            try:
+                result = await sync_all_unsynced(
+                    broker=self.broker,
+                    data_store=self.data_store,
+                    symbol=self.config["exchange"]["symbol"],
+                    accounting_config=self.config.get("accounting", {}),
+                )
+                if result["synced_count"] > 0 or result["failed_count"] > 0:
+                    logger.info(
+                        "Trade sync: %d synced, %d failed (errors=%d)",
+                        result["synced_count"],
+                        result["failed_count"],
+                        len(result["errors"]),
+                    )
+            except Exception as e:
+                logger.warning("Trade sync failed (best-effort, close 흐름 유지): %s", e)
+
     # ---- 거래 기록 (DataStore 기반) ----
 
     async def _record_trade_open(
@@ -1016,6 +1037,7 @@ class CoreEngine(AbstractEngine):
         stop_loss: float | None,
         take_profit: float | None,
         now: datetime,
+        entry_order_id: str | None = None,
     ) -> int:
         return await self.data_store.log_trade(
             strategy_name=strategy_name,
@@ -1024,6 +1046,7 @@ class CoreEngine(AbstractEngine):
             entry_price=entry_price,
             stop_loss=stop_loss,
             take_profit=take_profit,
+            entry_order_id=entry_order_id,
         )
 
     async def _record_trade_close(
@@ -1037,6 +1060,7 @@ class CoreEngine(AbstractEngine):
         funding_fee: float,
         exit_reason: str,
         now: datetime,
+        exit_order_id: str | None = None,
     ) -> None:
         await self.data_store.close_trade(
             trade_id=trade_id,
@@ -1046,6 +1070,7 @@ class CoreEngine(AbstractEngine):
             trading_fee=trading_fee,
             funding_fee=funding_fee,
             exit_reason=exit_reason,
+            exit_order_id=exit_order_id,
         )
 
     async def _fetch_funding_since_entry(self) -> float:

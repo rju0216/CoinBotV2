@@ -53,10 +53,26 @@ class DataStore:
                 trading_fee REAL DEFAULT 0,
                 funding_fee REAL DEFAULT 0,
                 exit_reason TEXT,
-                status TEXT DEFAULT 'open'
+                status TEXT DEFAULT 'open',
+                entry_order_id TEXT,
+                exit_order_id TEXT,
+                synced_at TEXT
             )
             """
         )
+        # BLE-6-1: 기존 DB 마이그레이션 — 신규 컬럼 추가 (ADD COLUMN 표준 sqlite)
+        cursor = await self._db.execute("PRAGMA table_info(trades)")
+        existing_cols = {row[1] for row in await cursor.fetchall()}
+        for col_name, col_type in [
+            ("entry_order_id", "TEXT"),
+            ("exit_order_id", "TEXT"),
+            ("synced_at", "TEXT"),
+        ]:
+            if col_name not in existing_cols:
+                await self._db.execute(
+                    f"ALTER TABLE trades ADD COLUMN {col_name} {col_type}"
+                )
+                logger.info("BLE-6-1 migration: trades.%s 컬럼 추가", col_name)
         await self._db.execute(
             """
             CREATE TABLE IF NOT EXISTS equity (
@@ -154,14 +170,16 @@ class DataStore:
         entry_price: float,
         stop_loss: float | None,
         take_profit: float | None,
+        entry_order_id: str | None = None,
     ) -> int:
         now = datetime.now(timezone.utc).isoformat()
         cursor = await self._db.execute(
             """INSERT INTO trades
                (timestamp, strategy_name, side, size, entry_price,
-                stop_loss, take_profit, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 'open')""",
-            (now, strategy_name, side, size, entry_price, stop_loss, take_profit),
+                stop_loss, take_profit, status, entry_order_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)""",
+            (now, strategy_name, side, size, entry_price, stop_loss, take_profit,
+             entry_order_id),
         )
         await self._db.commit()
         return cursor.lastrowid
@@ -175,11 +193,48 @@ class DataStore:
         trading_fee: float = 0.0,
         funding_fee: float = 0.0,
         exit_reason: str | None = None,
+        exit_order_id: str | None = None,
     ) -> None:
         await self._db.execute(
             """UPDATE trades SET exit_price=?, pnl=?, pnl_pct=?, trading_fee=?,
-               funding_fee=?, exit_reason=?, status='closed' WHERE id=?""",
-            (exit_price, pnl, pnl_pct, trading_fee, funding_fee, exit_reason, trade_id),
+               funding_fee=?, exit_reason=?, status='closed', exit_order_id=?
+               WHERE id=?""",
+            (exit_price, pnl, pnl_pct, trading_fee, funding_fee, exit_reason,
+             exit_order_id, trade_id),
+        )
+        await self._db.commit()
+
+    # ---- BLE-6-1: OKX sync 메서드 ----
+
+    async def get_unsynced_trades(self) -> list[dict[str, Any]]:
+        """status='closed' AND synced_at IS NULL — sync 대기 중인 trade 목록."""
+        cursor = await self._db.execute(
+            "SELECT * FROM trades WHERE status='closed' AND synced_at IS NULL "
+            "ORDER BY id"
+        )
+        columns = [desc[0] for desc in cursor.description]
+        rows = await cursor.fetchall()
+        return [dict(zip(columns, row)) for row in rows]
+
+    async def update_synced_trade(
+        self,
+        trade_id: int,
+        entry_price: float,
+        exit_price: float,
+        trading_fee: float,
+        pnl: float,
+        entry_order_id: str | None,
+        exit_order_id: str | None,
+        synced_at: str,
+    ) -> None:
+        """OKX 실값 기반 trade 갱신 + synced_at 기록."""
+        await self._db.execute(
+            """UPDATE trades SET entry_price=?, exit_price=?, trading_fee=?, pnl=?,
+               entry_order_id=COALESCE(entry_order_id, ?),
+               exit_order_id=COALESCE(exit_order_id, ?),
+               synced_at=? WHERE id=?""",
+            (entry_price, exit_price, trading_fee, pnl,
+             entry_order_id, exit_order_id, synced_at, trade_id),
         )
         await self._db.commit()
 

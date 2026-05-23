@@ -123,8 +123,9 @@ class AbstractEngine(ABC):
         stop_loss: float | None,
         take_profit: float | None,
         now: datetime,
+        entry_order_id: str | None = None,
     ) -> int:
-        """진입 기록. 반환값은 trade_id."""
+        """진입 기록. 반환값은 trade_id. BLE-6-1: entry_order_id 옵션."""
 
     @abstractmethod
     async def _record_trade_close(
@@ -138,8 +139,9 @@ class AbstractEngine(ABC):
         funding_fee: float,
         exit_reason: str,
         now: datetime,
+        exit_order_id: str | None = None,
     ) -> None:
-        """청산 기록."""
+        """청산 기록. BLE-6-1: exit_order_id 옵션."""
 
     # ---- 활성 TF 산출 ----
 
@@ -458,6 +460,9 @@ class AbstractEngine(ABC):
             logger.error("Open order failed for %s", strategy.name)
             return False
 
+        # BLE-6-1: 진입 order id 추출 (라이브 OKX exchange order id, paper fake id)
+        entry_order_id = order.get("id") if isinstance(order, dict) else None
+
         # 거래 기록 (구체 엔진이 DB 또는 메모리에 저장)
         trade_id = await self._record_trade_open(
             strategy_name=strategy.name,
@@ -467,6 +472,7 @@ class AbstractEngine(ABC):
             stop_loss=sl_price,
             take_profit=tp_price,
             now=now,
+            entry_order_id=entry_order_id,
         )
 
         # 거래소 SL/TP pending (페이퍼는 no-op)
@@ -484,6 +490,7 @@ class AbstractEngine(ABC):
             take_profit=tp_price,
             trade_id=trade_id,
             status=PositionStatus.OPEN,
+            entry_order_id=entry_order_id,
         )
 
         try:
@@ -537,11 +544,18 @@ class AbstractEngine(ABC):
         # 거래소 SL/TP 자동 청산 후 redundant close 시도 같은 case에서 ExchangeError가 발생해도
         # self._position 정리 + DB close + event publish가 안 되는 mismatch 방지.
         # 거래소 상태 검증 후: 거래소 ∅ → 이미 청산된 상태로 정상 진행 / 거래소 O → propagate.
+        # BLE-6-1: close order id 추출 — paper/normal close 시 order dict 의 'id'. SL/TP 자동
+        # 청산은 거래소 ∅ 검증 path 라 order id 없음 (sync 시 fetch_my_trades 로 매칭)
+        exit_order_id: str | None = None
         try:
-            await self.broker.close_position(
+            close_order = await self.broker.close_position(
                 pos.side, pos.size, fill_price=exit_price,
                 orderbook=getattr(self, "_latest_orderbook", None),
             )
+            if isinstance(close_order, dict):
+                # I-BL010 skip path 는 {'info': {'already_closed': True}, ...} 반환 → id 없음
+                if not close_order.get("info", {}).get("already_closed"):
+                    exit_order_id = close_order.get("id")
         except Exception as e:
             logger.warning("broker.close_position failed: %s — verifying exchange state", e)
             try:
@@ -592,6 +606,7 @@ class AbstractEngine(ABC):
                 funding_fee=funding_fee,
                 exit_reason=reason.value,
                 now=now,
+                exit_order_id=exit_order_id,
             )
 
         # 위험 매니저 갱신
