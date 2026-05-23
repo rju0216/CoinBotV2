@@ -184,17 +184,20 @@ print(json.dumps({
    - `balance_after - balance_before ≈ amount_usdt` 일치 확인 (수수료/오차 ~1 USDT 허용)
    - 불일치 시 사용자에게 alert (입금 일치성 점검 필요)
 
-2. **DB `bot_meta.initial_balance` SQL update** (수익률 기준 재설정)
+2. **DB `bot_meta.initial_balance` SQL update** — `initial_db_before + amount_usdt` 로 갱신 (기존 누적 거래 손실 별도 보존)
 
    ```bash
    python -c "
    import sqlite3
    con = sqlite3.connect('data/coinbot_live.db')
-   con.execute(\"UPDATE bot_meta SET value=? WHERE key='initial_balance'\", ('<balance_after>',))
+   new_initial = <initial_db_before> + <amount_usdt>
+   con.execute(\"UPDATE bot_meta SET value=? WHERE key='initial_balance'\", (str(new_initial),))
    con.commit()
    print('initial_balance updated to', con.execute(\"SELECT value FROM bot_meta WHERE key='initial_balance'\").fetchone())
    "
    ```
+
+   ⚠️ **주의**: `balance_after` (현재 잔액) 로 set 하면 기존 누적 거래 손실이 흡수되어 사라짐. 반드시 `initial_db_before + amount_usdt` 사용. 누적 PnL 추적 시: `current_balance - initial - 누적 deposits` = 정확한 거래 누적 손익.
 
 3. **`data/deposits.json` 에 entry append**
 
@@ -212,10 +215,10 @@ print(json.dumps({
        'ts_kst': '<사용자 제공 KST 일시>',
        'amount_usdt': <사용자 제공 amount>,
        'balance_before': <Phase 1 balance_before>,
-       'balance_after': <Phase 3 balance_after>,
+       'balance_after': <Phase 3 balance_after_observed (검증용, 시스템 측정)>,
        'peak_before': <Phase 1 peak_before>,
        'initial_db_before': <Phase 1 initial_db>,
-       'initial_db_after': <balance_after>,
+       'initial_db_after': <initial_db_before + amount_usdt>,  # 위 SQL update 와 동일 값
        'note': '<사용자 제공 메모 (선택)>',
    }
    data['deposits'].append(entry)
