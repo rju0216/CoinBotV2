@@ -199,7 +199,27 @@ print(json.dumps({
 
    ⚠️ **주의**: `balance_after` (현재 잔액) 로 set 하면 기존 누적 거래 손실이 흡수되어 사라짐. 반드시 `initial_db_before + amount_usdt` 사용. 누적 PnL 추적 시: `current_balance - initial - 누적 deposits` = 정확한 거래 누적 손익.
 
-3. **`data/deposits.json` 에 entry append**
+3. **DB `equity` 테이블에 입금 시점 row 삽입** — `peak_equity` 정정 (dd 의 baseline 을 `initial_balance` 와 일치 보장)
+
+   ```bash
+   python -c "
+   import sqlite3
+   con = sqlite3.connect('data/coinbot_live.db')
+   ts_utc = '<KST→UTC 변환된 ISO timestamp>'
+   peak_after = <initial_db_before> + <amount_usdt>  # = initial_db_after, balance_after 가 아님 주의
+   con.execute(
+       'INSERT INTO equity (timestamp, balance, unrealized_pnl, total_equity) VALUES (?, ?, ?, ?)',
+       (ts_utc, peak_after, 0.0, peak_after),
+   )
+   con.commit()
+   peak = con.execute('SELECT MAX(total_equity) FROM equity').fetchone()[0]
+   print(f'new peak (DB MAX): \${peak:.4f}')
+   "
+   ```
+
+   ⚠️ **누락 시 영향**: dd 의 baseline (peak) 이 *입금 잔액* 도달 못 한 *실제 max* 라 *기존 누적 손실이 dd 에 반영 안 됨*. dd 와 `initial_balance` baseline 불일치 → [ACCOUNT] 로그 dd 표기 부정확. P=나 결정 (`initial_db_after` 사용).
+
+4. **`data/deposits.json` 에 entry append**
 
    ```bash
    python -c "
@@ -217,6 +237,7 @@ print(json.dumps({
        'balance_before': <Phase 1 balance_before>,
        'balance_after': <Phase 3 balance_after_observed (검증용, 시스템 측정)>,
        'peak_before': <Phase 1 peak_before>,
+       'peak_after': <initial_db_before + amount_usdt>,  # = initial_db_after (P=나, equity row 와 동일)
        'initial_db_before': <Phase 1 initial_db>,
        'initial_db_after': <initial_db_before + amount_usdt>,  # 위 SQL update 와 동일 값
        'note': '<사용자 제공 메모 (선택)>',
@@ -227,7 +248,16 @@ print(json.dumps({
    "
    ```
 
-4. **검증 결과 사용자 보고**: balance 증가량 일치 / daily_pnl 영향 0 / peak 자동 갱신 (재시작 시점에 `_restore_state` 의 `update_equity` 가 즉시 갱신) / `data/deposits.json` 누적 entry 표기
+5. **사용자에게 라이브 재시작 안내** — 메모리 peak 와 DB peak 동기화
+
+   라이브 운영 중인 `RiskManager.peak_equity` 는 *재시작 시 `_restore_state` 의 `data_store.get_peak_equity()`* 호출로만 갱신. DB 정정만 하고 라이브 재시작 안 하면 [ACCOUNT] 로그 dd 가 *재시작 전 메모리 peak* 기반으로 부정확 표기. 사용자에게 cmd 명령 안내:
+
+   ```
+   Ctrl+C
+   python -m src.main live --config config\ensemble.yaml
+   ```
+
+6. **검증 결과 사용자 보고**: balance 증가량 일치 / daily_pnl 영향 0 / peak 정정 후 dd 표기 = `(initial_db_after - balance_after) / initial_db_after` (재시작 후 첫 [ACCOUNT] 로그로 확인) / `data/deposits.json` 누적 entry 표기
 
 ### 향후 분석 시 활용
 
