@@ -1,12 +1,19 @@
-"""TradeSyncer 단위 테스트 (BLE-6-1).
+"""TradeSyncer 단위 테스트 (BLE-6-1 + I-BLE002).
 
 핵심 검증:
 - paper 가드
 - id 기반 매칭 성공
 - 시간 매칭 fallback 성공 (기존 id 없는 trade)
 - 매칭 실패 시 WARNING + synced_at NULL 유지
-- 다중 fill aggregate 정확성
+- 다중 fill aggregate 정확성 (contracts × contract_size = BTC 변환)
 - fee currency != USDT 처리
+- pagination 정상 동작 (PAGE_LIMIT 차면 다음 page fetch)
+- pagination id dedup (중복 fill 차단)
+
+I-BLE002 fix 반영:
+- okx_fills 의 `amount` 는 contracts 단위 (× contract_size = BTC)
+- reduce_only 판별은 `info.fillPnl` 합 ≠ 0 (OKX 응답에 reduceOnly 필드 부재)
+- broker.executor.contract_size 로 BTC 변환
 """
 
 from __future__ import annotations
@@ -19,17 +26,25 @@ import pytest
 
 from src.live.trade_sync import sync_all_unsynced
 
+CONTRACT_SIZE = 0.01  # BTC/USDT:USDT OKX contract size
+
 
 def _iso_to_ms(iso_str: str) -> int:
     """test helper — db_trade['timestamp'] 와 fill ts 일치 보장."""
     return int(datetime.fromisoformat(iso_str).timestamp() * 1000)
 
 
-def _make_broker(is_live: bool, fetch_my_trades_return=None, fetch_my_trades_side_effect=None):
+def _make_broker(
+    is_live: bool,
+    fetch_my_trades_return=None,
+    fetch_my_trades_side_effect=None,
+    contract_size: float = CONTRACT_SIZE,
+):
     broker = MagicMock()
     broker.is_live = is_live
     executor = MagicMock()
     executor.exchange = MagicMock()
+    executor.contract_size = contract_size
     if fetch_my_trades_side_effect is not None:
         executor.exchange.fetch_my_trades = AsyncMock(side_effect=fetch_my_trades_side_effect)
     else:
@@ -58,12 +73,15 @@ async def test_paper_mode_guard():
 
 @pytest.mark.asyncio
 async def test_id_match_success():
-    """entry_order_id/exit_order_id 있는 trade → id 매칭 + DB UPDATE."""
+    """entry_order_id/exit_order_id 있는 trade → id 매칭 + DB UPDATE.
+
+    I-BLE002: amount 는 contracts 단위 (8.97 contracts = 0.0897 BTC), reduce_only 는 fillPnl 기반.
+    """
     db_trade = {
         "id": 100,
         "timestamp": "2026-05-23T05:43:11+00:00",
         "side": "short",
-        "size": 0.0897,
+        "size": 0.0897,   # BTC
         "funding_fee": 0.0,
         "entry_order_id": "order_entry_xyz",
         "exit_order_id": "order_exit_abc",
@@ -71,20 +89,22 @@ async def test_id_match_success():
     okx_fills = [
         {
             "order": "order_entry_xyz",
+            "id": "fill_1",
             "timestamp": 1748000591000,
             "price": 75458.90,
-            "amount": 0.0897,
+            "amount": 8.97,   # contracts (= 0.0897 BTC)
             "side": "sell",
-            "reduceOnly": False,
+            "info": {"fillPnl": "0"},        # entry → fillPnl=0
             "fee": {"cost": 3.38, "currency": "USDT"},
         },
         {
             "order": "order_exit_abc",
+            "id": "fill_2",
             "timestamp": 1748001500000,
             "price": 74337.09,
-            "amount": 0.0897,
+            "amount": 8.97,   # contracts
             "side": "buy",
-            "reduceOnly": True,
+            "info": {"fillPnl": "100.61"},    # exit → fillPnl=실현PnL
             "fee": {"cost": 3.33, "currency": "USDT"},
         },
     ]
@@ -111,12 +131,15 @@ async def test_id_match_success():
 
 @pytest.mark.asyncio
 async def test_time_match_fallback_success():
-    """기존 trade (id 없음) → 시간/방향/size/reduceOnly 매칭 + OKX id 같이 저장."""
+    """기존 trade (id 없음) → 시간/방향/size/reduce_only 매칭 + OKX id 같이 저장.
+
+    I-BLE002: contracts × contract_size 후 size tolerance 비교, fillPnl 기반 reduce_only.
+    """
     db_trade = {
         "id": 1,
         "timestamp": "2026-05-06T12:15:01+00:00",
         "side": "long",
-        "size": 0.0750,  # round 영향 ±0.005 tolerance 안
+        "size": 0.0750,   # BTC (round 영향 ±0.005 tolerance 안)
         "funding_fee": 0.0,
         "entry_order_id": None,
         "exit_order_id": None,
@@ -125,20 +148,22 @@ async def test_time_match_fallback_success():
     okx_fills = [
         {
             "order": "okx_order_111",
+            "id": "fill_e1",
             "timestamp": db_ts_ms + 500,  # 0.5초 후
             "price": 82159.50,
-            "amount": 0.07503,  # round 영향
+            "amount": 7.503,   # contracts (= 0.07503 BTC, round 영향)
             "side": "buy",
-            "reduceOnly": False,
+            "info": {"fillPnl": "0"},        # entry
             "fee": {"cost": 3.08, "currency": "USDT"},
         },
         {
             "order": "okx_order_222",
+            "id": "fill_x1",
             "timestamp": db_ts_ms + 1800_000,  # 30분 후 (SL hit)
             "price": 81707.30,
-            "amount": 0.07503,
+            "amount": 7.503,
             "side": "sell",
-            "reduceOnly": True,
+            "info": {"fillPnl": "-32.46"},   # exit
             "fee": {"cost": 3.06, "currency": "USDT"},
         },
     ]
@@ -154,21 +179,26 @@ async def test_time_match_fallback_success():
 
 @pytest.mark.asyncio
 async def test_match_failure_size_mismatch(caplog):
-    """size tolerance 초과 → 매칭 실패 → WARNING + synced_at NULL 유지 (update 호출 안 됨)."""
+    """size tolerance 초과 → 매칭 실패 → WARNING + synced_at NULL 유지 (update 호출 안 됨).
+
+    I-BLE002: 10.0 contracts × 0.01 = 0.10 BTC vs db_size 0.0561 BTC → diff 0.044 > 0.005 tolerance.
+    """
     db_trade = {
         "id": 5,
         "timestamp": "2026-05-11T01:45:02+00:00",
         "side": "long",
-        "size": 0.0561,  # tolerance 안 들어맞는 size
+        "size": 0.0561,   # BTC
         "funding_fee": 0.0,
         "entry_order_id": None,
         "exit_order_id": None,
     }
     okx_fills = [
         {
-            "order": "okx_x", "timestamp": 1747187102000,
-            "price": 81454.9, "amount": 0.10,  # 0.10 vs 0.0561 → 차이 0.044 > 0.005 tolerance
-            "side": "buy", "reduceOnly": False,
+            "order": "okx_x", "id": "fill_z",
+            "timestamp": 1747187102000,
+            "price": 81454.9, "amount": 10.0,   # contracts (= 0.10 BTC, tolerance 초과)
+            "side": "buy",
+            "info": {"fillPnl": "0"},
             "fee": {"cost": 4.0, "currency": "USDT"},
         },
     ]
@@ -184,31 +214,40 @@ async def test_match_failure_size_mismatch(caplog):
 
 @pytest.mark.asyncio
 async def test_multi_fill_aggregate():
-    """다중 fill (한 order 의 여러 fills) → aggregate 후 price avg / amount 합 / fee 합 정확."""
+    """다중 fill (한 order 의 여러 fills) → aggregate 후 price avg / amount(BTC) / fee 합 정확.
+
+    I-BLE002: 각 fill amount(contracts) 합 × contract_size = BTC. fillPnl 합으로 reduce_only.
+    """
     db_trade = {
         "id": 200,
         "timestamp": "2026-05-23T05:43:11+00:00",
         "side": "short",
-        "size": 0.0897,
+        "size": 0.0897,   # BTC
         "funding_fee": 0.0,
         "entry_order_id": None,
         "exit_order_id": None,
     }
     db_ts_ms = _iso_to_ms(db_trade["timestamp"])
     okx_fills = [
-        # Entry: 한 order 가 2 fills 로 분할
-        {"order": "order_E", "timestamp": db_ts_ms + 100,
-         "price": 75000.0, "amount": 0.05,
-         "side": "sell", "reduceOnly": False,
+        # Entry: 한 order 가 2 fills 로 분할 (5.0 + 3.97 = 8.97 contracts = 0.0897 BTC)
+        {"order": "order_E", "id": "fe1",
+         "timestamp": db_ts_ms + 100,
+         "price": 75000.0, "amount": 5.0,
+         "side": "sell",
+         "info": {"fillPnl": "0"},
          "fee": {"cost": 1.875, "currency": "USDT"}},
-        {"order": "order_E", "timestamp": db_ts_ms + 200,
-         "price": 75002.0, "amount": 0.0397,
-         "side": "sell", "reduceOnly": False,
+        {"order": "order_E", "id": "fe2",
+         "timestamp": db_ts_ms + 200,
+         "price": 75002.0, "amount": 3.97,
+         "side": "sell",
+         "info": {"fillPnl": "0"},
          "fee": {"cost": 1.488, "currency": "USDT"}},
-        # Exit: 단일 fill
-        {"order": "order_X", "timestamp": db_ts_ms + 60_000,
-         "price": 74000.0, "amount": 0.0897,
-         "side": "buy", "reduceOnly": True,
+        # Exit: 단일 fill (8.97 contracts = 0.0897 BTC)
+        {"order": "order_X", "id": "fx1",
+         "timestamp": db_ts_ms + 60_000,
+         "price": 74000.0, "amount": 8.97,
+         "side": "buy",
+         "info": {"fillPnl": "89.7"},
          "fee": {"cost": 3.32, "currency": "USDT"}},
     ]
     broker = _make_broker(is_live=True, fetch_my_trades_return=okx_fills)
@@ -216,8 +255,8 @@ async def test_multi_fill_aggregate():
     result = await sync_all_unsynced(broker, ds, "BTC/USDT:USDT")
     assert result["synced_count"] == 1
     call = ds.update_synced_trade.call_args.kwargs
-    # Entry aggregate: avg_price = (75000×0.05 + 75002×0.0397) / 0.0897 ≈ 75000.885
-    expected_avg = (75000.0 * 0.05 + 75002.0 * 0.0397) / 0.0897
+    # Entry aggregate: avg_price = (75000×5.0 + 75002×3.97) / 8.97 ≈ 75000.885
+    expected_avg = (75000.0 * 5.0 + 75002.0 * 3.97) / 8.97
     assert call["entry_price"] == pytest.approx(expected_avg, abs=0.01)
     # fee_usdt = 1.875 + 1.488 (entry) + 3.32 (exit) = 6.683
     assert call["trading_fee"] == pytest.approx(1.875 + 1.488 + 3.32, abs=0.01)
@@ -225,7 +264,10 @@ async def test_multi_fill_aggregate():
 
 @pytest.mark.asyncio
 async def test_fee_currency_not_usdt_handled(caplog):
-    """M=가: fee currency != 'USDT' → WARNING + fee 0 처리 (해당 fill 만)."""
+    """M=가: fee currency != 'USDT' → WARNING + fee 0 처리 (해당 fill 만).
+
+    I-BLE002: amount contracts 단위 유지, fillPnl 기반 reduce_only.
+    """
     db_trade = {
         "id": 300,
         "timestamp": "2026-05-23T05:43:11+00:00",
@@ -237,13 +279,17 @@ async def test_fee_currency_not_usdt_handled(caplog):
     }
     db_ts_ms = _iso_to_ms(db_trade["timestamp"])
     okx_fills = [
-        {"order": "order_E", "timestamp": db_ts_ms + 100,
-         "price": 75458.9, "amount": 0.0897,
-         "side": "sell", "reduceOnly": False,
+        {"order": "order_E", "id": "fe_okb",
+         "timestamp": db_ts_ms + 100,
+         "price": 75458.9, "amount": 8.97,
+         "side": "sell",
+         "info": {"fillPnl": "0"},
          "fee": {"cost": 0.1, "currency": "OKB"}},  # OKB 할인 (M=가 처리)
-        {"order": "order_X", "timestamp": db_ts_ms + 60_000,
-         "price": 74337.09, "amount": 0.0897,
-         "side": "buy", "reduceOnly": True,
+        {"order": "order_X", "id": "fx_usdt",
+         "timestamp": db_ts_ms + 60_000,
+         "price": 74337.09, "amount": 8.97,
+         "side": "buy",
+         "info": {"fillPnl": "100.61"},
          "fee": {"cost": 3.33, "currency": "USDT"}},
     ]
     broker = _make_broker(is_live=True, fetch_my_trades_return=okx_fills)
@@ -256,3 +302,98 @@ async def test_fee_currency_not_usdt_handled(caplog):
     # entry fee = 0 (OKB skip), exit fee = 3.33
     call = ds.update_synced_trade.call_args.kwargs
     assert call["trading_fee"] == pytest.approx(0.0 + 3.33, abs=0.001)
+
+
+# ---- I-BLE002 신규 pagination 테스트 ----
+
+
+@pytest.mark.asyncio
+async def test_pagination_basic():
+    """pagination 정상 — Page 1 (100 fills) → Page 2 (50 fills) → 종료.
+
+    fetch_my_trades 가 PAGE_LIMIT=100 채우면 다음 page 호출, 100 미만이면 마지막 page.
+    """
+    db_trade = {
+        "id": 500,
+        "timestamp": "2026-05-01T00:00:00+00:00",
+        "side": "long",
+        "size": 0.05,
+        "funding_fee": 0.0,
+        "entry_order_id": None,
+        "exit_order_id": None,
+    }
+    db_ts_ms = _iso_to_ms(db_trade["timestamp"])
+
+    # Page 1: 100 fills (id 0~99), 모두 같은 dummy order (매칭 안 됨)
+    page1 = [
+        {
+            "order": f"dummy_{i}", "id": f"p1_{i}",
+            "timestamp": db_ts_ms + i * 1000,
+            "price": 80000.0 + i, "amount": 1.0,
+            "side": "buy",
+            "info": {"fillPnl": "0"},
+            "fee": {"cost": 0.1, "currency": "USDT"},
+        }
+        for i in range(100)
+    ]
+    # Page 2: 50 fills (id 100~149), entry/exit 후보 포함
+    page2 = [
+        {
+            "order": f"dummy_{i}", "id": f"p2_{i}",
+            "timestamp": db_ts_ms + i * 1000,
+            "price": 80000.0 + i, "amount": 1.0,
+            "side": "buy",
+            "info": {"fillPnl": "0"},
+            "fee": {"cost": 0.1, "currency": "USDT"},
+        }
+        for i in range(100, 150)
+    ]
+    # Page 1 마지막 ts > Page 2 첫 ts 가 아니라 정상 시계열 — last_ts 기반 since 진행 보장
+    broker = _make_broker(
+        is_live=True,
+        fetch_my_trades_side_effect=[page1, page2, []],
+    )
+    ds = _make_data_store([db_trade])
+    await sync_all_unsynced(broker, ds, "BTC/USDT:USDT")
+    # Page 1 100 fills → 다음 page fetch. Page 2 50 fills (< PAGE_LIMIT) → break.
+    # 총 fetch_my_trades 호출 2회 (Page 1, Page 2). Page 3 ([]) 미도달.
+    assert broker.executor.exchange.fetch_my_trades.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_pagination_dedup():
+    """pagination 중복 fill (같은 id 가 두 page 에 등장) → seen_ids dedup, 무한 루프 차단."""
+    db_trade = {
+        "id": 600,
+        "timestamp": "2026-05-01T00:00:00+00:00",
+        "side": "long",
+        "size": 0.05,
+        "funding_fee": 0.0,
+        "entry_order_id": None,
+        "exit_order_id": None,
+    }
+    db_ts_ms = _iso_to_ms(db_trade["timestamp"])
+
+    # Page 1: 100 fills (id 0~99)
+    page1 = [
+        {
+            "order": f"dup_{i}", "id": f"d_{i}",
+            "timestamp": db_ts_ms + i * 1000,
+            "price": 80000.0 + i, "amount": 1.0,
+            "side": "buy",
+            "info": {"fillPnl": "0"},
+            "fee": {"cost": 0.1, "currency": "USDT"},
+        }
+        for i in range(100)
+    ]
+    # Page 2: Page 1 의 마지막 fill 들이 다시 등장 (중복) — 신규 fill 0건
+    page2 = page1[-50:]  # 같은 id 50건
+    broker = _make_broker(
+        is_live=True,
+        fetch_my_trades_side_effect=[page1, page2, []],
+    )
+    ds = _make_data_store([db_trade])
+    await sync_all_unsynced(broker, ds, "BTC/USDT:USDT")
+    # Page 1 (100 신규) → Page 2 fetch → 모두 중복 (new_fills 비어있음) → break.
+    # 따라서 fetch_my_trades 호출 2회. 무한 루프 안 일어남.
+    assert broker.executor.exchange.fetch_my_trades.call_count == 2

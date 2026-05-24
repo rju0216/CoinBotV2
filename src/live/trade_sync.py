@@ -7,10 +7,12 @@
 알고리즘:
 1. paper 가드 (broker.is_live=False → skip)
 2. data_store.get_unsynced_trades() — closed AND synced_at IS NULL
-3. earliest_ts - 60s 기준 fetch_my_trades 1회 호출
-4. order_id 별 그룹화 + aggregate (다중 fill 대비)
-5. 각 미sync trade 매칭 (id 우선 → 시간 매칭 fallback)
-6. 매칭 성공 시 entry/exit_price, trading_fee, pnl 재계산 + entry/exit_order_id 저장 + synced_at
+3. earliest_ts - 60s 기준 _fetch_all_fills pagination (100 fills/page × MAX_PAGES)
+4. order_id 별 그룹화 + aggregate
+   - amount: contracts × contract_size → BTC 변환 (I-BLE002 fix)
+   - reduce_only: fillPnl 합 ≠ 0 (entry=0, exit≠0 — I-BLE002 fix)
+5. 각 미sync trade 매칭 (id 우선 → 시간/방향/size + reduce_only fallback)
+6. 매칭 성공 (entry+exit 둘 다) 시 entry/exit_price, trading_fee, pnl 재계산 + id 저장 + synced_at
 7. 매칭 실패 시 WARNING + synced_at NULL 유지 (다음 시도)
 """
 
@@ -26,7 +28,8 @@ logger = logging.getLogger(__name__)
 
 SIZE_TOLERANCE_BTC = 0.005          # N=가': 1 contract (0.01 BTC) 의 half, round 영향 안전
 TIME_MARGIN_MS = 60_000              # I=가: ±60초 (fetch since + 매칭 tolerance 공통)
-FETCH_LIMIT = 200
+PAGE_LIMIT = 100                     # I-BLE002: OKX V5 /api/v5/trade/fills 한 page 한도
+MAX_PAGES = 10                       # I-BLE002: pagination 안전망 (100 × 10 = 1000 fills)
 
 
 async def sync_all_unsynced(
@@ -59,15 +62,21 @@ async def sync_all_unsynced(
     if not unsynced:
         return {"synced_count": 0, "failed_count": 0, "errors": []}
 
-    # 2. earliest_ts 기준 OKX fills 한 번에 fetch
+    # 2. earliest_ts 기준 OKX fills pagination fetch
     earliest_ts_ms = min(_parse_iso_ms(t["timestamp"]) for t in unsynced)
     since_ms = earliest_ts_ms - TIME_MARGIN_MS
 
+    executor = broker.executor
+    if executor is None or not hasattr(executor, "exchange"):
+        return {"synced_count": 0, "failed_count": 0, "errors": ["broker.executor 없음"]}
+
+    # I-BLE002: contract_size 추출 (LiveExecutor.initialize 시 OKX market 의 contractSize)
+    contract_size = float(getattr(executor, "contract_size", 1.0) or 1.0)
+    if contract_size <= 0:
+        contract_size = 1.0
+
     try:
-        executor = broker.executor
-        if executor is None or not hasattr(executor, "exchange"):
-            return {"synced_count": 0, "failed_count": 0, "errors": ["broker.executor 없음"]}
-        okx_fills = await executor.exchange.fetch_my_trades(symbol, since=since_ms, limit=FETCH_LIMIT)
+        okx_fills = await _fetch_all_fills(executor.exchange, symbol, since_ms)
     except Exception as e:
         logger.warning("fetch_my_trades 실패 — sync skip: %s", e)
         return {
@@ -77,7 +86,7 @@ async def sync_all_unsynced(
         }
 
     # 3. order_id 별 그룹화 + aggregate (다중 fill 대비)
-    by_order = _group_and_aggregate(okx_fills)
+    by_order = _group_and_aggregate(okx_fills, contract_size=contract_size)
 
     # 4. 각 미sync trade 매칭 + DB UPDATE
     results = {"synced_count": 0, "failed_count": 0, "errors": []}
@@ -124,9 +133,62 @@ def _parse_iso_ms(iso_str: str) -> int:
     return int(dt.timestamp() * 1000)
 
 
-def _group_and_aggregate(okx_fills: list[dict]) -> dict[str, dict]:
-    """order_id 별 fills 묶음 + aggregate (price avg / amount 합 / fee 합 / ts / side / reduceOnly).
+async def _fetch_all_fills(
+    exchange: Any, symbol: str, since_ms: int,
+) -> list[dict]:
+    """I-BLE002: pagination 으로 since_ms 이후 모든 fill 누적.
 
+    OKX V5 /api/v5/trade/fills 는 한 page 100 fills 한도. ccxt limit=200 요청해도
+    100 만 반환. 다중 fill 큰 거래 (예: 24 fills 1 order) + 다수 거래 누적 시 잘림.
+
+    알고리즘:
+    - 매 page fetch 후 신규 fill (id 기준 dedup) 누적
+    - 다음 page since = 마지막 fill ts (id dedup 이 중복 차단)
+    - len(fills) < PAGE_LIMIT → 마지막 page
+    - last_ts <= current_since → 무한 루프 차단 (모든 fill 같은 ts)
+    - MAX_PAGES 안전망 도달 시 WARNING + 종료
+    """
+    all_fills: list[dict] = []
+    seen_ids: set[str] = set()
+    current_since = since_ms
+    for page in range(MAX_PAGES):
+        fills = await exchange.fetch_my_trades(
+            symbol, since=current_since, limit=PAGE_LIMIT,
+        )
+        if not fills:
+            break
+        new_fills = [f for f in fills if f.get("id") not in seen_ids]
+        if not new_fills:
+            break   # 모두 중복 → 더 진행 안 됨
+        all_fills.extend(new_fills)
+        seen_ids.update(f["id"] for f in new_fills if f.get("id"))
+        if len(fills) < PAGE_LIMIT:
+            break   # 마지막 page
+        last_ts = max(
+            int(f["timestamp"]) for f in new_fills if f.get("timestamp")
+        )
+        if last_ts <= current_since:
+            break   # 무한 루프 보호 (모든 신규 fill 이 같은 ts ≤ since)
+        current_since = last_ts
+    else:
+        logger.warning(
+            "Trade sync: MAX_PAGES=%d 도달 — 누적 %d fills, 누락 가능. "
+            "since 분할 또는 MAX_PAGES 확대 고려.",
+            MAX_PAGES, len(all_fills),
+        )
+    return all_fills
+
+
+def _group_and_aggregate(
+    okx_fills: list[dict], contract_size: float,
+) -> dict[str, dict]:
+    """order_id 별 fills 묶음 + aggregate (price avg / amount BTC 합 / fee 합 / ts / side / reduce_only).
+
+    I-BLE002 fix:
+    - amount 는 contracts 단위 (OKX fetch_my_trades 응답) → contract_size 곱해 BTC 변환 후 저장
+    - reduce_only 는 fillPnl 합 ≠ 0 으로 판별 (OKX 응답에 reduceOnly 필드 부재)
+      · entry order 의 모든 fill 은 fillPnl=0 → 합=0 → reduce_only=False
+      · exit order 의 모든 fill 은 fillPnl≠0 → 합≠0 → reduce_only=True
     M=가: USDT fee 만 합산. 다른 currency 면 WARNING + 0 처리.
     """
     by_order_raw: dict[str, list[dict]] = defaultdict(list)
@@ -137,9 +199,10 @@ def _group_and_aggregate(okx_fills: list[dict]) -> dict[str, dict]:
 
     by_order: dict[str, dict] = {}
     for oid, fills in by_order_raw.items():
-        total_amount = sum(float(f.get("amount", 0) or 0) for f in fills)
-        if total_amount <= 0:
+        total_amount_contracts = sum(float(f.get("amount", 0) or 0) for f in fills)
+        if total_amount_contracts <= 0:
             continue
+        total_amount_btc = total_amount_contracts * contract_size
 
         # M=가: USDT fee 만 합산
         fee_usdt = 0.0
@@ -156,19 +219,22 @@ def _group_and_aggregate(okx_fills: list[dict]) -> dict[str, dict]:
                     ccy, cost, oid,
                 )
 
-        info = fills[0].get("info") or {}
-        reduce_only = bool(fills[0].get("reduceOnly")) or (
-            str(info.get("reduceOnly", "")).lower() == "true"
+        # I-BLE002: fillPnl 합산 기반 reduce_only 판별
+        total_fill_pnl = sum(
+            float((f.get("info") or {}).get("fillPnl", 0) or 0)
+            for f in fills
         )
-        # price_avg = volume-weighted avg
+        reduce_only = abs(total_fill_pnl) > 1e-9
+        # price_avg = volume-weighted avg (contracts 가중치 — BTC 가중치와 비율 동일)
         price_avg = (
-            sum(float(f["price"]) * float(f["amount"]) for f in fills) / total_amount
+            sum(float(f["price"]) * float(f["amount"]) for f in fills)
+            / total_amount_contracts
         )
         ts_ms = min(int(f["timestamp"]) for f in fills if f.get("timestamp"))
         by_order[oid] = {
             "order_id": oid,
             "price_avg": price_avg,
-            "amount": total_amount,
+            "amount": total_amount_btc,
             "fee_usdt": fee_usdt,
             "ts_ms": ts_ms,
             "side": fills[0]["side"],
