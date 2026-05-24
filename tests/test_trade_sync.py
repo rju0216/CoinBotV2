@@ -361,6 +361,55 @@ async def test_pagination_basic():
 
 
 @pytest.mark.asyncio
+async def test_match_failure_diagnostic_log(caplog):
+    """I-BLE004: 매칭 실패 시 WARNING 로그에 by_order 후보 진단 정보 포함되는지.
+
+    Trade 1 case 재현 — entry size mismatch (사용자 외 거래 섞임) + exit size 정확 일치.
+    사용자가 즉시 'entry 영역 못 찾음 + exit 단독 매칭 가능' 을 로그로 파악 가능.
+    """
+    db_trade = {
+        "id": 7,
+        "timestamp": "2026-05-06T12:15:01+00:00",
+        "side": "long",
+        "size": 0.075,   # BTC
+        "funding_fee": 0.0,
+        "entry_order_id": None,
+        "exit_order_id": None,
+    }
+    db_ts_ms = _iso_to_ms(db_trade["timestamp"])
+    okx_fills = [
+        # Entry 후보 (ts ±60s 안, side=buy 일치, size 0.0235 BTC 로 mismatch)
+        {"order": "diff_size_entry", "id": "f1",
+         "timestamp": db_ts_ms + 500,
+         "price": 82170.0, "amount": 2.35,   # contracts (= 0.0235 BTC)
+         "side": "buy",
+         "info": {"fillPnl": "0"},
+         "fee": {"cost": 1.0, "currency": "USDT"}},
+        # Exit 후보 (ts 후 + size 0.075 BTC 정확 일치 + reduce_only)
+        {"order": "matching_exit", "id": "f2",
+         "timestamp": db_ts_ms + 1000,
+         "price": 81707.30, "amount": 7.5,    # contracts (= 0.075 BTC)
+         "side": "sell",
+         "info": {"fillPnl": "-34.71"},
+         "fee": {"cost": 3.06, "currency": "USDT"}},
+    ]
+    broker = _make_broker(is_live=True, fetch_my_trades_return=okx_fills)
+    ds = _make_data_store([db_trade])
+    with caplog.at_level(logging.WARNING):
+        result = await sync_all_unsynced(broker, ds, "BTC/USDT:USDT")
+    assert result["synced_count"] == 0
+    assert result["failed_count"] == 1
+    # 진단 정보 검증
+    log_text = "\n".join(r.message for r in caplog.records)
+    assert "매칭 실패" in log_text
+    assert "entry buy 후보 (ts ±60s, size 무관): 1건" in log_text
+    assert "exit sell reduce_only 후보 (size ±0.005 BTC, ts > db_ts): 1건" in log_text
+    # 후보 order id (마지막 12자) + size 노출 확인
+    assert "diff_size_ent" in log_text or "size=0.0235" in log_text
+    assert "matching_exit" in log_text or "size=0.0750" in log_text
+
+
+@pytest.mark.asyncio
 async def test_pagination_dedup():
     """pagination 중복 fill (같은 id 가 두 page 에 등장) → seen_ids dedup, 무한 루프 차단."""
     db_trade = {

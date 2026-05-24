@@ -110,10 +110,12 @@ async def sync_all_unsynced(
                 results["synced_count"] += 1
             else:
                 # J=가: 매칭 실패 시 WARNING + synced_at NULL 유지 (다음 시도)
+                # I-BLE004: 진단 정보 추가 — by_order 후보 검색 (어느 조건이 안 맞았는지)
+                diag = _diagnose_match_failure(db_trade, by_order)
                 msg = (
                     f"trade {db_trade['id']} 매칭 실패 "
                     f"(side={db_trade['side']}, size={db_trade['size']:.6f}, "
-                    f"ts={db_trade['timestamp']})"
+                    f"ts={db_trade['timestamp']})\n   {diag}"
                 )
                 logger.warning("Trade sync: %s", msg)
                 results["failed_count"] += 1
@@ -241,6 +243,55 @@ def _group_and_aggregate(
             "reduce_only": reduce_only,
         }
     return by_order
+
+
+def _diagnose_match_failure(db_trade: dict, by_order: dict[str, dict]) -> str:
+    """I-BLE004: 매칭 실패 trade 의 by_order 후보 검색 — 진단 로그 강화.
+
+    어느 조건이 안 맞았는지 분류:
+    - entry 후보 (ts ±60s + side 일치, size 무관): size mismatch 영역 파악용
+    - exit reduce_only 후보 (size ±0.005 BTC + ts > db_ts + side 일치): entry 누락 case 의
+      exit 단독 매칭 가능성 (I-BLE003 패턴: fetch_my_trades 가 entry 만 누락하고 exit 는 정상)
+
+    출력 예 (Trade 1 case, I-BLE002 fix 검증 시점):
+        entry buy 후보 (ts ±60s, size 무관): 1건 [250843897389056 size=0.0235]
+        exit sell reduce_only 후보 (size ±0.005 BTC): 1건 [205647822848 size=0.0750]
+    """
+    side_str = db_trade["side"]
+    entry_side = "buy" if side_str == "long" else "sell"
+    exit_side = "sell" if side_str == "long" else "buy"
+    db_size = float(db_trade["size"])
+    db_ts_ms = _parse_iso_ms(db_trade["timestamp"])
+
+    # entry 후보 (ts ±60s + side 일치 + reduce_only=False, size 무관)
+    entry_ts_cands = [
+        v for v in by_order.values()
+        if abs(v["ts_ms"] - db_ts_ms) <= TIME_MARGIN_MS
+        and v["side"] == entry_side
+        and not v["reduce_only"]
+    ]
+    # exit reduce_only 후보 (ts > db_ts + side 일치 + reduce_only=True + size 일치)
+    exit_size_cands = [
+        v for v in by_order.values()
+        if v["ts_ms"] > db_ts_ms
+        and v["side"] == exit_side
+        and v["reduce_only"]
+        and abs(v["amount"] - db_size) <= SIZE_TOLERANCE_BTC
+    ]
+
+    def _fmt(v: dict) -> str:
+        return f"{v['order_id'][-12:]} size={v['amount']:.4f}"
+
+    entry_str = (
+        f"entry {entry_side} 후보 (ts ±60s, size 무관): {len(entry_ts_cands)}건"
+        + (f" [{', '.join(_fmt(v) for v in entry_ts_cands[:3])}]" if entry_ts_cands else "")
+    )
+    exit_str = (
+        f"exit {exit_side} reduce_only 후보 (size ±0.005 BTC, ts > db_ts): "
+        f"{len(exit_size_cands)}건"
+        + (f" [{', '.join(_fmt(v) for v in exit_size_cands[:3])}]" if exit_size_cands else "")
+    )
+    return f"{entry_str}\n   {exit_str}"
 
 
 def _match_trade(db_trade: dict, by_order: dict[str, dict]) -> tuple[dict | None, dict | None]:
