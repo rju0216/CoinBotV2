@@ -304,6 +304,7 @@ class BacktestEngine(AbstractEngine):
         rec.update(
             {
                 "exit_time": now,
+                "closed_at": now.isoformat(),    # I-BLE001 schema 일관
                 "exit_price": exit_price,
                 "pnl": pnl,
                 "pnl_pct": pnl_pct,

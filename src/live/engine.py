@@ -399,6 +399,20 @@ class CoreEngine(AbstractEngine):
 
     # ---- 상태 복원 (잠재 이슈 I-001/I-002 해결) ----
 
+    async def _restore_daily_pnl(self) -> None:
+        """I-BLE001 ③: 오늘 누적 daily_pnl 을 DB 에서 복원.
+
+        `_restore_state` 의 case 1/2/4 끝에서 호출 (case 3 raise 는 엔진 종료라 무관).
+        get_daily_pnl 이 COALESCE(closed_at, timestamp) 쿼리라 자정 경계 case 정확 반영.
+        """
+        restored = await self.data_store.get_daily_pnl()
+        self.risk_manager.daily_pnl = restored
+        logger.info(
+            "[RiskManager] daily_pnl restored from DB: $%.2f (today=%s UTC)",
+            restored,
+            datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        )
+
     async def _restore_state(self) -> None:
         """재시작 시 잔액·포지션·DD락 복원.
 
@@ -429,6 +443,7 @@ class CoreEngine(AbstractEngine):
         # 1) 거래소 없음 + DB 없음
         if exchange_pos is None and not open_trades:
             logger.info("Clean startup: no open position")
+            await self._restore_daily_pnl()       # I-BLE001 ③
             return
 
         # 2) 거래소 없음 + DB 있음 → DB의 open trades 사후 청산 처리
@@ -479,34 +494,25 @@ class CoreEngine(AbstractEngine):
                     actual_pnl / trade["entry_price"] * 100
                     if trade["entry_price"] > 0 else 0.0
                 )
+                # I-BLE001: OKX exit ts 우선, 없으면 now (fallback)
+                closed_at_iso = (
+                    datetime.fromtimestamp(exit_ts_ms / 1000, tz=timezone.utc).isoformat()
+                    if exit_ts_ms is not None
+                    else now_utc.isoformat()
+                )
                 await self.data_store.close_trade(
                     trade_id=trade["id"],
                     exit_price=actual_exit_price,
                     pnl=actual_pnl,
                     pnl_pct=pnl_pct,
                     exit_reason=actual_reason,
+                    closed_at=closed_at_iso,
                 )
 
-                # I-BL016: same-day(UTC) 청산이면 daily_pnl 누적
-                # timestamp 부재(fetch fallback)는 보수적으로 different-day 가정 → skip
-                if exit_ts_ms is not None:
-                    exit_dt = datetime.fromtimestamp(exit_ts_ms / 1000, tz=timezone.utc)
-                    same_day = exit_dt.date() == now_utc.date()
-                else:
-                    same_day = False
-                if same_day:
-                    self.risk_manager.add_pnl(actual_pnl)
-                    logger.info(
-                        "Trade %d: same-day(UTC) 청산 인지 — daily_pnl 누적 "
-                        "(+%.2f, total=%+.2f)",
-                        trade["id"], actual_pnl, self.risk_manager.daily_pnl,
-                    )
-                else:
-                    logger.info(
-                        "Trade %d: different-day(UTC) 청산 — daily_pnl 누적 skip "
-                        "(exit_ts_ms=%s, restart_date=%s)",
-                        trade["id"], exit_ts_ms, now_utc.date().isoformat(),
-                    )
+            # I-BLE001 ⑥: case 2 의 same-day add_pnl 분기 제거.
+            # close_trade 가 closed_at=exit_ts_iso 로 호출 → 아래 _restore_daily_pnl 의
+            # get_daily_pnl 쿼리 (COALESCE 기반) 가 자동으로 same-day 만 합산.
+            await self._restore_daily_pnl()       # I-BLE001 ③
             return
 
         # 3) 거래소 있음 + 전략 0개 → 에러 중단 (정책 7 (a))
@@ -586,6 +592,9 @@ class CoreEngine(AbstractEngine):
         # I-BL011 fix: 거래소 conditional order(SL/TP) 살아있는지 검증 + 누락 시 재등록
         if self.broker.is_live and self._position is not None:
             await self._verify_and_restore_sl_tp()
+
+        # I-BLE001 ③: case 4 (자동 입양/orphan 포함) 모든 처리 후 daily_pnl 복원
+        await self._restore_daily_pnl()
 
     async def _verify_and_restore_sl_tp(self) -> None:
         """I-BL011: 거래소의 SL/TP conditional order 생존 검증 + 누락 시 재등록.
@@ -1023,6 +1032,18 @@ class CoreEngine(AbstractEngine):
                         result["failed_count"],
                         len(result["errors"]),
                     )
+                # I-BLE001 ④: synced_count > 0 시 memory daily_pnl 재정렬
+                # (sync 후 DB pnl 이 OKX 실값으로 갱신됐으므로 메모리 추정값과 어긋남)
+                if result["synced_count"] > 0:
+                    new_daily_pnl = await self.data_store.get_daily_pnl()
+                    delta = new_daily_pnl - self.risk_manager.daily_pnl
+                    if abs(delta) > 0.01:
+                        logger.info(
+                            "[RiskManager] daily_pnl recalibrated after sync: "
+                            "$%.2f → $%.2f (Δ=%+.2f, OKX 실값 반영)",
+                            self.risk_manager.daily_pnl, new_daily_pnl, delta,
+                        )
+                    self.risk_manager.daily_pnl = new_daily_pnl
             except Exception as e:
                 logger.warning("Trade sync failed (best-effort, close 흐름 유지): %s", e)
 
@@ -1071,6 +1092,7 @@ class CoreEngine(AbstractEngine):
             funding_fee=funding_fee,
             exit_reason=exit_reason,
             exit_order_id=exit_order_id,
+            closed_at=now.isoformat(),    # I-BLE001
         )
 
     async def _fetch_funding_since_entry(self) -> float:

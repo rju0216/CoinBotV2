@@ -56,23 +56,25 @@ class DataStore:
                 status TEXT DEFAULT 'open',
                 entry_order_id TEXT,
                 exit_order_id TEXT,
-                synced_at TEXT
+                synced_at TEXT,
+                closed_at TEXT
             )
             """
         )
-        # BLE-6-1: 기존 DB 마이그레이션 — 신규 컬럼 추가 (ADD COLUMN 표준 sqlite)
+        # BLE-6-1 / I-BLE001: 기존 DB 마이그레이션 — 신규 컬럼 추가 (ADD COLUMN 표준 sqlite)
         cursor = await self._db.execute("PRAGMA table_info(trades)")
         existing_cols = {row[1] for row in await cursor.fetchall()}
         for col_name, col_type in [
             ("entry_order_id", "TEXT"),
             ("exit_order_id", "TEXT"),
             ("synced_at", "TEXT"),
+            ("closed_at", "TEXT"),       # I-BLE001: 실 close 시각 (open=timestamp 와 분리)
         ]:
             if col_name not in existing_cols:
                 await self._db.execute(
                     f"ALTER TABLE trades ADD COLUMN {col_name} {col_type}"
                 )
-                logger.info("BLE-6-1 migration: trades.%s 컬럼 추가", col_name)
+                logger.info("migration: trades.%s 컬럼 추가", col_name)
         await self._db.execute(
             """
             CREATE TABLE IF NOT EXISTS equity (
@@ -194,13 +196,19 @@ class DataStore:
         funding_fee: float = 0.0,
         exit_reason: str | None = None,
         exit_order_id: str | None = None,
+        closed_at: str | None = None,
     ) -> None:
+        """I-BLE001: closed_at 추가 — ISO timestamp (UTC), caller (engine close 시각) 전달.
+        None 시 datetime.now(timezone.utc) fallback.
+        """
+        if closed_at is None:
+            closed_at = datetime.now(timezone.utc).isoformat()
         await self._db.execute(
             """UPDATE trades SET exit_price=?, pnl=?, pnl_pct=?, trading_fee=?,
-               funding_fee=?, exit_reason=?, status='closed', exit_order_id=?
-               WHERE id=?""",
+               funding_fee=?, exit_reason=?, status='closed', exit_order_id=?,
+               closed_at=? WHERE id=?""",
             (exit_price, pnl, pnl_pct, trading_fee, funding_fee, exit_reason,
-             exit_order_id, trade_id),
+             exit_order_id, closed_at, trade_id),
         )
         await self._db.commit()
 
@@ -253,10 +261,13 @@ class DataStore:
         return await self.get_trades(status="open")
 
     async def get_daily_pnl(self) -> float:
+        """I-BLE001: closed_at 기준 합산 — 자정 경계 case (어제 open + 오늘 close) 정확 반영.
+        closed_at NULL 인 기존 trade 는 COALESCE 로 timestamp(=open 시각) fallback.
+        """
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         cursor = await self._db.execute(
             "SELECT COALESCE(SUM(pnl), 0) FROM trades "
-            "WHERE status='closed' AND timestamp LIKE ?",
+            "WHERE status='closed' AND COALESCE(closed_at, timestamp) LIKE ?",
             (f"{today}%",),
         )
         row = await cursor.fetchone()
