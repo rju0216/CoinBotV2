@@ -59,6 +59,13 @@ def signal_side_to_position_side(side: SignalSide) -> PositionSide:
 
 
 class AbstractEngine(ABC):
+    # I-BLE005: bar_context 생성 시 *직전 마감 봉* 의 df 인덱스.
+    # 백테 default (-1): df = _slice_candles(ts) (ts 미만 슬라이스) → iloc[-1] = 직전 마감 봉.
+    # CoreEngine override (-2): df = data_store.get_df() (ccxt watch_ohlcv 새 봉
+    # single tick 포함) → iloc[-2] = 직전 마감 봉. 각 엔진이 자기 영역의 df 구조
+    # 의미에 맞춰 1줄 override.
+    LAST_CLOSED_BAR_IDX: int = -1
+
     def __init__(self, config: dict[str, Any], mode: str) -> None:
         self.config = config
         self.mode = mode
@@ -186,6 +193,39 @@ class AbstractEngine(ABC):
             precomputed_features=self._features_cache.get(strategy.entry_timeframe),
         )
 
+    # ---- bar_context 빌더 (I-BLE005) ----
+
+    def _build_bar_context(
+        self, df: pd.DataFrame | None, current_price: float,
+    ) -> dict | None:
+        """I-BLE005: 직전 마감 봉의 OHLC + 그 직전 봉 close 추출 → SIGNAL 로그용.
+
+        `LAST_CLOSED_BAR_IDX` attribute 가 *직전 마감 봉* 인덱스 결정 (백테 -1, 라이브 -2).
+        라이브 영역 (CoreEngine, -2) 은 ccxt watch_ohlcv 가 새 봉 시작 시점에 발행하는
+        single tick (open=high=low=close) 이 iloc[-1] 에 들어가므로 iloc[-2] 가 직전 마감 봉.
+
+        `current_price` 인자는 default 영역 미사용. 향후 표기 방식 확장 (예: 진입 가격
+        같이 표기) 시 사용 reserved — 호출 영역 시그니처 일관 유지.
+
+        Returns:
+            {"close", "prev_close", "high", "low"} 또는 None (데이터 부족 시).
+        """
+        idx = self.LAST_CLOSED_BAR_IDX
+        if df is None or len(df) < abs(idx):
+            return None
+        last_closed = df.iloc[idx]
+        prev_idx = idx - 1
+        prev_close: float | None = (
+            float(df.iloc[prev_idx]["close"])
+            if len(df) >= abs(prev_idx) else None
+        )
+        return {
+            "close": float(last_closed["close"]),
+            "prev_close": prev_close,
+            "high": float(last_closed["high"]),
+            "low": float(last_closed["low"]),
+        }
+
     # ---- 봉 마감 dispatch ----
 
     async def evaluate_strategies_on_bar(
@@ -213,18 +253,12 @@ class AbstractEngine(ABC):
                 self.risk_manager.last_reset_date,
             )
 
-        # BLE-7-1: bar_context — _log_signal_status 의 가격 컨텍스트 출력용.
-        # 백테에선 _log_signal_status default no-op 이라 미사용 (오버헤드 거의 0)
-        df = candles_per_tf.get(bar_close_tf)
-        bar_context: dict | None = None
-        if df is not None and len(df) >= 1:
-            last_row = df.iloc[-1]
-            bar_context = {
-                "close": current_price,
-                "prev_close": float(df.iloc[-2]["close"]) if len(df) >= 2 else None,
-                "high": float(last_row["high"]),
-                "low": float(last_row["low"]),
-            }
+        # BLE-7-1 / I-BLE005: bar_context — _log_signal_status 의 가격 컨텍스트 출력용.
+        # 백테에선 _log_signal_status default no-op 이라 미사용 (오버헤드 거의 0).
+        # I-BLE005: 직전 마감 봉 영역 사용 (라이브 새 봉 single tick 영역 회피).
+        bar_context = self._build_bar_context(
+            candles_per_tf.get(bar_close_tf), current_price,
+        )
 
         # 1) on_bar_close 훅
         for strategy in self.strategies:

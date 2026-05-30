@@ -88,6 +88,11 @@ def _candles_to_df(candles: list) -> pd.DataFrame:
 
 
 class CoreEngine(AbstractEngine):
+    # I-BLE005: 라이브 영역의 df 구조 — ccxt watch_ohlcv 가 새 봉 시작 시점에 single tick
+    # (open=high=low=close) 으로 발행 → append_candle 이 iloc[-1] 에 single tick row 추가.
+    # 따라서 *직전 마감 봉* 은 iloc[-2]. bar_context 의 close/high/low 가 진정한 봉 OHLC 영역.
+    LAST_CLOSED_BAR_IDX = -2
+
     def __init__(self, config: dict[str, Any], mode: str) -> None:
         if mode not in ("live", "paper"):
             raise ValueError(f"CoreEngine only supports live/paper, got: {mode}")
@@ -1255,10 +1260,12 @@ class CoreEngine(AbstractEngine):
         """master_tf 봉 마감 시 계정 재정 상태 출력 (포지션 유무 무관).
 
         BLE-7-1: daily_pnl 한도 + DD 락 거리 (% + 절대값 $).
+        I-BLE005: total 라인 추가 (initial 대비 누적 손익).
         샘플:
           [ACCOUNT] balance=$3381.82 equity=$3381.82 unrealized=+0.00
                     daily_pnl=+33.97 (limit -$169.09 / 0% reached)
                     dd=0.00% / -$0.00 (lock -35% / -$1183.64, 0% reached)
+                    total=+$221.82 / +7.02% (vs initial $3160.00)
         """
         from src.core.enums import PositionSide
         unrealized = 0.0
@@ -1292,12 +1299,20 @@ class CoreEngine(AbstractEngine):
             min(100.0, dd_pct / dd_lock_pct * 100) if dd_lock_pct > 0 else 0.0
         )
 
+        # I-BLE005: total 영역 — initial_balance 대비 누적 손익 (입금 영향 별개 영역,
+        # initial_balance 가 BLE-7-3 입금 가이드로 갱신되므로 자동 반영).
+        initial = rm.initial_balance
+        total = balance - initial
+        total_pct = (total / initial * 100) if initial > 0 else 0.0
+
         # BLE-7-1 보강: 멀티라인 (\n + 10 space, [ACCOUNT] prefix 정렬) + 끝 \n
         logger.info(
             "[ACCOUNT] balance=$%.2f equity=$%.2f unrealized=%+.2f"
             "\n          daily_pnl=%+.2f (limit -$%.2f / %.0f%% reached)"
-            "\n          dd=%.2f%% / -$%.2f (lock -%.0f%% / -$%.2f, %.0f%% reached)\n",
+            "\n          dd=%.2f%% / -$%.2f (lock -%.0f%% / -$%.2f, %.0f%% reached)"
+            "\n          total=%+.2f / %+.2f%% (vs initial $%.2f)\n",
             balance, equity, unrealized,
             daily_pnl, abs(daily_limit_abs), daily_reached_pct,
             dd_pct, dd_abs, dd_lock_pct, dd_lock_abs, dd_reached_pct,
+            total, total_pct, initial,
         )

@@ -589,3 +589,89 @@ class TestBLE71AccountRiskDistance:
         assert "dd=1.43%" in msg
         # dd 절대값: 3500-3450 = 50.00
         assert "-$50.00" in msg
+
+
+class TestIBLE005BarContextAndTotal:
+    """I-BLE005: _build_bar_context (직전 마감 봉 OHLC) + ACCOUNT total 라인."""
+
+    def test_build_bar_context_default_backtest_uses_iloc_minus_one(self):
+        """engine_base default (LAST_CLOSED_BAR_IDX=-1) — 백테 영역.
+        df = ts 미만 슬라이스라 iloc[-1] 이 이미 직전 마감 봉.
+        """
+        import pandas as pd
+        from src.core.engine_base import AbstractEngine
+
+        df = pd.DataFrame(
+            [
+                {"open": 80000, "high": 80200, "low": 79900, "close": 80100},   # 그 전 봉
+                {"open": 80100, "high": 80300, "low": 80000, "close": 80250},   # 직전 마감 봉 (iloc[-1])
+            ]
+        )
+        # AbstractEngine 직접 호출 — current_price 인자 미사용
+        ctx = AbstractEngine._build_bar_context(AbstractEngine, df, current_price=99999.0)
+        # 직전 마감 봉 (iloc[-1]) 의 OHLC
+        assert ctx["close"] == pytest.approx(80250.0)
+        assert ctx["high"] == pytest.approx(80300.0)
+        assert ctx["low"] == pytest.approx(80000.0)
+        # prev_close = iloc[-2]["close"]
+        assert ctx["prev_close"] == pytest.approx(80100.0)
+
+    def test_build_bar_context_core_engine_uses_iloc_minus_two(self):
+        """CoreEngine override (LAST_CLOSED_BAR_IDX=-2) — 라이브 영역.
+        df 의 iloc[-1] 은 새 봉 single tick, iloc[-2] 가 직전 마감 봉.
+        """
+        import pandas as pd
+        from src.live.engine import CoreEngine
+
+        df = pd.DataFrame(
+            [
+                {"open": 80000, "high": 80200, "low": 79900, "close": 80100},   # 그 전 봉
+                {"open": 80100, "high": 80300, "low": 80000, "close": 80250},   # 직전 마감 봉 (iloc[-2])
+                {"open": 80250, "high": 80250, "low": 80250, "close": 80250},   # 새 봉 single tick (iloc[-1])
+            ]
+        )
+        ctx = CoreEngine._build_bar_context(CoreEngine, df, current_price=99999.0)
+        # iloc[-2] 의 진정한 OHLC
+        assert ctx["close"] == pytest.approx(80250.0)
+        assert ctx["high"] == pytest.approx(80300.0)
+        assert ctx["low"] == pytest.approx(80000.0)
+        # range = (80300-80000)/80000 = 0.375% — 0 아님 (single tick 영역 회피)
+        # prev_close = iloc[-3]["close"]
+        assert ctx["prev_close"] == pytest.approx(80100.0)
+
+    def test_build_bar_context_returns_none_when_df_too_short(self):
+        """edge case: df=None / len(df) < abs(LAST_CLOSED_BAR_IDX) → None."""
+        import pandas as pd
+        from src.core.engine_base import AbstractEngine
+        from src.live.engine import CoreEngine
+
+        # df=None
+        assert AbstractEngine._build_bar_context(AbstractEngine, None, 80000.0) is None
+        assert CoreEngine._build_bar_context(CoreEngine, None, 80000.0) is None
+        # default LAST=-1, len(df)=0 → None
+        assert AbstractEngine._build_bar_context(
+            AbstractEngine, pd.DataFrame(), 80000.0,
+        ) is None
+        # CoreEngine LAST=-2, len(df)=1 → None (abs(-2)=2 미만)
+        df_one = pd.DataFrame([{"open": 0, "high": 0, "low": 0, "close": 80000}])
+        assert CoreEngine._build_bar_context(CoreEngine, df_one, 80000.0) is None
+
+    def test_account_log_includes_total_vs_initial(self, caplog):
+        """I-BLE005: ACCOUNT 로그에 total=±$X.XX / ±Y.YY% (vs initial $Z.ZZ) 라인 포함."""
+        from src.risk.manager import RiskManager
+        rm = RiskManager({"risk": {"max_daily_loss_pct": 0.05, "max_drawdown_pct": 0.35}})
+        rm.set_initial_balance(5159.87)
+        rm.peak_equity = 5320.57
+        rm.daily_pnl = 0.0
+
+        class _Stub:
+            risk_manager = rm
+            _position = None
+        with caplog.at_level(logging.INFO, logger="src.live.engine"):
+            CoreEngine._log_account_status(_Stub(), 5260.46, 73000.0)
+        msg = caplog.records[-1].message
+        # total = 5260.46 - 5159.87 = +100.59
+        assert "total=+100.59" in msg
+        # total_pct = 100.59 / 5159.87 × 100 = +1.95%
+        assert "+1.95%" in msg
+        assert "vs initial $5159.87" in msg
