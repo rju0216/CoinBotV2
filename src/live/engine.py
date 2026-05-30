@@ -73,6 +73,16 @@ def _format_failure_detail(
     return _format_sub(strategy_name, info)
 
 
+def _fmt_dollar(value: float) -> str:
+    """I-BLE006: 부호 + $ + 절대값 형식. 양수: +$X.XX, 음수: -$X.XX. 0: +$0.00.
+
+    ACCOUNT 로그의 unrealized_pnl / total_balance_diff / daily_pnl 영역에서 사용.
+    dd 영역은 항상 손실 표기 (텍스트 -$%.2f) 라 미사용.
+    """
+    sign = "+" if value >= 0 else "-"
+    return f"{sign}${abs(value):.2f}"
+
+
 def _candles_to_df(candles: list) -> pd.DataFrame:
     if not candles:
         return pd.DataFrame(
@@ -1259,13 +1269,12 @@ class CoreEngine(AbstractEngine):
     def _log_account_status(self, balance, current_price) -> None:
         """master_tf 봉 마감 시 계정 재정 상태 출력 (포지션 유무 무관).
 
-        BLE-7-1: daily_pnl 한도 + DD 락 거리 (% + 절대값 $).
-        I-BLE005: total 라인 추가 (initial 대비 누적 손익).
-        샘플:
-          [ACCOUNT] balance=$3381.82 equity=$3381.82 unrealized=+0.00
-                    daily_pnl=+33.97 (limit -$169.09 / 0% reached)
-                    dd=0.00% / -$0.00 (lock -35% / -$1183.64, 0% reached)
-                    total=+$221.82 / +7.02% (vs initial $3160.00)
+        BLE-7-1 / I-BLE005 / I-BLE006: 가시화 영역 전면 갱신 (사용자 요청).
+        샘플 (포지션 없음, balance=$5260.46, initial=$5159.87, peak=$5320.57):
+          [ACCOUNT] initial_balance=$5159.87 current_balance=$5260.46 equity=$5260.46 unrealized_pnl=+$0.00
+                    total_balance_diff=+$100.59 (+1.95%)
+                    daily_pnl=+$0.00 (limit -5% / -$263.02)
+                    dd=-$60.11 (lock -35% / -$1862.20, vs peak equity $5320.57)
         """
         from src.core.enums import PositionSide
         unrealized = 0.0
@@ -1281,38 +1290,32 @@ class CoreEngine(AbstractEngine):
 
         equity = balance + unrealized
         rm = self.risk_manager
-        daily_pnl = rm.daily_pnl
-        dd_pct = rm.current_drawdown_pct(equity) * 100
-
-        # BLE-7-1: daily 한도 거리 — 한도 절대값 + 도달 % (한도는 음수 의미)
-        daily_limit_abs = -(balance * rm.max_daily_loss_pct)  # 예: -169.09
-        daily_reached_pct = (
-            min(100.0, abs(daily_pnl / daily_limit_abs) * 100)
-            if daily_pnl < 0 and daily_limit_abs < 0 else 0.0
-        )
-
-        # BLE-7-1: DD 락 거리 — % + 절대값 ($) + 락 한도 % + 절대값 + 도달 %
-        dd_abs = max(0.0, rm.peak_equity - equity)  # 절대값 (음수 부호는 텍스트로)
-        dd_lock_pct = rm.max_drawdown_pct * 100  # 35% 등
-        dd_lock_abs = rm.peak_equity * rm.max_drawdown_pct  # 락 한도 절대값
-        dd_reached_pct = (
-            min(100.0, dd_pct / dd_lock_pct * 100) if dd_lock_pct > 0 else 0.0
-        )
-
-        # I-BLE005: total 영역 — initial_balance 대비 누적 손익 (입금 영향 별개 영역,
-        # initial_balance 가 BLE-7-3 입금 가이드로 갱신되므로 자동 반영).
         initial = rm.initial_balance
+        daily_pnl = rm.daily_pnl
+
+        # I-BLE006: daily 한도 — config 의 max_daily_loss_pct (예: 5%) + balance 대비 절대값
+        daily_limit_pct = rm.max_daily_loss_pct * 100        # 예: 5
+        daily_limit_abs = balance * rm.max_daily_loss_pct    # 예: $263.02
+
+        # I-BLE006: dd 영역 — 절대값만 (% 제거) + 락 한도 % + 락 한도 절대값 + peak equity
+        dd_abs = max(0.0, rm.peak_equity - equity)
+        dd_lock_pct = rm.max_drawdown_pct * 100              # 35
+        dd_lock_abs = rm.peak_equity * rm.max_drawdown_pct   # 락 한도 절대값
+
+        # I-BLE005 / I-BLE006: total_balance_diff — initial 대비 누적 손익 (입금 영향 별개,
+        # initial_balance 가 BLE-7-3 입금 가이드로 갱신되므로 자동 반영)
         total = balance - initial
         total_pct = (total / initial * 100) if initial > 0 else 0.0
 
-        # BLE-7-1 보강: 멀티라인 (\n + 10 space, [ACCOUNT] prefix 정렬) + 끝 \n
+        # I-BLE006: 멀티라인 (\n + 10 space, [ACCOUNT] prefix 정렬) + 끝 \n
         logger.info(
-            "[ACCOUNT] balance=$%.2f equity=$%.2f unrealized=%+.2f"
-            "\n          daily_pnl=%+.2f (limit -$%.2f / %.0f%% reached)"
-            "\n          dd=%.2f%% / -$%.2f (lock -%.0f%% / -$%.2f, %.0f%% reached)"
-            "\n          total=%+.2f / %+.2f%% (vs initial $%.2f)\n",
-            balance, equity, unrealized,
-            daily_pnl, abs(daily_limit_abs), daily_reached_pct,
-            dd_pct, dd_abs, dd_lock_pct, dd_lock_abs, dd_reached_pct,
-            total, total_pct, initial,
+            "[ACCOUNT] initial_balance=$%.2f current_balance=$%.2f equity=$%.2f "
+            "unrealized_pnl=%s"
+            "\n          total_balance_diff=%s (%+.2f%%)"
+            "\n          daily_pnl=%s (limit -%.0f%% / -$%.2f)"
+            "\n          dd=-$%.2f (lock -%.0f%% / -$%.2f, vs peak equity $%.2f)\n",
+            initial, balance, equity, _fmt_dollar(unrealized),
+            _fmt_dollar(total), total_pct,
+            _fmt_dollar(daily_pnl), daily_limit_pct, daily_limit_abs,
+            dd_abs, dd_lock_pct, dd_lock_abs, rm.peak_equity,
         )

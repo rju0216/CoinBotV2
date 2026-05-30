@@ -277,7 +277,7 @@ class TestAccountStatusLog:
     """BL-2-4 hotfix-G: 계정 재정 상태 로그 검증."""
 
     def test_no_position_basic_output(self, caplog):
-        """포지션 없을 때 — balance=equity, unrealized=0, dd=0."""
+        """포지션 없을 때 — current_balance=equity, unrealized_pnl=0, dd=0 (I-BLE006 형식)."""
         from unittest.mock import MagicMock
         from src.risk.manager import RiskManager
 
@@ -297,14 +297,18 @@ class TestAccountStatusLog:
             CoreEngine._log_account_status(engine, 1000.0, 67000.0)
         msg = caplog.records[-1].message
         assert "[ACCOUNT]" in msg
-        assert "balance=$1000.00" in msg
+        assert "initial_balance=$1000.00" in msg
+        assert "current_balance=$1000.00" in msg
         assert "equity=$1000.00" in msg
-        assert "unrealized=+0.00" in msg
-        assert "daily_pnl=+0.00" in msg
-        assert "dd=0.00%" in msg
+        assert "unrealized_pnl=+$0.00" in msg
+        assert "daily_pnl=+$0.00" in msg
+        # peak=initial=1000 → dd_abs=0 → 표기 -$0.00
+        assert "dd=-$0.00" in msg
+        # peak equity 표기
+        assert "vs peak equity $1000.00" in msg
 
     def test_long_position_unrealized_profit(self, caplog):
-        """LONG 포지션 + 가격 상승 → unrealized 양수, equity 증가."""
+        """LONG 포지션 + 가격 상승 → unrealized_pnl 양수, equity 증가 (I-BLE006 형식)."""
         from unittest.mock import MagicMock
         from src.core.enums import PositionSide
         from src.core.types import Position
@@ -329,13 +333,13 @@ class TestAccountStatusLog:
             CoreEngine._log_account_status(engine, 1000.0, 67100.0)
         msg = caplog.records[-1].message
         # (67100-67000) × 0.05 = 5.00
-        assert "unrealized=+5.00" in msg
+        assert "unrealized_pnl=+$5.00" in msg
         # equity = 1000 + 5 = 1005.00
         assert "equity=$1005.00" in msg
-        assert "daily_pnl=+5.30" in msg
+        assert "daily_pnl=+$5.30" in msg
 
     def test_drawdown_pct_calculation(self, caplog):
-        """peak_equity 대비 dd% 계산 정확성."""
+        """peak_equity 대비 dd 절대값 계산 정확성 (I-BLE006: % 제거, $ 표기)."""
         from unittest.mock import MagicMock
         from src.risk.manager import RiskManager
 
@@ -351,10 +355,12 @@ class TestAccountStatusLog:
         with caplog.at_level(logging.INFO, logger="src.live.engine"):
             CoreEngine._log_account_status(engine, 990.0, 67000.0)
         msg = caplog.records[-1].message
-        # dd = (1100 - 990) / 1100 = 10.00%
-        assert "dd=10.00%" in msg
-        assert "balance=$990.00" in msg
-        assert "daily_pnl=-50.00" in msg
+        # dd = peak - equity = 1100 - 990 = 110.00 (음수 텍스트로 표기)
+        assert "dd=-$110.00" in msg
+        assert "current_balance=$990.00" in msg
+        assert "daily_pnl=-$50.00" in msg
+        # vs peak equity 표기
+        assert "vs peak equity $1100.00" in msg
 
 
 class TestAbstractEngineDefaultNoOp:
@@ -557,7 +563,7 @@ class TestBLE71ConfClassLabel:
 
 
 class TestBLE71AccountRiskDistance:
-    """BLE-7-1: _log_account_status 의 daily 한도/DD 락 거리 출력 검증."""
+    """BLE-7-1 / I-BLE006: _log_account_status 의 daily 한도/DD 락 거리 + peak equity 검증."""
 
     def test_account_risk_distances(self, caplog):
         from src.risk.manager import RiskManager
@@ -569,7 +575,7 @@ class TestBLE71AccountRiskDistance:
         }})
         rm.set_initial_balance(3500.0)
         rm.peak_equity = 3500.0
-        rm.daily_pnl = -50.0  # 일일 -$50, 한도 -$175 → 28.6% reached
+        rm.daily_pnl = -50.0  # 일일 -$50
 
         # _log_account_status 직접 호출 — self.risk_manager + self._position 만 사용
         class _Stub:
@@ -578,17 +584,19 @@ class TestBLE71AccountRiskDistance:
         with caplog.at_level(logging.INFO, logger="src.live.engine"):
             CoreEngine._log_account_status(_Stub(), 3450.0, 80000.0)
         msg = caplog.records[-1].message
-        # daily 한도: 3450 × 0.05 = 172.50
-        assert "limit -$172.50" in msg
-        # daily reached: |-50/-172.5| = 29% (반올림)
-        assert "29% reached" in msg or "28% reached" in msg
-        # DD 락 한도: 3500 × 0.35 = 1225.00
+        # I-BLE006: daily 한도 = config max_daily_loss_pct (5%) + balance×5%
+        # current_balance=3450 × 0.05 = $172.50
+        assert "limit -5%" in msg
+        assert "-$172.50" in msg
+        # DD 락 한도: 3500 × 0.35 = $1225.00
         assert "lock -35%" in msg
         assert "-$1225.00" in msg
-        # equity = 3450 + 0 = 3450, dd = (3500-3450)/3500 = 1.43%
-        assert "dd=1.43%" in msg
-        # dd 절대값: 3500-3450 = 50.00
-        assert "-$50.00" in msg
+        # I-BLE006: dd 절대값만 표기 ($), % 제거. peak-equity = 3500-3450 = 50.00
+        assert "dd=-$50.00" in msg
+        # I-BLE006: peak equity 표기
+        assert "vs peak equity $3500.00" in msg
+        # daily_pnl I-BLE006 형식
+        assert "daily_pnl=-$50.00" in msg
 
 
 class TestIBLE005BarContextAndTotal:
@@ -657,7 +665,11 @@ class TestIBLE005BarContextAndTotal:
         assert CoreEngine._build_bar_context(CoreEngine, df_one, 80000.0) is None
 
     def test_account_log_includes_total_vs_initial(self, caplog):
-        """I-BLE005: ACCOUNT 로그에 total=±$X.XX / ±Y.YY% (vs initial $Z.ZZ) 라인 포함."""
+        """I-BLE005 / I-BLE006: ACCOUNT 로그에 total_balance_diff + initial_balance 라인 영역.
+
+        I-BLE006: total 라인은 'total_balance_diff=+$X.XX (+Y.YY%)' 형식, initial 영역은
+        첫 라인 (initial_balance=$Z.ZZ) 으로 이동.
+        """
         from src.risk.manager import RiskManager
         rm = RiskManager({"risk": {"max_daily_loss_pct": 0.05, "max_drawdown_pct": 0.35}})
         rm.set_initial_balance(5159.87)
@@ -670,8 +682,25 @@ class TestIBLE005BarContextAndTotal:
         with caplog.at_level(logging.INFO, logger="src.live.engine"):
             CoreEngine._log_account_status(_Stub(), 5260.46, 73000.0)
         msg = caplog.records[-1].message
-        # total = 5260.46 - 5159.87 = +100.59
-        assert "total=+100.59" in msg
+        # I-BLE006: total = 5260.46 - 5159.87 = +100.59, $ 표기
+        assert "total_balance_diff=+$100.59" in msg
         # total_pct = 100.59 / 5159.87 × 100 = +1.95%
-        assert "+1.95%" in msg
-        assert "vs initial $5159.87" in msg
+        assert "(+1.95%)" in msg
+        # I-BLE006: initial 은 첫 라인으로 이동
+        assert "initial_balance=$5159.87" in msg
+        assert "current_balance=$5260.46" in msg
+        # I-BLE006: dd 영역에 peak equity 표기
+        assert "vs peak equity $5320.57" in msg
+
+    def test_fmt_dollar_helper_signed_format(self):
+        """I-BLE006: _fmt_dollar 부호+$+절대값 형식 검증."""
+        from src.live.engine import _fmt_dollar
+        assert _fmt_dollar(0.0) == "+$0.00"
+        assert _fmt_dollar(100.59) == "+$100.59"
+        assert _fmt_dollar(-5.30) == "-$5.30"
+        # -0.0 → +$0.00 (Python: -0.0 >= 0 True)
+        assert _fmt_dollar(-0.0) == "+$0.00"
+        # 큰 음수
+        assert _fmt_dollar(-1234.56) == "-$1234.56"
+        # 소수 영역 round
+        assert _fmt_dollar(1.005) == "+$1.00" or _fmt_dollar(1.005) == "+$1.01"
