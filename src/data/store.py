@@ -234,14 +234,28 @@ class DataStore:
         entry_order_id: str | None,
         exit_order_id: str | None,
         synced_at: str,
+        size: float | None = None,
+        funding_fee: float | None = None,
+        pnl_pct: float | None = None,
+        closed_at: str | None = None,
     ) -> None:
-        """OKX 실값 기반 trade 갱신 + synced_at 기록."""
+        """OKX 실값 기반 trade 갱신 + synced_at 기록.
+
+        I-BLE007: positions-history 영역 직접 사용 영역 영역 — size, funding_fee, pnl_pct,
+        closed_at 영역 신규 인자. 기존 영역 (BLE-6-1) 호환 위해 None 기본값.
+        """
+        # I-BLE007: size/funding_fee/pnl_pct/closed_at 영역 None 영역이면 기존 값 유지 (COALESCE)
         await self._db.execute(
             """UPDATE trades SET entry_price=?, exit_price=?, trading_fee=?, pnl=?,
+               size=COALESCE(?, size),
+               funding_fee=COALESCE(?, funding_fee),
+               pnl_pct=COALESCE(?, pnl_pct),
+               closed_at=COALESCE(?, closed_at),
                entry_order_id=COALESCE(entry_order_id, ?),
                exit_order_id=COALESCE(exit_order_id, ?),
                synced_at=? WHERE id=?""",
             (entry_price, exit_price, trading_fee, pnl,
+             size, funding_fee, pnl_pct, closed_at,
              entry_order_id, exit_order_id, synced_at, trade_id),
         )
         await self._db.commit()

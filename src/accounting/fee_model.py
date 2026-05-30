@@ -72,13 +72,18 @@ class FeeModel:
         fees: float = 0.0,
         funding: float = 0.0,
     ) -> dict[str, float]:
+        """I-BLE007: funding 영역 의미 영역 *holder net 영향* 영역으로 정정.
+        - 양수 funding: 수익 (가산) — short 영역의 positive funding rate 영역 등
+        - 음수 funding: 비용 (차감) — long 영역의 positive funding rate 영역 등
+        net = gross - fees + funding (funding 부호 그대로 가산)
+        """
         if side == PositionSide.LONG:
             gross = (exit_price - entry_price) * size
         elif side == PositionSide.SHORT:
             gross = (entry_price - exit_price) * size
         else:
             gross = 0.0
-        net = gross - fees - funding
+        net = gross - fees + funding
         notional = entry_price * size
         pct = (net / notional * 100.0) if notional > 0 else 0.0
         return {

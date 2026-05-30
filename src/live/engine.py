@@ -1111,13 +1111,18 @@ class CoreEngine(AbstractEngine):
         )
 
     async def _fetch_funding_since_entry(self) -> float:
+        """OKX fetch_funding_history 영역 amount 의 *holder net 영향* 영역 합산.
+
+        I-BLE007: abs() 영역 제거 — funding 부호 영역 그대로 보존 (양수=수익, 음수=비용).
+        calc_pnl 영역 영역 `net = gross - fees + funding` 영역 영역 일관 영역.
+        """
         if self._position is None or self._position.entry_time is None:
             return 0.0
         try:
             records = await self.broker.fetch_funding_history(
                 since=self._position.entry_time.isoformat(),
             )
-            return sum(abs(float(r.get("amount", 0))) for r in records)
+            return sum(float(r.get("amount", 0)) for r in records)
         except Exception as e:
             logger.warning("fetch_funding_history failed: %s", e)
             return 0.0
