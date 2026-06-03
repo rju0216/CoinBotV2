@@ -289,16 +289,28 @@ BAR_CLOSED 이벤트
 7. `EventBus.publish(POSITION_CLOSED)` — `CoreEngine`이 subscribe해서
    notifier 로 EXIT 알림 송신 (plain text, I-BL014 회귀 방지)
 
-**라이브 전용 후속** (`CoreEngine._close_with_funding`, BLE-6-1):
+**라이브 전용 후속** (`CoreEngine._close_with_funding`, BLE-6-1 + I-BLE007):
 8. `sync_all_unsynced(broker, data_store, symbol)` 호출 — 미sync trade batch 처리:
    - DB 의 `synced_at IS NULL` 미sync trade 조회
-   - ccxt `fetch_my_trades` 1회 호출 (since = earliest_ts - 60s margin)
-   - order_id 별 그룹화 + aggregate (다중 fill 대비, volume-weighted avg + fee USDT 합산)
-   - id 우선 매칭 (entry/exit_order_id) → fallback 시간/방향/size(±0.005 BTC)/reduceOnly
-   - 매칭 성공 시 OKX 실값으로 `trades.entry_price/exit_price/trading_fee/pnl` UPDATE + `synced_at`
-   - 매칭 실패 시 WARNING + `synced_at NULL 유지` → 다음 시점 재시도
+   - **`_fetch_all_positions`** (I-BLE007): ccxt `fetch_positions_history` 호출 (since = earliest_ts - 60s)
+   - **`_fetch_all_fills`** (I-BLE002): ccxt `fetch_my_trades` pagination (entry/exit_order_id 매칭용)
+   - `_match_trade_to_position`: `trade.closed_at vs position.uTime ±15분 + side + size ±0.005 BTC` (I-BLE007 — 외부 청산 시점 vs 라이브 인지 시점 차이 흡수)
+   - 매칭 성공 시 **OKX positions-history 영역 직접 사용** (I-BLE007):
+     - `pnl = realizedPnl` (net realized PnL, gross - fees + funding 영역 정확)
+     - `funding_fee = fundingFee` (부호 그대로 — 양수=수익, 음수=비용)
+     - `entry_price = openAvgPx`, `exit_price = closeAvgPx`
+     - `size = closeTotalPos × contract_size`
+     - `trading_fee = |fee|`
+     - `closed_at = uTime`
+     - `pnl_pct = realizedPnl / (openAvgPx × size_btc) × 100` (net 기준 수식)
+     - `entry_order_id / exit_order_id`: DB 기존 값 우선 + fills 영역 fallback
+   - 매칭 실패 시 WARNING + 진단 로그 (I-BLE004 영역 — by_order 후보 검색) + `synced_at NULL 유지`
+9. `synced_count > 0` 시 **메모리 `daily_pnl` 재정렬** (I-BLE001 ④):
+   - `daily_pnl = await data_store.get_daily_pnl()` 호출
+   - DB OKX 실값 합산값으로 메모리 갱신 → close_position 시점 추정값과 어긋남 자동 정정
+   - INFO 로그: `[RiskManager] daily_pnl recalibrated after sync: $A → $B (Δ=ΔX, OKX 실값 반영)`
 
-→ **단계 5 의 메모리 `daily_pnl` 은 엔진 추정값**, 단계 8 의 sync 가 DB 의 `trades.pnl` 만 OKX 실값으로 갱신 — *메모리와 DB 어긋남* (I-BLE001 fix 예정 영역).
+→ **단계 5 의 메모리 `daily_pnl`** (엔진 추정, `calc_pnl` 수식 영역 = `gross - fees + funding`) 과 **단계 8/9 의 sync 후 DB 영역** (OKX `realizedPnl` 직접) 영역 *수학적 일치* → Δ ≈ 0 (~$0.02 round, I-BLE007 funding 부호 fix 효과).
 
 ### 5.4 재시작 복원 — `_restore_state` (라이브 전용)
 

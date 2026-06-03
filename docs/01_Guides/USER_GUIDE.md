@@ -396,7 +396,7 @@ LONG/SHORT 모두 동일 동작.
 
 ### 6.6 라이브 운영 모니터링 로그
 
-15m 봉 마감마다 자동 출력 (master_timeframe 기준). BLE-7-1 보강 후 멀티라인 + `conf=H:0.92` 형식 (probs argmax class label) + sub_probs / bar 컨텍스트 / 위험 한도 거리 / SL·TP 거리 추가:
+15m 봉 마감마다 자동 출력 (master_timeframe 기준). BLE-7-1 + I-BLE001/005/006 갱신 후 형식:
 
 ```
 [SIGNAL] ensemble HOLD probs=[S:0.05 H:0.92 L:0.03] conf=H:0.92 threshold=0.55
@@ -404,20 +404,32 @@ LONG/SHORT 모두 동일 동작.
          sub_probs={ml_lightgbm:[S:0.04 H:0.93 L:0.03] ml_xgboost:[...] dl_lstm:[...] dl_transformer:[...]}
          bar=80050.00 (Δ-0.12% prev) range=0.15%
 
-[ACCOUNT] balance=$X.XX equity=$X.XX unrealized=+/-$X.XX
-          daily_pnl=+/-$X.XX (limit -$XXX.XX / N% reached)
-          dd=X.XX% / -$X.XX (lock -35% / -$XXXX.XX, N% reached)
+[ACCOUNT] initial_balance=$5159.87 current_balance=$5260.46 equity=$5260.46 unrealized_pnl=+$0.00
+          total_balance_diff=+$100.59 (+1.95%)
+          daily_pnl=+$0.00 (limit -5% / -$263.02)
+          dd=-$60.11 (lock -35% / -$1862.20, vs peak equity $5320.57)
 
 [POSITION] ensemble LONG/SHORT size=... entry=... current=...
            unrealized_pnl=+/-X.XX (XhYZm held)
            SL=XXXXX.XX (-X.XX% from current) TP=XXXXX.XX (+X.XX%)
 ```
 
-핵심 정보:
+라이브 재시작 직후 1회 출력 (I-BLE001):
+```
+[RiskManager] daily_pnl restored from DB: $X.XX (today=YYYY-MM-DD UTC)
+```
+오늘 (UTC 자정 기준 = KST 09:00) 영역 누적 daily_pnl 복원. 재시작 후 첫 [ACCOUNT] 영역 영역 일치.
+
+[SIGNAL] 핵심 정보:
 - `conf=H:0.92` 의 **H/S/L** = probs argmax class label. `signal.side` 와 다를 수 있음 (threshold 미달 시 argmax=L 이어도 signal=HOLD, 그때 `conf=L:0.55` 표기). 직관 해석용
 - `sub_probs` = 4 sub-plugin 별 probs — 변동 출처 모델 식별 (ensemble 만 표기, 단일 모델 plugin 은 미포함)
-- `daily_pnl (... reached)` = 일일 손실 한도까지 도달 % (% 기준 `risk.max_daily_loss_pct`, 자동 확장)
-- `dd ... (lock ...)` = peak 대비 drawdown + 한도 (`risk.max_drawdown_pct`) 거리 절대값/도달%
+- **`bar=` = *직전 마감 봉의 close* + `Δ%` = 그 직전 봉 대비 + `range%` = 직전 봉의 변동폭** (I-BLE005). 진입 가격은 별도 ENTRY 로그에 표기
+
+[ACCOUNT] 핵심 정보 (I-BLE006 4라인 구조):
+- 1라인: **initial_balance** (DB bot_meta) / **current_balance** (현재 잔액) / **equity** (balance+unrealized) / **unrealized_pnl** (보유 포지션 미실현)
+- 2라인: **total_balance_diff** = current - initial / (vs initial 누적 손익 %)
+- 3라인: **daily_pnl** + `(limit -X% / -$Y.YY)` — limit X% = `risk.max_daily_loss_pct` config 값, $Y.YY = balance×X%
+- 4라인: **dd** = peak 대비 drawdown 절대값 ($) + `(lock -35% / -$Z.ZZ, vs peak equity $W.WW)` — 한도 = `risk.max_drawdown_pct`
 
 진입/청산 발생 시 추가:
 ```
@@ -428,7 +440,13 @@ INFO  TP set: sell/buy XX contracts @ XXXX.XX
 ... (보유 중) ...
 INFO  close_position skipped: exchange position already closed (SL/TP triggered or external close)  # I-BL010 효과
 INFO  [EXIT [ensemble] sl_hit/tp_hit] net_pnl=$+/-XX.XX | meta={...}
+INFO  Trade sync: 1 synced, 0 failed (errors=0)                                         # I-BLE002/004/007
+INFO  [RiskManager] daily_pnl recalibrated after sync: $A → $B (Δ=ΔX, OKX 실값 반영)    # I-BLE001 + 007
 ```
+
+sync 로그 해석 (I-BLE007 갱신):
+- `Trade sync: N synced, M failed` — OKX `positions-history` 영역에서 N건 trade 매칭 + DB UPDATE 성공 (pnl, funding_fee, entry/exit_price, size, trading_fee, closed_at 모두 OKX 실값). M 건 실패 시 후보 진단 로그 추가 (I-BLE004)
+- `recalibrated $A → $B (Δ=ΔX)` — close_position 시점 메모리 추정 ($A) → sync 후 DB OKX 실값 합산 ($B). **Δ ≈ 0 (~$0.02 round) 이 정상** — calc_pnl 수식 영역과 OKX realizedPnl 수학적 일치. 큰 차이 (~$1+) 발생 시 점검 영역
 
 ### 6.7 텔레그램 알림 종류
 
