@@ -13,7 +13,12 @@ import pytest
 
 from src.core.enums import PositionSide, SignalSide
 from src.core.types import Position, Signal
-from src.live.engine import CoreEngine
+from src.live.engine import (
+    CoreEngine,
+    _build_entry_message,
+    _build_exit_message,
+    _fmt_hold,
+)
 
 
 class _StubStrategy:
@@ -704,3 +709,93 @@ class TestIBLE005BarContextAndTotal:
         assert _fmt_dollar(-1234.56) == "-$1234.56"
         # 소수 영역 round
         assert _fmt_dollar(1.005) == "+$1.00" or _fmt_dollar(1.005) == "+$1.01"
+
+
+class TestBLE72TelegramMessages:
+    """BLE-7-2: 텔레그램 ENTRY/EXIT 알림 본문 보강 (콘솔 로그 일관 + I-BL014 plain text)."""
+
+    LONG = PositionSide.LONG.value
+    SHORT = PositionSide.SHORT.value
+
+    def _pos(self, **kw):
+        base = dict(
+            side=PositionSide.LONG,
+            size=0.0149,
+            entry_price=67100.0,
+            entry_time=datetime(2026, 5, 9, 0, 0, tzinfo=timezone.utc),
+            strategy_name="ensemble",
+            stop_loss=66500.0,
+            take_profit=68000.0,
+        )
+        base.update(kw)
+        return Position(**base)
+
+    # ── ENTRY ──
+    def test_entry_message_includes_sl_tp_distance(self):
+        msg = _build_entry_message(self._pos())
+        # 1라인: side size @ entry
+        assert msg.startswith(f"{self.LONG} 0.0149 @ 67100.00")
+        # SL Δ% (entry 대비): (66500-67100)/67100 = -0.894%
+        assert "SL=66500.00 (-0.89%)" in msg
+        # TP Δ% (entry 대비): (68000-67100)/67100 = +1.341%
+        assert "TP=68000.00 (+1.34%)" in msg
+
+    def test_entry_message_sl_tp_none_omitted(self):
+        """orphan 등 SL/TP None → 해당 부분 생략, 에러 없음."""
+        msg = _build_entry_message(self._pos(stop_loss=None, take_profit=None))
+        assert "SL=" not in msg
+        assert "TP=" not in msg
+        # 1라인만 (개행 없음)
+        assert "\n" not in msg
+
+    # ── EXIT ──
+    def test_exit_message_full(self):
+        pos = self._pos()
+        closed_at = datetime(2026, 5, 9, 1, 32, tzinfo=timezone.utc)  # 1h32m held
+        msg = _build_exit_message(
+            pos, 13.41, exit_price=68000.0, pnl_pct=1.34, closed_at=closed_at,
+        )
+        # entry → exit 가격
+        assert f"{self.LONG} 0.0149 @ 67100.00 → 68000.00" in msg
+        # net_pnl + pnl% (부호 + $ + %)
+        assert "net_pnl=+$13.41 (+1.34%)" in msg
+        # 보유 시간
+        assert "1h32m held" in msg
+
+    def test_exit_message_negative_pnl_plain_text(self):
+        """I-BL014 회귀: 음수 pnl + 특수문자 plain text 안전 (Markdown 데코 없음)."""
+        pos = self._pos()
+        closed_at = datetime(2026, 5, 9, 0, 45, tzinfo=timezone.utc)
+        msg = _build_exit_message(
+            pos, -40.71, exit_price=66500.0, pnl_pct=-0.91, closed_at=closed_at,
+        )
+        assert "net_pnl=-$40.71 (-0.91%)" in msg
+        assert "→ 66500.00" in msg
+        assert "0h45m held" in msg
+        # Markdown 데코 패턴 없음 (parse_mode 미사용이라 `_`/`*` 단독 문자는 안전 —
+        # net_pnl 의 `_` 등 정상 텍스트. 검증 대상은 데코 패턴 `*...*` / `` `...` ``)
+        assert "*" not in msg
+        assert "`" not in msg
+
+    def test_exit_message_missing_keys_graceful(self):
+        """구버전 payload·orphan: exit_price/pnl_pct/closed_at None → 생략, net_pnl만."""
+        msg = _build_exit_message(self._pos(), -5.0)
+        assert "net_pnl=-$5.00" in msg
+        # exit 가격·pnl%·hold 생략
+        assert "→" not in msg
+        assert "%" not in msg
+        assert "held" not in msg
+
+    # ── _fmt_hold helper ──
+    def test_fmt_hold_format(self):
+        assert _fmt_hold(0) == "0h00m"
+        assert _fmt_hold(60) == "0h01m"
+        assert _fmt_hold(3600) == "1h00m"
+        assert _fmt_hold(5520) == "1h32m"      # 1h32m
+        assert _fmt_hold(45 * 60) == "0h45m"
+
+    def test_fmt_hold_negative(self):
+        """I-BLE008: 음수 hold (orphan entry_time=now 등 이상 case) 정확 표기."""
+        assert _fmt_hold(-6720) == "-1h52m"
+        assert _fmt_hold(-450) == "-0h07m"
+        assert _fmt_hold(-3600) == "-1h00m"

@@ -407,6 +407,28 @@ class TestMatcher:
         pos = {"side": PositionSide.LONG, "size": 0.1, "entry_price": 67000}
         assert CoreEngine._match_trade_to_exchange([], pos) is None
 
+    def test_match_contract_truncation(self):
+        """I-BLE008: DB full-precision vs 거래소 contract 절삭 (Trade 25 재현).
+
+        DB 0.06907371 (6.9074 contracts) vs 거래소 0.069 (6.9 contracts),
+        차이 7.37e-5 < tolerance 0.005 → 매칭 성공 (기존 1e-6 으론 orphan 오복원).
+        """
+        pos = {"side": PositionSide.SHORT, "size": 0.069, "entry_price": 67129.7}
+        trades = [_fake_trade(id=25, side="short", size=0.06907371422913794)]
+        assert CoreEngine._match_trade_to_exchange(trades, pos)["id"] == 25
+
+    def test_match_boundary_within_tolerance(self):
+        """경계: 차이 정확히 0.005 → 매칭 성공 (<= 경계)."""
+        pos = {"side": PositionSide.LONG, "size": 0.105, "entry_price": 67000}
+        trades = [_fake_trade(id=1, side="long", size=0.1)]
+        assert CoreEngine._match_trade_to_exchange(trades, pos)["id"] == 1
+
+    def test_no_match_just_over_tolerance(self):
+        """경계: 차이 0.0051 (> 0.005) → None."""
+        pos = {"side": PositionSide.LONG, "size": 0.1051, "entry_price": 67000}
+        trades = [_fake_trade(id=1, side="long", size=0.1)]
+        assert CoreEngine._match_trade_to_exchange(trades, pos) is None
+
 
 class TestBarDeduplication:
     """I-005: watch_ohlcv 진행 중 봉 재발행에 대한 중복 처리 차단."""

@@ -83,6 +83,64 @@ def _fmt_dollar(value: float) -> str:
     return f"{sign}${abs(value):.2f}"
 
 
+def _fmt_hold(seconds: float) -> str:
+    """BLE-7-2: 보유 시간 포맷 (XhYYm). [POSITION] 로그 + EXIT 알림 공유 (DRY).
+
+    I-BLE008: 음수 방어 — abs + 부호 prefix 로 정확 표기 (-1h52m). 정상 매칭 시
+    음수는 발생 안 하나, orphan(entry_time=now) 등 이상 case 에서 floor division
+    오표기 방지. 음수 hold 자체가 이상 신호이므로 0 clamp 대신 정확 표기.
+    """
+    neg = seconds < 0
+    s = abs(int(seconds))
+    return f"{'-' if neg else ''}{s // 3600}h{(s % 3600) // 60:02d}m"
+
+
+def _build_entry_message(pos) -> str:
+    """BLE-7-2: ENTRY 텔레그램 본문 — 콘솔 [POSITION] 수준 정보량.
+
+    SL/TP Δ% 는 entry_price 대비 (진입 시점 기준; 콘솔 [POSITION]은 current 대비).
+    SL/TP 가 None (orphan 등) 이면 해당 부분 생략. plain text (I-BL014 유지).
+
+    샘플:
+      LONG 0.0149 @ 67100.00
+      SL=66500.00 (-0.89%) TP=68000.00 (+1.34%)
+    """
+    msg = f"{pos.side.value} {pos.size:.4f} @ {pos.entry_price:.2f}"
+    parts = []
+    if pos.stop_loss is not None and pos.entry_price > 0:
+        sl_delta = (pos.stop_loss - pos.entry_price) / pos.entry_price * 100
+        parts.append(f"SL={pos.stop_loss:.2f} ({sl_delta:+.2f}%)")
+    if pos.take_profit is not None and pos.entry_price > 0:
+        tp_delta = (pos.take_profit - pos.entry_price) / pos.entry_price * 100
+        parts.append(f"TP={pos.take_profit:.2f} ({tp_delta:+.2f}%)")
+    if parts:
+        msg += "\n" + " ".join(parts)
+    return msg
+
+
+def _build_exit_message(pos, pnl, exit_price=None, pnl_pct=None, closed_at=None) -> str:
+    """BLE-7-2: EXIT 텔레그램 본문 — entry→exit 가격 / net_pnl / pnl% / 보유 시간.
+
+    exit_price / pnl_pct / closed_at 는 POSITION_CLOSED payload 신규 키 (BLE-7-2).
+    None 이면 해당 부분 생략 (구버전 payload·orphan 안전). plain text (I-BL014 유지).
+
+    샘플:
+      LONG 0.0149 @ 67100.00 → 68000.00
+      net_pnl=+$13.41 (+1.34%) | 1h32m held
+    """
+    line1 = f"{pos.side.value} {pos.size:.4f} @ {pos.entry_price:.2f}"
+    if exit_price is not None:
+        line1 += f" → {exit_price:.2f}"
+    pnl_str = _fmt_dollar(pnl)
+    if pnl_pct is not None:
+        pnl_str += f" ({pnl_pct:+.2f}%)"
+    line2 = f"net_pnl={pnl_str}"
+    if closed_at is not None and pos.entry_time is not None:
+        held = (closed_at - pos.entry_time).total_seconds()
+        line2 += f" | {_fmt_hold(held)} held"
+    return f"{line1}\n{line2}"
+
+
 def _candles_to_df(candles: list) -> pd.DataFrame:
     if not candles:
         return pd.DataFrame(
@@ -371,10 +429,11 @@ class CoreEngine(AbstractEngine):
         async def _on_position_opened(pos):
             if not levels.get("position_open", True):  # V'' 사용자 결정으로 default true
                 return
+            # BLE-7-2: SL/TP 가격 + entry 대비 Δ% 보강 (_build_entry_message)
             await self.notifier.send(
                 "INFO",
                 f"ENTRY [{pos.strategy_name}]",
-                f"{pos.side.value} {pos.size:.4f} @ {pos.entry_price:.2f}",
+                _build_entry_message(pos),
                 strategy=pos.strategy_name,
                 side=pos.side.value,
                 size=pos.size,
@@ -389,10 +448,16 @@ class CoreEngine(AbstractEngine):
             reason = data.get("reason", "")
             if pos is None:
                 return
+            # BLE-7-2: entry→exit 가격 / pnl% / 보유 시간 보강 (_build_exit_message)
             await self.notifier.send(
                 "INFO",
                 f"EXIT [{pos.strategy_name}] {reason}",
-                f"net_pnl=${pnl:.2f}",
+                _build_exit_message(
+                    pos, pnl,
+                    exit_price=data.get("exit_price"),
+                    pnl_pct=data.get("pnl_pct"),
+                    closed_at=data.get("closed_at"),
+                ),
                 strategy=pos.strategy_name,
                 pnl=pnl,
                 reason=reason,
@@ -844,7 +909,16 @@ class CoreEngine(AbstractEngine):
     def _match_trade_to_exchange(
         open_trades: list[dict], exchange_pos: dict
     ) -> dict | None:
-        """거래소 포지션과 DB open trade 매칭: side + size 기준."""
+        """거래소 포지션과 DB open trade 매칭: side + size 기준.
+
+        I-BLE008: size tolerance 를 trade_sync.SIZE_TOLERANCE_BTC (0.005 = 0.5
+        contract) 로 완화. DB size 는 사이징 공식 full precision (예 0.06907371),
+        거래소 체결은 contract 단위 절삭 (예 0.069) 이라 구조적으로 ~7e-5 차이 →
+        기존 1e-6 tolerance 로는 정상 포지션이 orphan 으로 오복원됨.
+        max_concurrent_positions=1 이라 side+size 로 사실상 유일 (첫 매칭 반환).
+        trade_sync 의 sync 매칭과 동일 tolerance 로 일관 (DRY).
+        """
+        from src.live.trade_sync import SIZE_TOLERANCE_BTC
         ex_side: PositionSide = exchange_pos["side"]
         ex_size = float(exchange_pos["size"])
         for trade in open_trades:
@@ -852,7 +926,10 @@ class CoreEngine(AbstractEngine):
                 trade_side = PositionSide(trade["side"])
             except ValueError:
                 continue
-            if trade_side == ex_side and abs(float(trade["size"]) - ex_size) < 1e-6:
+            if (
+                trade_side == ex_side
+                and abs(float(trade["size"]) - ex_size) <= SIZE_TOLERANCE_BTC
+            ):
                 return trade
         return None
 
@@ -1239,8 +1316,6 @@ class CoreEngine(AbstractEngine):
         """
         from src.core.enums import PositionSide
         hold_seconds = (now - position.entry_time).total_seconds()
-        hold_h = int(hold_seconds // 3600)
-        hold_m = int((hold_seconds % 3600) // 60)
 
         if position.side == PositionSide.LONG:
             unrealized = (current_price - position.entry_price) * position.size
@@ -1265,10 +1340,10 @@ class CoreEngine(AbstractEngine):
 
         logger.info(
             "[POSITION] %s %s size=%.4f entry=%.2f current=%.2f"
-            "\n           unrealized_pnl=%+.2f (%dh%02dm held)%s\n",
+            "\n           unrealized_pnl=%+.2f (%s held)%s\n",
             position.strategy_name, position.side.value.upper(), position.size,
             position.entry_price, current_price,
-            unrealized, hold_h, hold_m, sl_tp_str,
+            unrealized, _fmt_hold(hold_seconds), sl_tp_str,
         )
 
     def _log_account_status(self, balance, current_price) -> None:

@@ -671,7 +671,16 @@ class AbstractEngine(ABC):
 
         await self.event_bus.publish(
             EventType.POSITION_CLOSED.value,
-            {"position": pos, "pnl": net_pnl, "reason": reason.value},
+            # BLE-7-2: 텔레그램 EXIT 알림 보강용 키 추가 (exit_price/pnl_pct/closed_at).
+            # 키 추가만이라 기존 구독자 영향 0, 백테/페이퍼 무영향.
+            {
+                "position": pos,
+                "pnl": net_pnl,
+                "reason": reason.value,
+                "exit_price": exit_price,
+                "pnl_pct": pnl_result["pnl_pct"],
+                "closed_at": now,
+            },
         )
         logger.info(
             "EXIT[%s]: %s @ %.2f, reason=%s, net_pnl=$%.2f, fees=$%.2f",
