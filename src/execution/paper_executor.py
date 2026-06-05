@@ -165,6 +165,10 @@ class PaperExecutor:
     ) -> dict:
         return {"type": "take_profit", "side": side.value, "price": trigger_price}
 
+    async def fetch_open_algo_orders(self) -> list[dict]:
+        # paper는 거래소 algo order 없음 (SL/TP 판정은 엔진 책임). 인터페이스 호환만.
+        return []
+
     async def cancel_all_orders(self) -> None:
         return None
 

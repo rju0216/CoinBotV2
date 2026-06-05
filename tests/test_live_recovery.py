@@ -439,14 +439,11 @@ class TestVerifyAndRestoreSLTP:
                 self.broker.is_live = True
                 self.broker.place_stop_loss = AsyncMock()
                 self.broker.place_take_profit = AsyncMock()
-                executor = MagicMock()
-                executor.exchange = MagicMock()
-                # 거래소에 SL/TP 둘 다 살아있음
-                executor.exchange.fetch_open_orders = AsyncMock(return_value=[
+                # I-BLE009: algo order 조회 — 거래소에 SL/TP 둘 다 살아있음
+                self.broker.fetch_open_algo_orders = AsyncMock(return_value=[
                     {"info": {"slTriggerPx": "81700.0"}},
                     {"info": {"tpTriggerPx": "83000.0"}},
                 ])
-                self.broker.executor = executor
                 self.config = {"exchange": {"symbol": "BTC/USDT:USDT"}}
 
         engine = _MockEngine()
@@ -473,13 +470,10 @@ class TestVerifyAndRestoreSLTP:
                 self.broker.is_live = True
                 self.broker.place_stop_loss = AsyncMock()
                 self.broker.place_take_profit = AsyncMock()
-                executor = MagicMock()
-                executor.exchange = MagicMock()
-                # SL 누락 (TP만 있음)
-                executor.exchange.fetch_open_orders = AsyncMock(return_value=[
+                # I-BLE009: algo order 조회 — SL 누락 (TP만 있음)
+                self.broker.fetch_open_algo_orders = AsyncMock(return_value=[
                     {"info": {"tpTriggerPx": "83000.0"}},
                 ])
-                self.broker.executor = executor
                 self.config = {"exchange": {"symbol": "BTC/USDT:USDT"}}
 
         engine = _MockEngine()
@@ -505,12 +499,10 @@ class TestVerifyAndRestoreSLTP:
                 self.broker.is_live = True
                 self.broker.place_stop_loss = AsyncMock()
                 self.broker.place_take_profit = AsyncMock()
-                executor = MagicMock()
-                executor.exchange = MagicMock()
-                executor.exchange.fetch_open_orders = AsyncMock(
+                # I-BLE009: algo order 조회 실패 → 재등록 시도 안 함
+                self.broker.fetch_open_algo_orders = AsyncMock(
                     side_effect=Exception("API error")
                 )
-                self.broker.executor = executor
                 self.config = {"exchange": {"symbol": "BTC/USDT:USDT"}}
 
         engine = _MockEngine()
@@ -518,3 +510,33 @@ class TestVerifyAndRestoreSLTP:
         await engine._verify_and_restore_sl_tp()
         assert not engine.broker.place_stop_loss.called
         assert not engine.broker.place_take_profit.called
+
+
+class TestIBLE009AlgoOrderFetch:
+    """I-BLE009: fetch_open_algo_orders — conditional algo endpoint 조회 보장."""
+
+    @pytest.mark.asyncio
+    async def test_live_executor_uses_conditional_params(self):
+        """LiveExecutor.fetch_open_algo_orders 가 params={'ordType':'conditional'}
+        로 fetch_open_orders 를 호출 → OKX orders-algo-pending endpoint 보장."""
+        from src.execution.live_executor import LiveExecutor
+
+        ex = LiveExecutor.__new__(LiveExecutor)  # __init__(ccxt) 우회
+        ex.symbol = "BTC/USDT:USDT"
+        ex.exchange = MagicMock()
+        ex._call = AsyncMock(return_value=[{"info": {"slTriggerPx": "81700.0"}}])
+
+        result = await ex.fetch_open_algo_orders()
+        assert result == [{"info": {"slTriggerPx": "81700.0"}}]
+        ex._call.assert_awaited_once_with(
+            ex.exchange.fetch_open_orders, "BTC/USDT:USDT",
+            params={"ordType": "conditional"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_paper_executor_returns_empty(self):
+        """PaperExecutor 는 거래소 algo order 없음 → []."""
+        from src.execution.paper_executor import PaperExecutor
+
+        pe = PaperExecutor.__new__(PaperExecutor)
+        assert await pe.fetch_open_algo_orders() == []

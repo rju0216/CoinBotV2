@@ -91,6 +91,9 @@ class Broker:
     ) -> dict:
         return await self._executor.place_take_profit(side, trigger_price, size)
 
+    async def fetch_open_algo_orders(self) -> list[dict]:
+        return await self._executor.fetch_open_algo_orders()
+
     async def cancel_all_orders(self) -> None:
         await self._executor.cancel_all_orders()
 

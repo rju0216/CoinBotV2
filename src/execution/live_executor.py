@@ -342,6 +342,19 @@ class LiveExecutor:
         )
         return order
 
+    async def fetch_open_algo_orders(self) -> list[dict]:
+        """OKX conditional algo order(SL/TP) 조회 (I-BLE009).
+
+        SL/TP 는 create_order(stopLossPrice/takeProfitPrice) 로 등록되어 OKX 에서
+        ordType='conditional' algo order(orders-algo-pending)로 생성된다. 일반
+        fetch_open_orders 는 orders-pending 만 조회해 이를 누락하므로 별도 분리.
+        ccxt 가 params={'ordType':'conditional'} 시 algo endpoint 를 호출한다.
+        """
+        return await self._call(
+            self.exchange.fetch_open_orders, self.symbol,
+            params={"ordType": "conditional"},
+        )
+
     async def cancel_all_orders(self) -> None:
         orders = await self._call(self.exchange.fetch_open_orders, self.symbol)
         cancelled = 0

@@ -694,17 +694,14 @@ class CoreEngine(AbstractEngine):
             )
             return
 
-        executor = getattr(self.broker, "executor", None)
-        if executor is None or not hasattr(executor, "exchange"):
-            return
-
+        # I-BLE009: SL/TP 는 OKX conditional algo order(orders-algo-pending)라
+        # 일반 fetch_open_orders(orders-pending)로는 누락됨 → 살아있는데 missing
+        # 오판 → 재등록 중복. broker.fetch_open_algo_orders 로 algo endpoint 조회.
         try:
-            symbol = self.config["exchange"]["symbol"]
-            # ccxt fetch_open_orders + algo orders 둘 다 시도
-            orders = await executor.exchange.fetch_open_orders(symbol)
+            orders = await self.broker.fetch_open_algo_orders()
         except Exception as e:
             logger.warning(
-                "fetch_open_orders 실패 — SL/TP 검증 skip (거래소 정상 가정): %s", e
+                "fetch algo orders 실패 — SL/TP 검증 skip (거래소 정상 가정): %s", e
             )
             return
 
