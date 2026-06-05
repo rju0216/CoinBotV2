@@ -1049,24 +1049,33 @@ class CoreEngine(AbstractEngine):
                 # 거래소 ∅ → 우리 모르게 청산. 동기화 후 SL/TP 캔들 검사 skip
                 await self._sync_unexpected_close(close, now)
 
-        # 1) SL/TP 캔들 체결 검사 (엔진 담당 정책 (a))
-        if self._position is not None:
-            fill = self.check_candle_sl_tp(self._position, high, low)
-            if fill is not None:
-                exit_price, reason = fill
-                await self._close_with_funding(exit_price, reason, now)
+        # I-BLE010: 청산 검사(1, 2)는 master_timeframe 봉에서만 수행.
+        # 다중 TF(15m/1h/4h) 동시 마감(4h 경계 등) 시 _on_bar_closed 가 TF마다
+        # 동시 실행(data_feed asyncio.gather)되는데, 청산 경로에 TF 가드가 없으면
+        # 1h/4h 봉도 같은 포지션 청산을 감지 → POSITION_CLOSED 중복 발행 (EXIT
+        # 알림 N개 + 메모리 daily_pnl 일시 부풀림). master_tf(가장 작은 TF=15m)가
+        # 청산 판정에 가장 정밀하며, _sync_unexpected_close(master_tf 거래소 ∅ 감지)
+        # + 거래소 conditional order 가 spike/외부청산을 보완한다.
+        if tf == self.master_timeframe:
+            # 1) SL/TP 캔들 체결 검사 (엔진 담당 정책 (a))
+            if self._position is not None:
+                fill = self.check_candle_sl_tp(self._position, high, low)
+                if fill is not None:
+                    exit_price, reason = fill
+                    await self._close_with_funding(exit_price, reason, now)
 
-        # 2) 전략 강제 청산 훅 (보유 중 & orphan 아님일 때만)
-        balance = await self.broker.get_balance()
-        if self._position is not None:
-            decision = self.check_strategy_exits(
-                candles_slice, close, balance, now
-            )
-            if decision is not None:
-                await self._close_with_funding(close, decision.reason, now)
+            # 2) 전략 강제 청산 훅 (보유 중 & orphan 아님일 때만)
+            if self._position is not None:
                 balance = await self.broker.get_balance()
+                decision = self.check_strategy_exits(
+                    candles_slice, close, balance, now
+                )
+                if decision is not None:
+                    await self._close_with_funding(close, decision.reason, now)
 
         # 3) 봉 마감 dispatch (entry/pyramid/reverse 평가)
+        # evaluate 용 balance — 청산 후 잔액 변동 반영 위해 직전 fetch (모든 TF)
+        balance = await self.broker.get_balance()
         await self.evaluate_strategies_on_bar(
             tf, candles_slice, close, balance, now
         )

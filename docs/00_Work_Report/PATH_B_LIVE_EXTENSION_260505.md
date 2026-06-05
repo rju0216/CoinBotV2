@@ -102,18 +102,18 @@ Phase BLE-7 (운영 모니터링 강화 — 신설, 2026-05-10)
 - **BLE-7-3** ✅ 완료 (잔고 입금 가이드)
 - **I-BLE001** ✅ 완료 (daily_pnl 복원 + closed_at + sync 후 재정렬 라이브 검증 완료)
 - **I-BLE008** ✅ 완료 (라이브 복원 매칭 tolerance 완화, BLE-7-2 시연 중 발견, 라이브 검증 완료)
-- 라이브 누적: 29건 close (2026-06-04 기준, Trade 25~28 BLE-7-2 시연 중 close), 운영 ~1개월
+- **I-BLE010** ✅ 완료 (EXIT 중복 발행 — 청산 경로 master_tf 가드, 라이브 검증 완료)
+- 라이브 누적: 30건 close (2026-06-05 기준), 운영 ~1개월
 
 #### 다음 우선순위 (운영 권장)
 
-1. **I-BLE010** (EXIT 중복 발행 — 다중 TF 동시 마감 시 close 경로 중복) ← BLE-7-2 시연 중 발견. daily_pnl 일시 부풀림 → 손실거래 daily_loss_limit 오판 위험. **운영 안전 직결, 최우선**
-2. **I-BLE009** (재시작 시 SL/TP 중복 재등록 — algo order 미조회) ← BLE-7-2 시연 중 발견. reduceOnly 라 자금 위험 낮으나 order 누적
-3. **BLE-6-2** (라이브-백테 정합성 비교) ← 거래 ≥30건 / 운영 ≥1개월 기준 임박 (현재 29건). I-BLE007 의 OKX positions-history 정확 sync 영역에 baseline 의미 ↑
-4. **BLE-1** (다중 거래소) — OKX 의존성 분산. positions-history 영역 OKX 전용이라 abstraction 영역 필요
-5. **BLE-2** (Ensemble walkforward, I-BL002) — 학술 robust성 보강. GPU 불필요
-6. **BLE-5** (I-BP001 funding_fee 백테 통합) — funding 부호 fix (I-BLE007) 후 백테 영역도 의미 일관 영역
-7. **BLE-4** (BP-1 데이터 carry, 조건부) — 데이터 인프라 준비 시
-8. **BLE-3** (Survivorship — 다른 코인) — GPU + 데이터 가장 큰 작업
+1. **I-BLE009** (재시작 시 SL/TP 중복 재등록 — algo order 미조회) ← BLE-7-2 시연 중 발견. reduceOnly 라 자금 위험 낮으나 order 누적
+2. **BLE-6-2** (라이브-백테 정합성 비교) ← 거래 ≥30건 / 운영 ≥1개월 기준 **충족 (현재 30건)**. I-BLE007 의 OKX positions-history 정확 sync 영역에 baseline 의미 ↑
+3. **BLE-1** (다중 거래소) — OKX 의존성 분산. positions-history 영역 OKX 전용이라 abstraction 영역 필요
+4. **BLE-2** (Ensemble walkforward, I-BL002) — 학술 robust성 보강. GPU 불필요
+5. **BLE-5** (I-BP001 funding_fee 백테 통합) — funding 부호 fix (I-BLE007) 후 백테 영역도 의미 일관 영역
+6. **BLE-4** (BP-1 데이터 carry, 조건부) — 데이터 인프라 준비 시
+7. **BLE-3** (Survivorship — 다른 코인) — GPU + 데이터 가장 큰 작업
 
 또는 사용자 우선순위 (자금 안전 우선=BLE-1 / 백테 정확성=BLE-5 / 가시화=BLE-7-2) 에 따라 자유 진행.
 
@@ -455,7 +455,8 @@ BLE-6 본 비교의 baseline 정확성을 위해 라이브 DB 의 거래 수치�
 | 2026-05-10 | └ BLE-7-1: 콘솔/파일 로그 보강 | ✅ 완료 | 25e1b41 | ensemble.py meta sub_probs 추가 + `_log_signal_status` 시그니처 확장 (bar_context dict) + `_log_position_status` SL/TP 거리 + `_log_account_status` daily 한도/DD 락 거리 (% + 절대값). 단위 6건 신규 추가 (TestBLE71*), 회귀 466→472 pass |
 | 2026-05-10 | └ BLE-7-1 보강: 가독성 + conf class | ✅ 완료 | 99f002d | 라이브 며칠 운영 후 발견 — 한 줄 출력이라 가독성 ↓ + conf 가 어느 class(S/H/L) 점수인지 불명확. 멀티라인 (\n + prefix 별 9/10/11 space 들여쓰기) + 라인 사이 빈 줄 + conf=H:0.92 형식 (probs argmax 기반 — signal.side ≠ argmax 가능한 threshold 미달 case 도 직관). 단위 3건 신규 (TestBLE71ConfClassLabel) + 기존 1건 흡수, 회귀 472→475 pass |
 | 2026-06-05 | └ BLE-7-2: 텔레그램 알림 보강 | ✅ 완료 | (이번 커밋) | ENTRY/EXIT 알림 콘솔 로그 일관 보강. POSITION_CLOSED payload 3키 추가 (exit_price/pnl_pct/closed_at, engine_base.py, backward-compatible). engine.py helper 3종 (_fmt_hold / _build_entry_message / _build_exit_message, module-level) + ENTRY(SL/TP 가격+entry대비Δ%) / EXIT(entry→exit 가격 + net_pnl + pnl% + hold time) 핸들러. _log_position_status 가 _fmt_hold 공유 (DRY). plain text 유지 (I-BL014). 단위 6건 신규 (TestBLE72TelegramMessages). **라이브 시연 검증 ✅** (2026-06-04 Trade 25~28 close + 신규 ENTRY: LONG/SHORT SL/TP 부호·hold time·pnl%·→ 화살표 모두 정확). 자체 점검 (규칙 8): DRY (_fmt_hold/_fmt_dollar helper) / 캡슐화 (payload=코어, 포맷=live) / 미래 확장성 (EmailNotifier 자동 수혜) / 1회용 없음 |
-| 2026-06-05 | I-BLE008: 라이브 복원 매칭 tolerance 완화 (BLE-7-2 묶음) | ✅ 완료 | (이번 커밋) | BLE-7-2 시연 중 발견 — Trade 25 재시작 시 orphan 오복원. 원인: `_match_trade_to_exchange` size tolerance 1e-6 << 실제 차이 7.37e-5 (DB full precision 0.06907371 vs 거래소 contract 절삭 0.069). fix: tolerance `1e-6` → `trade_sync.SIZE_TOLERANCE_BTC`(0.005, 0.5 contract), `<`→`<=` (지연 import, DRY) + `_fmt_hold` 음수 방어 (abs+부호). 단위 4건 신규 (TestMatcher 3 contract절삭/경계 + test_fmt_hold_negative). 회귀 505→**509 pass**. **라이브 검증 ✅** (재시작 시 Trade 25 status=open/trade_id=25/ensemble 정상 복원, hold 10h59m 양수, orphan WARNING 사라짐) |
+| 2026-06-05 | I-BLE008: 라이브 복원 매칭 tolerance 완화 (BLE-7-2 묶음) | ✅ 완료 | fa7e93a | BLE-7-2 시연 중 발견 — Trade 25 재시작 시 orphan 오복원. 원인: `_match_trade_to_exchange` size tolerance 1e-6 << 실제 차이 7.37e-5 (DB full precision 0.06907371 vs 거래소 contract 절삭 0.069). fix: tolerance `1e-6` → `trade_sync.SIZE_TOLERANCE_BTC`(0.005, 0.5 contract), `<`→`<=` (지연 import, DRY) + `_fmt_hold` 음수 방어 (abs+부호). 단위 4건 신규 (TestMatcher 3 contract절삭/경계 + test_fmt_hold_negative). 회귀 505→**509 pass**. **라이브 검증 ✅** (재시작 시 Trade 25 status=open/trade_id=25/ensemble 정상 복원, hold 10h59m 양수, orphan WARNING 사라짐) |
+| 2026-06-05 | I-BLE010: EXIT 중복 발행 fix (청산 경로 master_tf 가드) | ✅ 완료 | (이번 커밋) | BLE-7-2 시연 중 발견 — 4h 경계 등 다중 TF 동시 마감 시 EXIT 알림 3개씩. 원인: `_on_bar_closed` 가 TF마다 동시 실행(data_feed asyncio.gather), 청산 경로 check_candle_sl_tp/check_strategy_exits 에 master_tf 가드 없어 1h/4h 봉도 청산 감지 → POSITION_CLOSED 중복. fix: 청산 검사 2블록을 `if tf == self.master_timeframe:` 안으로 (balance fetch 재배치). race 방어는 분석 결과 불필요 (master_tf 가드가 다른 TF 동시 청산 차단 + _should_process_bar atomic). 단위 4건 신규 (test_live_bar_dispatch.py). 회귀 509→**513 pass**. **라이브 검증 ✅** (2026-06-05: 15m 일반 청산 1개 + **15m+1h 경계 청산(14:00 UTC) 1개** — 다중 TF 중복 제거 입증. daily_pnl recalibrate Δ=-1.81 부풀림 없음. 4h 경계(3-TF)는 동일 메커니즘이라 보장되나 실관찰 대기) |
 | 2026-05-23 | └ BLE-7-3: 잔고 입금 처리 가이드 | ✅ 완료 | (이번 커밋) | CLAUDE.md "잔고 입금 처리 가이드" sub-section 신설 (Phase 1 Claude 자동 snapshot / Phase 2 사용자 수행 / Phase 3 자동 기록·검증). `data/deposits.json` 메모 인프라 (git untracked). 향후 입금 자동 처리 흐름 확립 |
 
 ---
@@ -481,7 +482,7 @@ BLE-6 본 비교의 baseline 정확성을 위해 라이브 DB 의 거래 수치�
 
 | I-BLE008 | BLE-7-2 라이브 시연 중 발견 (2026-06-04) — Trade 25 재시작 시 orphan 오복원 | `_match_trade_to_exchange` size tolerance `1e-6` 가 DB(사이징 full precision, 예 0.06907371 BTC = 6.9074 contracts)와 거래소(contract 단위 절삭 체결, 0.069 BTC = 6.9 contracts) 의 구조적 차이(~7.37e-5)보다 작아 정상 포지션이 orphan 으로 오복원. 영향: trade_id=None (close 시 DB 미기록), SL/TP=None (엔진 SL/TP 무방비), entry_time=now (hold time 음수 표기) | src/live/engine.py + tests/test_live_restore_state.py + tests/test_monitoring_hooks.py | **2026-06-05 fix 완료 (BLE-7-2 묶음)** | ✅ 해결 — tolerance `1e-6` → `trade_sync.SIZE_TOLERANCE_BTC`(0.005 = 0.5 contract, sync 매칭과 일관·DRY, 지연 import), `<`→`<=`. 부수: `_fmt_hold` 음수 방어 (abs+부호 prefix, orphan 등 이상 case 정확 표기). 단위 4건 신규. 회귀 505→509 pass. **라이브 검증** (재시작 시 Trade 25 status=open/trade_id=25/ensemble 정상 복원, hold 10h59m 양수). 미래 확장성: BTC contract 가정은 trade_sync 와 동일 한계 (BLE-1 시 함께 재검토) |
 | I-BLE009 | BLE-7-2 라이브 시연 중 발견 (2026-06-04) — 재시작 시 SL/TP "missing → re-registering" 경고 (OKX 웹엔 살아있음) | `_verify_and_restore_sl_tp` (engine.py:704) 가 `fetch_open_orders(symbol)` 만 호출 — OKX SL/TP 는 algo order (별도 endpoint orders-algo-pending) 라 일반 조회에 안 잡힘 → 살아있는데 missing 오판 → 재등록 → **중복**. 주석("algo orders 둘 다 시도")과 구현 불일치. 영향: reduceOnly:True 라 자금 손실 위험 낮음, 단 order 중복/재시작마다 누적 | src/live/engine.py + tests | **미해결 (등록, 별도 phase)** | 미해결 — 사용자 OKX 웹에서 중복 확인 + 수동 정리 완료 (한 쌍만 남김, 2026-06-04). fix 방향: `_verify_and_restore_sl_tp` 에 OKX algo order 조회 추가 (fetch_open_orders params 또는 별도 fetch). 우선순위 2 (reduceOnly 라 긴급도 낮음) |
-| I-BLE010 | BLE-7-2 라이브 시연 중 발견 (2026-06-04) — EXIT 텔레그램 알림이 4h 경계에 3개씩 중복 발행 | `_on_bar_closed` 가 TF(15m/1h/4h)마다 호출. 청산 두 경로 중 ① 외부청산 sync(engine.py:1036)는 master_tf 가드 O, ② `check_candle_sl_tp`(engine.py:1052)는 **TF 가드 X** → 1h/4h 도 청산 감지 + self._position=None 가드가 async race 취약. 4h 경계(20:00/00:00 UTC) 다중 TF 동시 마감 시 POSITION_CLOSED 중복 발행 (증거: exit 2×TP price + 1×실제 fetch). 영향: 알림/로그 중복 + 메모리 daily_pnl 일시 부풀림(add_pnl 3회→recalibrate 수렴). 자금 손실 X(거래소 청산 1회, close_position skipped), DB 정합 O. 단 손실거래 시 daily_loss_limit 일시 오판 위험 | src/live/engine.py + tests | **미해결 (등록, 최우선 다음 작업)** | 미해결 — BLE-7-2 무관 (기존 close 경로 버그, BLE-7-2 가 exit_price 차이로 가시화). fix 방향: check_candle_sl_tp 에 master_tf 가드 추가 + close 경로 race 방어. 우선순위 1 (운영 안전 직결) |
+| I-BLE010 | BLE-7-2 라이브 시연 중 발견 (2026-06-04) — EXIT 텔레그램 알림이 4h 경계에 3개씩 중복 발행 | `_on_bar_closed` 가 TF(15m/1h/4h)마다 호출. 청산 두 경로 중 ① 외부청산 sync(engine.py:1036)는 master_tf 가드 O, ② `check_candle_sl_tp`(engine.py:1052)는 **TF 가드 X** → 1h/4h 도 청산 감지 + self._position=None 가드가 async race 취약. 4h 경계(20:00/00:00 UTC) 다중 TF 동시 마감 시 POSITION_CLOSED 중복 발행 (증거: exit 2×TP price + 1×실제 fetch). 영향: 알림/로그 중복 + 메모리 daily_pnl 일시 부풀림(add_pnl 3회→recalibrate 수렴). 자금 손실 X(거래소 청산 1회, close_position skipped), DB 정합 O. 단 손실거래 시 daily_loss_limit 일시 오판 위험 | src/live/engine.py + tests/test_live_bar_dispatch.py | **2026-06-05 fix 완료** | ✅ 해결 — 청산 검사 2블록(check_candle_sl_tp + check_strategy_exits)을 `if tf == self.master_timeframe:` 가드 안으로 (규정 방향에서 check_strategy_exits 누락 보완). race 방어는 분석 결과 불필요 (master_tf 가드가 다른 TF 동시 청산 원천 차단 + _should_process_bar atomic + 15분 간격 직렬화). 단위 4건 신규. 회귀 509→513 pass. **라이브 검증** (15m 일반 + 15m+1h 경계 청산 각 1개, daily_pnl Δ 부풀림 없음). 4h 경계(3-TF) 동일 메커니즘이라 보장, 실관찰 대기 |
 
 신규 carry-over 후보 ID는 I-BLE011~ 형태로 등록.
 
