@@ -78,22 +78,32 @@ P-C-4 라이브 모델 교체              ⬜ 재학습본 검증 후 main 머�
 재학습으로 latest=v011 이 되면 라이브 재시작 시 v011 + main(lookahead) 불일치. **P-C-2~P-C-4 전까지 라이브 재시작 금지** (메모리 v010 유지). 안전장치: 0단계에서 latest.json 4종 백업 → 부득이한 재시작 시 v010 복원.
 
 ### 4.5 실행 순서
+⚠️ **피처 캐시 공유 주의**: `features_{tf}_{entry_tf}_{start}_{end}.parquet` 캐시는 모델명이 없어 **4 모델이 공유**(모두 15m·동일 기간). 4개 모두 `--force-features` 동시 실행 시 같은 캐시 파일 쓰기 충돌(corruption). → **첫 1개만 `--force-features`** 로 causal 캐시 재생성, **나머지 3개는 force 없이** 재사용.
+
 ```
 # 0. (안전) latest.json 4종 백업 → 부득이한 라이브 재시작 시 v010 복원용
 #    models/{lightgbm,xgboost,lstm,transformer}/latest.json → latest.v010.bak
 
-# 1. train 4종 (--force-features 필수: lookahead 피처 캐시 무효화 + causal 재계산)
+# 1. 캐시 causal 재생성 (첫 1개 단독, --force-features) — lightgbm 이 CPU+빠름
 python scripts/train_lightgbm.py    --config config/ensemble.yaml --start 2020-01-01 --end 2026-04-01 --force-features
-python scripts/train_xgboost.py     --config config/ensemble.yaml --start 2020-01-01 --end 2026-04-01 --force-features
-python scripts/train_lstm.py        --config config/ensemble.yaml --start 2020-01-01 --end 2026-04-01 --force-features
-python scripts/train_transformer.py --config config/ensemble.yaml --start 2020-01-01 --end 2026-04-01 --force-features
 
-# 2. calibration (latest=v011 상태에서 → v011 에 calibrator 저장)
+# 2. 나머지 3종 (force 없이 = 캐시 재사용, 쓰기 없음 → 병렬 안전)
+python scripts/train_xgboost.py     --config config/ensemble.yaml --start 2020-01-01 --end 2026-04-01
+python scripts/train_lstm.py        --config config/ensemble.yaml --start 2020-01-01 --end 2026-04-01
+python scripts/train_transformer.py --config config/ensemble.yaml --start 2020-01-01 --end 2026-04-01
+
+# 3. calibration (latest=v011 상태에서 → v011 에 calibrator 저장)
 python scripts/calibrate_models.py --strategy all --start 2020-01-01 --end 2026-04-01
 ```
 - 기간은 v010 과 동일 (train·calibration 모두 2020-01-01 ~ 2026-04-01 — v010 train_meta/calibration_meta 확인값)
-- DL(lstm/transformer)은 GPU + 시간 소요. lightgbm/xgboost 는 빠름
 - 완료 시 v011 4종 + calibrator. ensemble.yaml(latest 참조)은 자동 v011
+
+### 4.5.1 병렬 실행 가능 여부
+- **첫 lightgbm(`--force-features`) 은 단독 실행** (캐시 생성 중 다른 train 이 같은 캐시 접근 금지)
+- lightgbm 완료 후, 나머지 3종은 캐시 **읽기만** → 충돌 없음:
+  - **xgboost(CPU)** 는 GPU 모델과 자원이 달라 병렬 가능
+  - **lstm/transformer(GPU)** 는 GPU 메모리를 공유 → 동시 실행 시 OOM 위험. **순차 권장** (GPU 메모리 여유가 확실하면 병렬 가능)
+- 권장: `lightgbm(force)` → 그 후 `xgboost` + `lstm` 병렬(CPU/GPU 분리) → `transformer` (lstm 완료 후)
 
 ### 4.6 예상
 causal 재학습본은 기존 백테 수치(OOS 1118%, 백테 79% 승률 등 lookahead 부풀림)보다 **성능이 낮을 것** = 진짜 edge. lookahead 부풀림 제거 후 실제 성능으로 운영 판단.
