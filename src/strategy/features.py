@@ -6,8 +6,6 @@ indicators.py의 기존 함수를 조합하여 단일/멀티 타임프레임 피
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 import numpy as np
 import pandas as pd
 
@@ -194,48 +192,36 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     return feat
 
 
-def _is_in_progress_bar(
-    sub_last_ts: pd.Timestamp,
-    sub_tf_ms: int,
-    now_ms: int,
-) -> bool:
-    """sub_tf의 마지막 봉이 now 시점에 진행 중인지 판별.
-
-    봉 timestamp는 봉 시작 시각 → 마감 시각 = sub_last_ts + sub_tf_ms.
-    now_ms < 마감 시각이면 진행 중. 학습 시엔 historical data라 now_ms가
-    봉 마감 시각보다 항상 미래 → 항상 False (학습-추론 일관성 유지).
-
-    I-BL007 Phase 3 fix.
-    """
-    sub_close_ms = sub_last_ts.value // 10**6 + sub_tf_ms
-    return sub_close_ms > now_ms
-
-
 def compute_multi_tf_features(
     candles: dict[str, pd.DataFrame],
     entry_tf: str,
 ) -> pd.DataFrame:
     """멀티 타임프레임 피처 병합.
 
-    entry_tf 피처를 기준으로, 상위 TF 피처를 forward-fill merge.
-    상위 TF 피처에는 '{tf}_' 접두사를 붙여 컬럼명 충돌을 방지한다.
+    entry_tf 피처를 기준으로, 상위 TF 피처를 '봉 마감 시각' 기준으로 forward-fill
+    merge. 상위 TF 피처에는 '{tf}_' 접두사를 붙여 컬럼명 충돌을 방지한다.
 
-    I-BL007 Phase 3: sub_tf 마지막 봉이 진행 중이면 그 봉을 제외하고 features
-    계산 — 진행 중 봉의 부분 OHLC가 indicator NaN을 만드는 trigger 차단.
-    학습 시(historical data)에는 now_ms가 항상 마감 시각보다 미래라 진행 중
-    판정이 발동하지 않아 동일 동작 보장.
+    I-BLE012 fix (lookahead 제거): 봉 timestamp는 봉 '시작' 시각이고 피처는 그 봉의
+    완성값이므로, 완성값은 봉 마감(시작 + TF_MS) 이후에만 사용 가능하다. 기존
+    (I-BL007)에는 상위TF 피처를 '시작 시각' index 그대로 reindex+ffill 해, 봉이
+    아직 진행 중인 시점의 entry 봉에 그 봉의 미래 완성값이 병합되는 lookahead 가
+    있었다. 이는 전체 데이터를 한 번에 계산하는 백테/학습에서 (now_ms 가 미래라
+    모든 과거 봉이 마감 간주되어) 발동했고, 라이브만 _is_in_progress_bar 로 마지막
+    봉을 부분 회피해 라이브-백테 신호가 어긋났다. 여기서는 상위TF index 를 마감
+    시각으로 shift 한 뒤 ffill 하여, 각 entry 시점에 '이미 마감된' 상위봉만 병합한다
+    → 전체/부분 계산과 무관하게 causal (now_ms 의존 제거, 진행 중 상위봉은 마감
+    index 가 미래라 자동으로 병합되지 않음).
     """
     base = compute_features(candles[entry_tf])
-
-    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
 
     for tf, df in candles.items():
         if tf == entry_tf or df.empty:
             continue
-        df_use = df
-        if tf in TF_MS and _is_in_progress_bar(df.index[-1], TF_MS[tf], now_ms):
-            df_use = df.iloc[:-1]
-        tf_feat = compute_features(df_use).add_prefix(f"{tf}_")
+        tf_feat = compute_features(df).add_prefix(f"{tf}_")
+        # 봉 시작 시각 index → 마감 시각으로 이동 (완성값 가용 시점)
+        tf_ms = TF_MS.get(tf)
+        if tf_ms:
+            tf_feat.index = tf_feat.index + pd.Timedelta(milliseconds=tf_ms)
         base = base.join(
             tf_feat.reindex(base.index).ffill(),
             how="left",

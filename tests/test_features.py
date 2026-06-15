@@ -105,95 +105,78 @@ class TestGetFeatureNames:
         assert len(names) == 27 * 2  # 15m + 1h
 
 
-# ─── I-BL007 Phase 3: 진행 중 봉 제외 검증 ───
+# ─── I-BLE012: 멀티TF 병합 causal (lookahead 제거) 검증 ───
 
 
-class TestInProgressBarHelper:
-    """_is_in_progress_bar 단위 테스트."""
+class TestMultiTfCausalMerge:
+    """compute_multi_tf_features가 상위TF를 '봉 마감 시각' 기준 causal 병합 검증.
 
-    def test_bar_not_yet_closed_returns_true(self):
-        from src.strategy.features import _is_in_progress_bar
-        # 1h 봉 04:00 시작 (마감 예정 05:00). now=04:45 → 진행 중
-        sub_last = pd.Timestamp("2026-05-06 04:00:00", tz="UTC")
-        sub_tf_ms = 3_600_000
-        now_ms = int(pd.Timestamp("2026-05-06 04:45:00", tz="UTC").timestamp() * 1000)
-        assert _is_in_progress_bar(sub_last, sub_tf_ms, now_ms) is True
+    I-BLE012 fix: 상위TF 봉을 마감 시각(시작+TF_MS)으로 shift 후 ffill → 각 entry
+    시점에 '이미 마감된' 상위봉만 병합. 전체/부분 계산 무관하게 동일(미래 의존 없음).
+    기존 now_ms/_is_in_progress_bar 방식은 백테/학습에서 lookahead 였음.
+    """
 
-    def test_bar_already_closed_returns_false(self):
-        from src.strategy.features import _is_in_progress_bar
-        # 1h 봉 04:00 시작 (마감 05:00). now=05:30 → 마감 봉
-        sub_last = pd.Timestamp("2026-05-06 04:00:00", tz="UTC")
-        sub_tf_ms = 3_600_000
-        now_ms = int(pd.Timestamp("2026-05-06 05:30:00", tz="UTC").timestamp() * 1000)
-        assert _is_in_progress_bar(sub_last, sub_tf_ms, now_ms) is False
-
-    def test_historical_data_always_closed(self):
-        """학습 시점 — historical data의 봉은 항상 마감으로 판정 (학습-추론 일관성)."""
-        from src.strategy.features import _is_in_progress_bar
-        sub_last = pd.Timestamp("2024-12-31 12:00:00", tz="UTC")
-        sub_tf_ms = 3_600_000
-        # 현재 시각으로 가정 (1년 후)
-        now_ms = int(pd.Timestamp("2026-05-06 00:00:00", tz="UTC").timestamp() * 1000)
-        assert _is_in_progress_bar(sub_last, sub_tf_ms, now_ms) is False
-
-
-class TestMultiTfInProgressExclusion:
-    """compute_multi_tf_features가 진행 중 sub_tf 봉을 제외 검증."""
-
-    def test_in_progress_sub_tf_excluded(self, monkeypatch):
-        """1h 진행 중 봉이 features 계산에서 제외 — 진행 중 봉의 OHLC 영향 차단."""
-        # 15m entry_tf 마지막 봉 = 04:45 (= 마감, 다음 봉 05:00 시작 직후)
-        # 1h 마지막 봉 = 04:00 (= 진행 중, 마감 예정 05:00)
-        # now_ms = 04:46 (15m 봉 마감 직후)
+    def test_in_progress_sub_tf_not_merged(self):
+        """진행 중(미마감) 상위TF 봉의 완성값이 entry 봉에 병합 안 됨 (lookahead 회귀 방지)."""
+        # 15m entry: 00:00~04:45. 1h: 00:00~04:00 (04:00봉은 04:45 시점 진행 중, 마감 05:00)
         entry_dates = pd.date_range("2026-05-06 00:00", "2026-05-06 04:45", freq="15min", tz="UTC")
         entry_df = _make_candles_for_index(entry_dates)
-        sub_dates_full = pd.date_range("2026-05-06 00:00", "2026-05-06 04:00", freq="1h", tz="UTC")
-        sub_df = _make_candles_for_index(sub_dates_full)
-        # 마지막 1h 봉(04:00)을 명백히 다른 OHLC로 설정 — 제외 확인용
+        sub_dates = pd.date_range("2026-05-06 00:00", "2026-05-06 04:00", freq="1h", tz="UTC")
+        sub_df = _make_candles_for_index(sub_dates)
+        # 마지막 1h 봉(04:00, 마감 05:00)을 극단값으로 — 누출 시 즉시 탐지
         sub_df.iloc[-1] = {"open": 1e9, "high": 1e9, "low": 1e9, "close": 1e9, "volume": 1e9}
 
-        # now_ms를 04:46으로 fix
-        from src.strategy import features as features_mod
-        fake_now_ms = int(pd.Timestamp("2026-05-06 04:46:00", tz="UTC").timestamp() * 1000)
-        class _FakeDt:
-            @staticmethod
-            def now(tz=None):
-                return pd.Timestamp("2026-05-06 04:46:00", tz="UTC").to_pydatetime()
-        monkeypatch.setattr(features_mod, "datetime", _FakeDt)
-
-        candles = {"15m": entry_df, "1h": sub_df}
-        feat = compute_multi_tf_features(candles, "15m")
-
-        # 1h_close 컬럼이 있다면, ffill 후 마지막 row의 1h 컬럼이 직전 마감 봉(03:00)의 features 기반이어야 함.
-        # 진행 중 봉(04:00, OHLC=1e9)이 포함됐다면 indicator가 비정상 큰 값을 만들 것
-        # 단순 검증: 1h prefix 컬럼이 결과에 존재하고 값이 비정상이지 않음
-        col_1h_returns = [c for c in feat.columns if c.startswith("1h_return_")]
-        assert len(col_1h_returns) >= 1
-        # 1e9 close가 features에 들어왔으면 return 값이 비정상으로 큼
-        last_1h_return = feat[col_1h_returns[0]].iloc[-1]
-        assert abs(last_1h_return) < 100, (
-            f"진행 중 봉(close=1e9) 영향이 features에 누출됨: {last_1h_return}"
+        feat = compute_multi_tf_features({"15m": entry_df, "1h": sub_df}, "15m")
+        # 04:00 1h봉 마감 = 05:00 → entry 최대 04:45 라 어떤 entry행에도 미병합 (causal)
+        col = [c for c in feat.columns if c.startswith("1h_return_")][0]
+        assert abs(feat[col].iloc[-1]) < 100, (
+            f"진행 중 상위봉(1e9) 완성값이 누출됨(lookahead): {feat[col].iloc[-1]}"
         )
 
-    def test_all_bars_closed_no_exclusion(self, monkeypatch):
-        """학습 시나리오 — 모든 봉 마감 → 진행 중 판정 없음 → 기존 동작 그대로."""
-        entry_dates = pd.date_range("2024-01-01", "2024-01-15", freq="15min", tz="UTC")
-        entry_df = _make_candles_for_index(entry_dates)
-        sub_dates = pd.date_range("2024-01-01", "2024-01-15", freq="1h", tz="UTC")
-        sub_df = _make_candles_for_index(sub_dates)
+    def test_causal_no_lookahead_full_eq_window(self):
+        """전체 계산 == 부분 window 계산 (같은 시점) → 미래 의존 없음(causal) 확정."""
+        full_entry = pd.date_range("2026-05-06 00:00", "2026-05-06 08:00", freq="15min", tz="UTC")
+        full_sub = pd.date_range("2026-05-06 00:00", "2026-05-06 08:00", freq="1h", tz="UTC")
+        candles_full = {
+            "15m": _make_candles_for_index(full_entry),
+            "1h": _make_candles_for_index(full_sub),
+        }
+        feat_full = compute_multi_tf_features(candles_full, "15m")
 
-        # now_ms = 현재 시각 (historical보다 미래)
-        from src.strategy import features as features_mod
-        class _FakeDt:
-            @staticmethod
-            def now(tz=None):
-                return pd.Timestamp("2026-05-06", tz="UTC").to_pydatetime()
-        monkeypatch.setattr(features_mod, "datetime", _FakeDt)
+        # window: 05:10 까지만 (라이브가 그 시점에 보는 데이터) — 같은 데이터 slice
+        cut = pd.Timestamp("2026-05-06 05:10", tz="UTC")
+        candles_win = {tf: df[df.index <= cut] for tf, df in candles_full.items()}
+        feat_win = compute_multi_tf_features(candles_win, "15m")
 
-        candles = {"15m": entry_df, "1h": sub_df}
+        # 공통 시점(05:00 entry행)의 1h 컬럼이 동일해야 causal
+        T = pd.Timestamp("2026-05-06 05:00", tz="UTC")
+        for c in [c for c in feat_full.columns if c.startswith("1h_")]:
+            a, b = feat_full.loc[T, c], feat_win.loc[T, c]
+            if pd.notna(a) and pd.notna(b):
+                assert abs(a - b) < 1e-9, f"{c}: full={a} != window={b} (lookahead)"
+
+    def test_entry_rows_share_same_closed_higher_bar(self):
+        """같은 상위봉 구간 내 entry행들은 동일 상위TF값 (직전 마감봉 ffill, 시각 정합)."""
+        entry_dates = pd.date_range("2026-05-06 00:00", "2026-05-06 06:00", freq="15min", tz="UTC")
+        sub_dates = pd.date_range("2026-05-06 00:00", "2026-05-06 06:00", freq="1h", tz="UTC")
+        feat = compute_multi_tf_features(
+            {"15m": _make_candles_for_index(entry_dates), "1h": _make_candles_for_index(sub_dates)},
+            "15m",
+        )
+        # 03:00~03:45 entry행은 모두 직전 마감 1h봉(02:00, 03:00 마감) 값 → 동일
+        # 1h_return_1 은 해당 구간에서 valid. 같은 상위봉 구간 entry행은 동일,
+        # 새 상위봉 경계(04:00)에서 값 변경 → causal ffill 시각 정합 검증
+        col = "1h_return_1"
+        v = feat.loc[pd.Timestamp("2026-05-06 03:15", tz="UTC"), col]
+        assert feat.loc[pd.Timestamp("2026-05-06 03:30", tz="UTC"), col] == v
+        assert feat.loc[pd.Timestamp("2026-05-06 03:45", tz="UTC"), col] == v
+        assert feat.loc[pd.Timestamp("2026-05-06 04:00", tz="UTC"), col] != v
+
+    def test_column_count_unchanged(self):
+        """fix 후에도 멀티TF 컬럼 수 불변 (15m+1h = 54)."""
+        candles = {"15m": _make_candles(300), "1h": _make_candles(75)}
         feat = compute_multi_tf_features(candles, "15m")
-        # 결과가 정상 생성되고, 컬럼 수가 27*2 (15m + 1h)
-        assert any(c.startswith("1h_") for c in feat.columns)
+        assert feat.shape[1] == 54
 
 
 # ─── I-BL007 Phase 3-C: dropna helper 검증 ───
