@@ -46,9 +46,11 @@ BLE-6-2(라이브-백테 정합성 검증)에서 라이브 14건 vs 백테 24건
 P-C-1 features causal fix          ✅ 완료 (c99222e)
 P-C-2 모델 4종 재학습 (causal)      ✅ 완료 (v011 — 학습 F1 0.69→0.45 부풀림 제거)
 P-C-3 causal 백테 재평가            ⚠️ 거래 희소·edge 증거 없음 (ensemble/DL 0건)
-P-C-3.5 walkforward (ML 개별)       ⬜ 표본 확보 후 edge 최종 확인 (진행 결정 2026-06-16)
-P-C-4 라이브 모델 교체              ⬜ 보류 (v011 causal edge 미확인 → 교체 무의미)
+P-C-3.5 walkforward (ML 개별)       ✅ ML edge 없음 확정 (PF 0.83/0.79, 33 folds 857/1583건)
+P-C-4 라이브 모델 교체              ❌ 무의미 확정 (causal 환경 edge 없음 → 교체 불가)
 ```
+
+→ **PATH_C 종착 결론: 전략 edge 가 lookahead 의존이었음이 확정됨 (§7 참조). 전략 paradigm 재검토 필요.**
 
 ### ★ 라이브 보호 (실수 방지)
 현 라이브 v010 은 *lookahead features 로 학습*되어 학습-추론이 (잘못된 채로) 일관된 상태. **features fix 를 main 에 머지하면 라이브가 causal features 를 v010 에 줘서 불일치 악화**. fix+재학습+검증 일괄 완성 후 라이브 교체. 그때까지 라이브는 **현 main 코드 유지** (브랜치에서만 작업).
@@ -122,8 +124,8 @@ causal 재학습본은 기존 백테 수치(OOS 1118%, 백테 79% 승률 등 loo
 | 2026-06-16 | P-C-1 features causal fix | ✅ 완료 | c99222e | compute_multi_tf_features 마감시각 shift + ffill. now_ms/_is_in_progress_bar/datetime 제거. 테스트 TestMultiTfCausalMerge 4건. 회귀 514 pass. causal 실증(전체=window) |
 | 2026-06-16 | P-C-2 모델 4종 재학습 (v011) | ✅ 완료 | (모델 git 외) | v011_15m_2020-01-01_2026-04-01 4종 + calibrator(isotonic). lightgbm만 --force-features(캐시 공유) + 개별 config. **lookahead 부풀림 정량: OOS 학습 F1 macro v010~0.69 → v011~0.45, Acc ~0.77→~0.65**. causal SHORT/LONG precision~0.40 recall 0.16~0.24 (HOLD 편중) |
 | 2026-06-16 | P-C-3 causal 백테 재평가 | ⚠️ 결과 | — | OOS 2026-04-01~06-16 threshold 0.55: **ensemble 0 / dl_lstm 0 / dl_transformer 0 / ml_lightgbm 2(+0.81%) / ml_xgboost 4(-1.38%)**. (참고 ensemble threshold 0.40: 7건 -1.58%). → causal 거래 희소 + edge 증거 없음. 표본 부족(6건)으로 단정 불가. **라이브 v010(lookahead 학습)은 동일 구간 활발히 거래·수익 → v010 수익은 학습-추론 불일치 상의 운/bias 가능성 ↑** |
-| 2026-06-16 | P-C-3.5 walkforward (ML 개별) 결정 | ⬜ 진행 | — | 표본 부족 해결 위해 ml_lightgbm/ml_xgboost `--save-all-folds` 재학습 + walkforward 평가(2020~2026 fold OOS, 수백 건). DL/ensemble 제외(거래 희소 + ensemble walkforward I-BL002 미지원) |
-| (대기) | P-C-4 라이브 교체 | ⬜ 보류 | — | v011 causal edge 미확인 → 교체 무의미. walkforward 결과 따라 전략 재검토/paradigm 전환 판단 |
+| 2026-06-16 | P-C-3.5 walkforward (ML 개별) | ✅ 결과 | — | ml_lightgbm/ml_xgboost `--save-all-folds` 재학습 + walkforward 평가(2020~2026, 33 folds). **결과: ml_lightgbm 857건 승률 31.7% PF 0.83 누적 -$9,811 (양수 8/33), ml_xgboost 1583건 승률 30.8% PF 0.79 누적 -$22,710 (양수 9/33). 큰 표본서 profit_factor<1 명확 손실 → causal ML edge 없음 확정** (calibration none 기준). max_dd 35%(DD락 도달 fold 다수) |
+| (확정) | P-C-4 라이브 교체 | ❌ 무의미 | — | causal 환경 edge 없음 확정 → v011/v012 교체 불가. 전략 paradigm 재검토 필요 |
 
 ---
 
@@ -131,9 +133,28 @@ causal 재학습본은 기존 백테 수치(OOS 1118%, 백테 79% 승률 등 loo
 
 | ID | 이슈 | 상태 |
 |---|---|---|
-| I-BLE012 | 멀티TF 병합 lookahead (백테/학습 상위TF 완성봉을 진행중 시점 병합) | **P-C-1 fix + P-C-2 재학습 완료**. 단 causal 모델은 edge 증거 없음(P-C-3, 거래 희소·손실 경향) → 전략 자체가 lookahead 에 의존했을 가능성. walkforward(P-C-3.5)로 최종 확인 중 |
+| I-BLE012 | 멀티TF 병합 lookahead (백테/학습 상위TF 완성봉을 진행중 시점 병합) | **✅ fix 완료 (P-C-1)**. 영향 규명 완료: causal 재학습(P-C-2) + walkforward(P-C-3.5)로 **전략 edge 가 lookahead 의존이었음 확정** → §7 |
 
-### 후속 (본 PATH 종착 후)
-- BLE-6-2 재개 (causal 재학습본으로 라이브-백테 재비교 — 진짜 정합성)
-- 과거 백테/평가 문서 수치 재검토 (lookahead 부풀림 표기)
-- PATH_B 잔여: BLE-1/2/5/4/3, I-BLE011
+---
+
+## 7. PATH_C 최종 결론 (2026-06-16)
+
+**전략 edge 가 lookahead 에 의존했음이 확정되었다.** lookahead(I-BLE012) 제거 후 causal 환경에서:
+- **ensemble / DL(lstm·transformer)**: 진입 신호 전무 (threshold 0.55 거래 0)
+- **ML 개별 walkforward** (33 folds, lightgbm 857건 / xgboost 1583건 = 통계적 충분): **profit_factor 0.83 / 0.79, 양수 fold 24~27%, 누적 -$9.8k / -$22.7k 명확한 손실**
+
+→ **현 전략(15m ensemble ML 단기 방향 예측)은 진짜 거래 edge 가 없다.** 과거 모든 백테 성과(OOS 1118%, 백테 79% 승률 등)는 lookahead 부풀림이었다. 라이브 v010 수익(+$594)은 edge 가 아니라 운/bias 일 가능성이 매우 높다 (lookahead 학습 모델 + 라이브 causal 입력의 우발적 결과).
+
+### 의의
+- 가짜 성과로 자금을 확대하기 전에 lookahead 를 발견·차단 → 큰 잠재 손실 회피
+- causal 검증 인프라 확보: features causal fix(P-C-1), `compare_live_backtest.py`, walkforward 평가
+
+### 미결정 (사용자 결정 대기)
+1. **전략 방향** (paradigm 재검토 불가피): (가) 더 긴 TF(1h/4h/1d 추세) / (나) 룰베이스 추세추종 / (다) 타깃·feature 재설계 / (라) 별도 리서치
+2. **라이브 v010 운영**: edge 없음 확정 → 유지 / 축소 / 중단. **자금 확대는 보류 권고**
+
+### 후속
+- features causal fix(P-C-1)는 정확하므로 향후 전략 재설계의 베이스로 유지 (main 머지는 전략 재정립 시 함께 판단)
+- BLE-6-2(라이브-백테 정합성): causal 모델 edge 없어 재비교 의미 약화 → 전략 재설계 후로 보류
+- 과거 백테/평가 문서 수치에 "lookahead 부풀림" 주석 필요
+- PATH_B 잔여(BLE-1/2/5/4/3, I-BLE011): 전략 재정립 후 우선순위 재검토
