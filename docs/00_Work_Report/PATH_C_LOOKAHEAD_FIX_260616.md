@@ -43,10 +43,11 @@ BLE-6-2(라이브-백테 정합성 검증)에서 라이브 14건 vs 백테 24건
 ## 3. 단계 (P-C-1 ~ P-C-4)
 
 ```
-P-C-1 features causal fix          ✅ 완료 (이 커밋)
-P-C-2 모델 4종 재학습 (causal)      ⬜ 사용자 GPU
-P-C-3 재평가 (walkforward/백테)     ⬜ causal 진짜 성능 측정
-P-C-4 라이브 모델 교체              ⬜ 재학습본 검증 후 main 머지 + 교체
+P-C-1 features causal fix          ✅ 완료 (c99222e)
+P-C-2 모델 4종 재학습 (causal)      ✅ 완료 (v011 — 학습 F1 0.69→0.45 부풀림 제거)
+P-C-3 causal 백테 재평가            ⚠️ 거래 희소·edge 증거 없음 (ensemble/DL 0건)
+P-C-3.5 walkforward (ML 개별)       ⬜ 표본 확보 후 edge 최종 확인 (진행 결정 2026-06-16)
+P-C-4 라이브 모델 교체              ⬜ 보류 (v011 causal edge 미확인 → 교체 무의미)
 ```
 
 ### ★ 라이브 보호 (실수 방지)
@@ -118,10 +119,11 @@ causal 재학습본은 기존 백테 수치(OOS 1118%, 백테 79% 승률 등 loo
 
 | 시점 | 단계 | 상태 | 커밋 | 비고 |
 |---|---|---|---|---|
-| 2026-06-16 | P-C-1 features causal fix | ✅ 완료 | (이 커밋) | compute_multi_tf_features 마감시각 shift + ffill. now_ms/_is_in_progress_bar/datetime 제거. 테스트 TestMultiTfCausalMerge 4건(_is_in_progress_bar 3건 + InProgressExclusion 2건 대체). 회귀 514 pass. causal 실증(전체=window) |
-| (대기) | P-C-2 모델 4종 재학습 | ⬜ | — | 사용자 GPU. --force-features 필수 |
-| (대기) | P-C-3 재평가 | ⬜ | — | causal walkforward/백테 |
-| (대기) | P-C-4 라이브 교체 | ⬜ | — | 검증 후 main 머지 |
+| 2026-06-16 | P-C-1 features causal fix | ✅ 완료 | c99222e | compute_multi_tf_features 마감시각 shift + ffill. now_ms/_is_in_progress_bar/datetime 제거. 테스트 TestMultiTfCausalMerge 4건. 회귀 514 pass. causal 실증(전체=window) |
+| 2026-06-16 | P-C-2 모델 4종 재학습 (v011) | ✅ 완료 | (모델 git 외) | v011_15m_2020-01-01_2026-04-01 4종 + calibrator(isotonic). lightgbm만 --force-features(캐시 공유) + 개별 config. **lookahead 부풀림 정량: OOS 학습 F1 macro v010~0.69 → v011~0.45, Acc ~0.77→~0.65**. causal SHORT/LONG precision~0.40 recall 0.16~0.24 (HOLD 편중) |
+| 2026-06-16 | P-C-3 causal 백테 재평가 | ⚠️ 결과 | — | OOS 2026-04-01~06-16 threshold 0.55: **ensemble 0 / dl_lstm 0 / dl_transformer 0 / ml_lightgbm 2(+0.81%) / ml_xgboost 4(-1.38%)**. (참고 ensemble threshold 0.40: 7건 -1.58%). → causal 거래 희소 + edge 증거 없음. 표본 부족(6건)으로 단정 불가. **라이브 v010(lookahead 학습)은 동일 구간 활발히 거래·수익 → v010 수익은 학습-추론 불일치 상의 운/bias 가능성 ↑** |
+| 2026-06-16 | P-C-3.5 walkforward (ML 개별) 결정 | ⬜ 진행 | — | 표본 부족 해결 위해 ml_lightgbm/ml_xgboost `--save-all-folds` 재학습 + walkforward 평가(2020~2026 fold OOS, 수백 건). DL/ensemble 제외(거래 희소 + ensemble walkforward I-BL002 미지원) |
+| (대기) | P-C-4 라이브 교체 | ⬜ 보류 | — | v011 causal edge 미확인 → 교체 무의미. walkforward 결과 따라 전략 재검토/paradigm 전환 판단 |
 
 ---
 
@@ -129,7 +131,7 @@ causal 재학습본은 기존 백테 수치(OOS 1118%, 백테 79% 승률 등 loo
 
 | ID | 이슈 | 상태 |
 |---|---|---|
-| I-BLE012 | 멀티TF 병합 lookahead (백테/학습 상위TF 완성봉을 진행중 시점 병합) | **P-C-1 fix 완료** / 재학습(P-C-2)으로 모델 영향 해소 진행 |
+| I-BLE012 | 멀티TF 병합 lookahead (백테/학습 상위TF 완성봉을 진행중 시점 병합) | **P-C-1 fix + P-C-2 재학습 완료**. 단 causal 모델은 edge 증거 없음(P-C-3, 거래 희소·손실 경향) → 전략 자체가 lookahead 에 의존했을 가능성. walkforward(P-C-3.5)로 최종 확인 중 |
 
 ### 후속 (본 PATH 종착 후)
 - BLE-6-2 재개 (causal 재학습본으로 라이브-백테 재비교 — 진짜 정합성)
