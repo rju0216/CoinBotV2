@@ -52,24 +52,51 @@ P-C-4 라이브 모델 교체              ⬜ 재학습본 검증 후 main 머�
 ### ★ 라이브 보호 (실수 방지)
 현 라이브 v010 은 *lookahead features 로 학습*되어 학습-추론이 (잘못된 채로) 일관된 상태. **features fix 를 main 에 머지하면 라이브가 causal features 를 v010 에 줘서 불일치 악화**. fix+재학습+검증 일괄 완성 후 라이브 교체. 그때까지 라이브는 **현 main 코드 유지** (브랜치에서만 작업).
 
+**재학습 기간 중 라이브 재시작 정책 = (가) 재시작 금지** (결정 2026-06-16): P-C-2 재학습은 `latest.json` 을 v011 로 갱신하므로, 라이브를 재시작하면 v011(causal 학습본)이 main 의 lookahead features 와 만나 불일치가 악화된다. 따라서 **P-C-2 ~ P-C-4(main 머지) 전까지 라이브를 재시작하지 않는다** (메모리의 v010 유지 → 영향 없음). 안전장치로 재학습 전 latest.json 4종을 백업해, 부득이한 재시작 시 v010 으로 복원 후 기동한다.
+
 ---
 
 ## 4. P-C-2 재학습 가이드 (사용자 GPU)
 
-각 모델을 v010 과 동일 기간(2020-01-01 ~ 2026-04-01 cutoff)으로, fix 된 features 로 재학습. **`--force-features` 필수** (기존 lookahead 피처 캐시 무효화 + causal 재계산):
+**전제**: 반드시 `path-c-lookahead-fix` 브랜치 체크아웃 상태에서 실행 (causal features.py). main 에서 실행하면 lookahead features 로 학습되어 무의미.
 
+### 4.1 출력 경로 & 버전 명명 (v010 안전)
+- 경로: `models/{model}/v{NNN}_{entry_tf}_{start}_{end}` (예 `v011_15m_2020-01-01_2026-04-01`)
+- `next_model_version` = 기존 최대 번호 +1 → 현재 v010 → 재학습 시 **v011 신규 생성**
+- ✅ **v010 디렉토리 보존** (덮어쓰기 없음) → 비교·롤백 가능
+- ⚠️ 스크립트는 단순 `v011` 부여 (causal 표식 없음) → v010(lookahead)과 구분 위해 train_meta/본 문서에 "v011=causal fix 후" 명기
+
+### 4.2 latest.json 메커니즘
+- 각 `train_*.py` 가 학습 끝에 `models/{model}/latest.json {"path": v011}` 자동 갱신
+- ensemble.yaml `sub_params.*.model_path: "models/{model}/latest"` → plugin/calibrate 가 latest.json 으로 실제 버전 해석 → **재학습 시 자동 v011 참조** (ensemble.yaml 수정 불필요)
+
+### 4.3 calibration 흐름 (train 후 별도)
+- `scripts/calibrate_models.py` 가 latest.json 이 가리키는 model_dir 에 `calibrator_isotonic.joblib` 저장
+- → **train(latest→v011) 직후, latest=v011 상태에서 calibrate 실행해야 v011 에 calibrator 저장**
+
+### 4.4 라이브 보호 = (가) 재시작 금지
+재학습으로 latest=v011 이 되면 라이브 재시작 시 v011 + main(lookahead) 불일치. **P-C-2~P-C-4 전까지 라이브 재시작 금지** (메모리 v010 유지). 안전장치: 0단계에서 latest.json 4종 백업 → 부득이한 재시작 시 v010 복원.
+
+### 4.5 실행 순서
 ```
-python scripts/train_lightgbm.py   --config config/ensemble.yaml --start 2020-01-01 --end 2026-04-01 --force-features
-python scripts/train_xgboost.py    --config config/ensemble.yaml --start 2020-01-01 --end 2026-04-01 --force-features
+# 0. (안전) latest.json 4종 백업 → 부득이한 라이브 재시작 시 v010 복원용
+#    models/{lightgbm,xgboost,lstm,transformer}/latest.json → latest.v010.bak
+
+# 1. train 4종 (--force-features 필수: lookahead 피처 캐시 무효화 + causal 재계산)
+python scripts/train_lightgbm.py    --config config/ensemble.yaml --start 2020-01-01 --end 2026-04-01 --force-features
+python scripts/train_xgboost.py     --config config/ensemble.yaml --start 2020-01-01 --end 2026-04-01 --force-features
 python scripts/train_lstm.py        --config config/ensemble.yaml --start 2020-01-01 --end 2026-04-01 --force-features
 python scripts/train_transformer.py --config config/ensemble.yaml --start 2020-01-01 --end 2026-04-01 --force-features
-```
-- 신규 버전(예 v011_causal)으로 저장 → v010(lookahead) 보존(비교용)
-- 학습 후 calibration(isotonic) + ensemble.yaml `sub_params.*.model_path` 갱신
-- 상세 경로/버전 규칙은 재학습 착수 시 확정
 
-### 예상
-causal 재학습본은 기존 백테 수치보다 **성능이 낮을 것** = 진짜 edge. lookahead 부풀림 제거 후 실제 성능으로 운영 판단.
+# 2. calibration (latest=v011 상태에서 → v011 에 calibrator 저장)
+python scripts/calibrate_models.py --strategy all --start 2020-01-01 --end 2026-04-01
+```
+- 기간은 v010 과 동일 (train·calibration 모두 2020-01-01 ~ 2026-04-01 — v010 train_meta/calibration_meta 확인값)
+- DL(lstm/transformer)은 GPU + 시간 소요. lightgbm/xgboost 는 빠름
+- 완료 시 v011 4종 + calibrator. ensemble.yaml(latest 참조)은 자동 v011
+
+### 4.6 예상
+causal 재학습본은 기존 백테 수치(OOS 1118%, 백테 79% 승률 등 lookahead 부풀림)보다 **성능이 낮을 것** = 진짜 edge. lookahead 부풀림 제거 후 실제 성능으로 운영 판단.
 
 ---
 
