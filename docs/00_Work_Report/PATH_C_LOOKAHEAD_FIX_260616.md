@@ -84,13 +84,17 @@ P-C-4 라이브 모델 교체              ⬜ 재학습본 검증 후 main 머�
 # 0. (안전) latest.json 4종 백업 → 부득이한 라이브 재시작 시 v010 복원용
 #    models/{lightgbm,xgboost,lstm,transformer}/latest.json → latest.v010.bak
 
+# ※ 각 train_*.py 는 개별 모델 config 사용 (config[ "ml_lightgbm"/"ml_xgboost"/"dl_lstm"/
+#   "dl_transformer" ] top-level 키). ensemble.yaml 은 sub_params 중첩이라 KeyError.
+#   개별 config 의 required_timeframes/model_path 가 ensemble 과 동일 → 학습 결과 정합.
+
 # 1. 캐시 causal 재생성 (첫 1개 단독, --force-features) — lightgbm 이 CPU+빠름
-python scripts/train_lightgbm.py    --config config/ensemble.yaml --start 2020-01-01 --end 2026-04-01 --force-features
+python scripts/train_lightgbm.py    --config config/ml_lightgbm.yaml    --start 2020-01-01 --end 2026-04-01 --force-features
 
 # 2. 나머지 3종 (force 없이 = 캐시 재사용, 쓰기 없음 → 병렬 안전)
-python scripts/train_xgboost.py     --config config/ensemble.yaml --start 2020-01-01 --end 2026-04-01
-python scripts/train_lstm.py        --config config/ensemble.yaml --start 2020-01-01 --end 2026-04-01
-python scripts/train_transformer.py --config config/ensemble.yaml --start 2020-01-01 --end 2026-04-01
+python scripts/train_xgboost.py     --config config/ml_xgboost.yaml     --start 2020-01-01 --end 2026-04-01
+python scripts/train_lstm.py        --config config/dl_lstm.yaml        --start 2020-01-01 --end 2026-04-01
+python scripts/train_transformer.py --config config/dl_transformer.yaml --start 2020-01-01 --end 2026-04-01
 
 # 3. calibration (latest=v011 상태에서 → v011 에 calibrator 저장)
 python scripts/calibrate_models.py --strategy all --start 2020-01-01 --end 2026-04-01
