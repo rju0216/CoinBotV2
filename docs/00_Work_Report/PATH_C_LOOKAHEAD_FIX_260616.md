@@ -47,6 +47,7 @@ P-C-1 features causal fix          ✅ 완료 (c99222e)
 P-C-2 모델 4종 재학습 (causal)      ✅ 완료 (v011 — 학습 F1 0.69→0.45 부풀림 제거)
 P-C-3 causal 백테 재평가            ⚠️ 거래 희소·edge 증거 없음 (ensemble/DL 0건)
 P-C-3.5 walkforward (ML 개별)       ✅ ML edge 없음 확정 (PF 0.83/0.79, 33 folds 857/1583건)
+P-C-3.6 v010+causal 백테 (라이브 재현) ✅ -20.39% 손실 → 라이브 v010 수익은 운 확정
 P-C-4 라이브 모델 교체              ❌ 무의미 확정 (causal 환경 edge 없음 → 교체 불가)
 ```
 
@@ -125,6 +126,7 @@ causal 재학습본은 기존 백테 수치(OOS 1118%, 백테 79% 승률 등 loo
 | 2026-06-16 | P-C-2 모델 4종 재학습 (v011) | ✅ 완료 | (모델 git 외) | v011_15m_2020-01-01_2026-04-01 4종 + calibrator(isotonic). lightgbm만 --force-features(캐시 공유) + 개별 config. **lookahead 부풀림 정량: OOS 학습 F1 macro v010~0.69 → v011~0.45, Acc ~0.77→~0.65**. causal SHORT/LONG precision~0.40 recall 0.16~0.24 (HOLD 편중) |
 | 2026-06-16 | P-C-3 causal 백테 재평가 | ⚠️ 결과 | — | OOS 2026-04-01~06-16 threshold 0.55: **ensemble 0 / dl_lstm 0 / dl_transformer 0 / ml_lightgbm 2(+0.81%) / ml_xgboost 4(-1.38%)**. (참고 ensemble threshold 0.40: 7건 -1.58%). → causal 거래 희소 + edge 증거 없음. 표본 부족(6건)으로 단정 불가. **라이브 v010(lookahead 학습)은 동일 구간 활발히 거래·수익 → v010 수익은 학습-추론 불일치 상의 운/bias 가능성 ↑** |
 | 2026-06-16 | P-C-3.5 walkforward (ML 개별) | ✅ 결과 | — | ml_lightgbm/ml_xgboost `--save-all-folds` 재학습 + walkforward 평가(2020~2026, 33 folds). **결과: ml_lightgbm 857건 승률 31.7% PF 0.83 누적 -$9,811 (양수 8/33), ml_xgboost 1583건 승률 30.8% PF 0.79 누적 -$22,710 (양수 9/33). 큰 표본서 profit_factor<1 명확 손실 → causal ML edge 없음 확정** (calibration none 기준). max_dd 35%(DD락 도달 fold 다수) |
+| 2026-06-22 | P-C-3.6 v010+causal 백테 (라이브 동작 과거 재현) | ✅ 결과 | — | latest v010 복원(이전 v011/v012 → .bak_pc35) + causal features(path-c) 백테 = **라이브 v010(lookahead 학습 + causal 입력)의 과거 재현**. 결과(2026-04-01~06-16): **104건, 승률 30.8%, -20.39%(-$2039), max_dd 26%**. 라이브(56건/28%/+$594)와 승률 일관하나 **손익 부호 반대 → 라이브 수익은 운 확정**. 승률 ~30% < TP:SL 2:1 손익분기(~33%) = 기대값 음수. v010(lookahead 학습)은 causal 입력에 과신하며 104건 진입(↔ v011 causal 학습은 0건) → 어느 쪽이든 edge 없음 |
 | (확정) | P-C-4 라이브 교체 | ❌ 무의미 | — | causal 환경 edge 없음 확정 → v011/v012 교체 불가. 전략 paradigm 재검토 필요 |
 
 ---
@@ -143,7 +145,9 @@ causal 재학습본은 기존 백테 수치(OOS 1118%, 백테 79% 승률 등 loo
 - **ensemble / DL(lstm·transformer)**: 진입 신호 전무 (threshold 0.55 거래 0)
 - **ML 개별 walkforward** (33 folds, lightgbm 857건 / xgboost 1583건 = 통계적 충분): **profit_factor 0.83 / 0.79, 양수 fold 24~27%, 누적 -$9.8k / -$22.7k 명확한 손실**
 
-→ **현 전략(15m ensemble ML 단기 방향 예측)은 진짜 거래 edge 가 없다.** 과거 모든 백테 성과(OOS 1118%, 백테 79% 승률 등)는 lookahead 부풀림이었다. 라이브 v010 수익(+$594)은 edge 가 아니라 운/bias 일 가능성이 매우 높다 (lookahead 학습 모델 + 라이브 causal 입력의 우발적 결과).
+→ **현 전략(15m ensemble ML 단기 방향 예측)은 진짜 거래 edge 가 없다.** 과거 모든 백테 성과(OOS 1118%, 백테 79% 승률 등)는 lookahead 부풀림이었다.
+
+**라이브 v010 수익(+$594)은 운으로 확정** (P-C-3.6): 라이브 v010 동작(lookahead 학습 + causal 입력)을 과거 데이터로 그대로 재현하니 **-20.39% 손실**(104건, 승률 30.8%). 라이브와 승률(~28~31%)은 일관하나 손익 부호가 반대였다. 승률 ~30% 는 TP:SL 2:1 의 손익분기(~33%) 미만이라 **기대값이 음수** — 라이브 +$594 는 그 기간의 단기 운일 뿐이다. (참고: v010 은 causal 입력에 과신하며 104건 진입, v011 은 0건 진입 — 학습 방식만 다를 뿐 둘 다 edge 없음.)
 
 ### 의의
 - 가짜 성과로 자금을 확대하기 전에 lookahead 를 발견·차단 → 큰 잠재 손실 회피
