@@ -35,3 +35,10 @@ models/
 
 # 피처 캐시 (parquet, 학습 시 자동 생성)
 data/features/
+
+# PATH_D Phase R 측정 결과 (탐사 산출물, 결과는 보고서에 텍스트 보존)
+data/r1_scan/
+data/r2_scan/
+
+# 1회용 탐사/측정 스크립트 (규칙 8-4: commit 제외, 결과만 보고서에)
+scripts/_tmp_*.py
