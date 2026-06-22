@@ -99,3 +99,15 @@ example_macross:
   atr_period: 14
   atr_sl_mult: 1.5
   reward_risk_ratio: 2.0
+
+# ---- PATH_E 추세추종 전략 (룰베이스) ----
+# strategy/plugins/trend_donchian.py 의 TrendDonchian. Donchian 돌파 + exit channel trailing.
+# 백테: active 에 "trend_donchian" 임시 추가 후 실행 → 종료 시 [] 복구 (규칙 7).
+trend_donchian:
+  risk_per_trade_pct: 0.01            # 필수 (엔진 사이징)
+  max_leverage: 5                     # 필수 (엔진 사이징)
+  entry_period: 20                    # 진입 Donchian 채널 (직전 N봉 돌파)
+  exit_period: 10                     # 청산 Donchian 채널 (trailing)
+  atr_period: 14
+  atr_sl_mult: 2.0                    # 초기 SL = 진입가 ± ATR×2
+  reward_risk_ratio: 100              # TP 사실상 비활성 (trailing 청산)

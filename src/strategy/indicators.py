@@ -83,3 +83,15 @@ def compute_bb_width(
     bb = compute_bbands(df, period, std)
     mid = bb["mid"].replace(0, np.nan)
     return (bb["upper"] - bb["lower"]) / mid * 100
+
+
+def compute_donchian(df: pd.DataFrame, period: int = 20) -> pd.DataFrame:
+    """Donchian Channel: 직전 period 봉의 최고/최저 (현재봉 제외, causal).
+
+    shift(1)로 현재 봉을 제외해 자기참조(lookahead)를 차단한다. 돌파 판정
+    (close > upper)·exit channel trailing 양쪽에서 동일하게 사용 → 일관 causal.
+    초기 period 행은 NaN (호출자가 길이 확인).
+    """
+    upper = df["high"].rolling(period).max().shift(1)
+    lower = df["low"].rolling(period).min().shift(1)
+    return pd.DataFrame({"upper": upper, "lower": lower}, index=df.index)
