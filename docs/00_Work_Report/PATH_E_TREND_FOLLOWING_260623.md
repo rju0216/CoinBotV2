@@ -109,6 +109,7 @@ I-PE001 보수적 가정 근사(trades.csv 집계). 보유 평균 69.8h(8.4 fund
 | 2026-06-23 | PATH_E 신설 + 설계 결정 | ✅ | (대기) | Donchian 돌파+ATR trailing / 4h / plugin+BacktestEngine. 의존성 확인(trailing 훅 OK, donchian 추가 필요) |
 | 2026-06-23 | TF-1 구현 | ✅ 완료 | (대기) | `compute_donchian`(causal shift) + `trend_donchian` plugin(진입/초기SL/TP비활성/trailing 단조) + config 섹션. 함정 반영(trailing 단조 plugin 보장, PositionSide≠SignalSide). 단위 13건 신규, 회귀 514→**527 pass**. 엔진 수정 0 |
 | 2026-06-23 | TF-2 백테 (사용자 수행) | ✅ 1차 GO | (대기) | 2020~2026 +120.93%, 441거래, 승률 35%, **PF 1.31, 평균 R 2.42**, MDD 14.89%. 양수 4/7년, 약세장(2022) short 방어. 결과 §4.1. ML(NO-GO)과 대비 — 추세추종 비대칭 보상 작동. funding/slippage 미반영 낙관 편향(I-PE001) → TF-3 + funding 점검으로 확정 |
+| 2026-06-23 | paper 검증 → I-PE002/003 fix | ✅ 완료 (e2e 검증) | (대기) | paper 첫 기동에서 **시작 직후 진입** 포착 → I-PE002(진행중 봉 신호, 라이브-백테 불일치) + I-PE003(TP 음수→거래소 등록 위험) 발견·수정. `_build_ctx` 진행중봉 제외 + TP None 지원 + ENTRY 로그 TP None 처리. 단위 4 신규, 회귀 527→**529**. 백테 불변(441/PF1.31/TP None). **paper 재기동 e2e ✅**: 에러 없음, 마감 봉(62846.30 실제 Donchian 돌파) SHORT 정상 진입, `TP=None` 표기 — 라이브-백테 신호 동등성 확보 |
 | 2026-06-23 | TF-3 파라미터 민감도 | ✅ robust 확정 | (대기) | 14조합 스윕 **전부 PF>1(1.14~1.41), 양수연도≥4/7, R 2.28~2.90**. 20/10/2.0=평탄영역 중간점(cherry-pick 아님). exit_period 길수록 우수. 결과 §4.2. 1회용 `_tmp_tf3_param_sweep.py`. 디버그: initialize() 누락 fix. 남은 관문=I-PE001 funding |
 | 2026-06-23 | TF-4 funding 점검 + 최종 | ✅ **GO 확정** | (대기) | funding 보수 점검: 최악 상한(0.02%/8h 모두 비용)도 PF 1.18>1, 현실(방향반영) 1.29~1.30≈원본(양방향 헤지). 결과 §4.3. **PATH_E 결론: 추세추종 실거래 후보 확보 — ML(NO-GO)과 대비** |
 
@@ -119,6 +120,8 @@ I-PE001 보수적 가정 근사(trades.csv 집계). 보유 평균 69.8h(8.4 fund
 | ID | 이슈 | 상태 |
 |---|---|---|
 | I-PE001 | 백테 funding=0·slippage=0 → 추세추종(평균 보유 2.9일=funding ~9회)은 funding 영향이 커 성과 낙관 편향 가능. 라이브에선 `_close_with_funding`로 반영되나 백테 미반영(I-BP001 carry) | **✅ 점검 완료(TF-4)** — 보수 가정 근사: 최악 상한(0.02%/8h 모두 비용) PF 1.18>1, 현실(방향반영) 1.29~1.30(양방향 헤지). GO 유지. 단 정밀 백테 통합(BLE-5: ccxt funding history)은 **라이브 전 권장**(carry) |
+| I-PE002 | **paper 검증 중 발견 (2026-06-23)** — 라이브/paper 에서 trend_donchian 이 `ctx.candles.iloc[-1]`(진행 중 봉, ccxt single tick)으로 신호·trailing 판정 → 백테(마감 봉, `_slice_candles`)와 불일치. 시작 직후 SHORT 진입이 증거. candles 직접 쓰는 plugin 공통(example 포함). ML plugin 은 `get_features_for_ctx(ts<now)`로 보호받아 무영향 | **✅ fix** — `_build_ctx`(engine_base)에서 `LAST_CLOSED_BAR_IDX` 기준 진행 중 봉 제외(`n_drop = -1 - IDX`; 백테 0 무변경, 라이브 1 제외). 추상화 교정(모드 차이를 엔진이 흡수). 백테 결과 불변(441/PF 1.31). 단위 2건 |
+| I-PE003 | I-PE002 분석 중 발견 — trend_donchian TP=`현재가±risk×RR(100)` 가 SHORT 에서 **음수 가격**(-97946). 라이브는 `place_take_profit`로 거래소(`takeProfitPrice`)에 실제 등록 → 음수 등록 시 거부·진입 실패 위험 | **✅ fix** — `compute_take_profit` 시그니처 `float\|None` 확장 + trend_donchian `→None`. 엔진: TP None 이면 거래소 등록 skip + check_candle_sl_tp skip. ENTRY 로그(`engine_base.py:557`) `TP=%.2f`→None 안전 처리(paper e2e 에서 발견). 추세추종 정석(TP 미설정, trailing SL 청산). 단위 2건 |
 
 신규 이슈는 I-PE001~ 형태로 등록.
 

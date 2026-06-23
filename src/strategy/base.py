@@ -47,8 +47,13 @@ class StrategyModule(ABC):
     @abstractmethod
     def compute_take_profit(
         self, ctx: StrategyContext, signal: Signal, stop_loss: float
-    ) -> float:
-        """진입 직전 TP 가격 산정."""
+    ) -> float | None:
+        """진입 직전 TP 가격 산정.
+
+        None 반환 시 TP 미설정 — 거래소 TP conditional order 미등록 +
+        check_candle_sl_tp 의 TP 체크 skip. 추세추종처럼 trailing SL 만으로
+        청산하는 전략용 (I-PE003).
+        """
 
     # ---- 선택 훅 (기본 no-op) ----
 

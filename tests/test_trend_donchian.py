@@ -112,15 +112,53 @@ class TestTrailing:
         assert strat.update_stop_loss(_ctx(df, 18.0, pos), pos) is None
 
 
-class TestTakeProfitInactive:
-    def test_tp_far_long(self):
-        df = _df([20] * 22, [1] * 22, [10] * 22)
-        strat = TrendDonchian({"reward_risk_ratio": 100})
-        tp = strat.compute_take_profit(_ctx(df, 10.0), Signal(side=SignalSide.LONG), 8.0)
-        assert tp == 10.0 + 2.0 * 100   # risk=2 → TP=210, 사실상 안 닿음
+class TestTakeProfitNone:
+    """I-PE003: 추세추종은 TP 미설정(None) → 거래소 등록·청산 체크 skip."""
 
-    def test_tp_far_short(self):
+    def test_tp_none_long(self):
         df = _df([20] * 22, [1] * 22, [10] * 22)
-        strat = TrendDonchian({"reward_risk_ratio": 100})
-        tp = strat.compute_take_profit(_ctx(df, 10.0), Signal(side=SignalSide.SHORT), 12.0)
-        assert tp == 10.0 - 2.0 * 100
+        strat = TrendDonchian({})
+        assert strat.compute_take_profit(
+            _ctx(df, 10.0), Signal(side=SignalSide.LONG), 8.0) is None
+
+    def test_tp_none_short(self):
+        df = _df([20] * 22, [1] * 22, [10] * 22)
+        strat = TrendDonchian({})
+        assert strat.compute_take_profit(
+            _ctx(df, 10.0), Signal(side=SignalSide.SHORT), 12.0) is None
+
+
+class TestBuildCtxLastClosedBar:
+    """I-PE002: _build_ctx 가 진행 중 봉(라이브 iloc[-1])을 잘라 plugin 에
+    '직전 마감 봉까지' 만 전달 → candles 직접 쓰는 plugin 의 라이브-백테 신호 일치."""
+
+    def _build(self, last_closed_idx, df):
+        import types
+
+        from src.core.engine_base import AbstractEngine
+
+        fake = types.SimpleNamespace(
+            LAST_CLOSED_BAR_IDX=last_closed_idx,
+            _position=None,
+            _features_cache={},
+        )
+        strat = types.SimpleNamespace(
+            name="trend_donchian", entry_timeframe="4h", params={}
+        )
+        return AbstractEngine._build_ctx(
+            fake, strat, {"4h": df}, 100.0, 1000.0, df.index[-1]
+        )
+
+    def test_live_drops_in_progress_bar(self):
+        # 라이브(-2): 마지막 봉(진행 중) 제외 → iloc[-1] = 직전 마감 봉
+        df = _df(highs=[10, 11, 12], lows=[1, 2, 3], closes=[5, 6, 7])
+        ctx = self._build(-2, df)
+        assert len(ctx.candles["4h"]) == 2
+        assert ctx.candles["4h"]["close"].iloc[-1] == 6
+
+    def test_backtest_no_drop(self):
+        # 백테(-1): n_drop=0 → 무변경
+        df = _df([10, 11, 12], [1, 2, 3], [5, 6, 7])
+        ctx = self._build(-1, df)
+        assert len(ctx.candles["4h"]) == 3
+        assert ctx.candles["4h"]["close"].iloc[-1] == 7

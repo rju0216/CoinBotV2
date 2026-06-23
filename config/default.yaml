@@ -110,4 +110,4 @@ trend_donchian:
   exit_period: 10                     # 청산 Donchian 채널 (trailing)
   atr_period: 14
   atr_sl_mult: 2.0                    # 초기 SL = 진입가 ± ATR×2
-  reward_risk_ratio: 100              # TP 사실상 비활성 (trailing 청산)
+                                      # TP 미설정 (compute_take_profit→None, trailing SL 청산)

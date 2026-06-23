@@ -11,7 +11,7 @@ PATH_E TF-1. 단기 방향 *예측*(PATH_D NO-GO) 대신 추세에 *반응* + tr
 청산:
   - 초기 SL = 진입가 ± ATR × atr_sl_mult
   - trailing = exit_period 봉 Donchian 반대 채널(Turtle exit). 단조 갱신(plugin 보장).
-  - TP 사실상 비활성(reward_risk_ratio 크게) → trailing 만 청산 → 큰 추세 다 먹음
+  - TP 미설정(compute_take_profit→None) → trailing SL 만 청산 → 큰 추세 다 먹음(I-PE003)
 
 config 예시:
   strategies:
@@ -23,7 +23,6 @@ config 예시:
     exit_period: 10
     atr_period: 14
     atr_sl_mult: 2.0
-    reward_risk_ratio: 100   # TP 사실상 비활성 (trailing 청산)
 """
 
 from __future__ import annotations
@@ -87,13 +86,10 @@ class TrendDonchian(StrategyModule):
 
     def compute_take_profit(
         self, ctx: StrategyContext, signal: Signal, stop_loss: float
-    ) -> float:
-        # 추세추종: TP 사실상 비활성(큰 RR) → trailing 으로 청산해 큰 추세 보존
-        rr = float(self.params.get("reward_risk_ratio", 100.0))
-        risk = abs(ctx.current_price - stop_loss)
-        if signal.side == SignalSide.LONG:
-            return ctx.current_price + risk * rr
-        return ctx.current_price - risk * rr
+    ) -> float | None:
+        # 추세추종: TP 미설정(None) → trailing SL(update_stop_loss) 만으로 청산.
+        # 거래소 TP conditional order 미등록 → 큰 추세를 끝까지 보존(I-PE003).
+        return None
 
     def update_stop_loss(
         self, ctx: StrategyContext, position: Position

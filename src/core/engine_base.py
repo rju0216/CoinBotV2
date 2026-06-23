@@ -175,6 +175,17 @@ class AbstractEngine(ABC):
         balance: float,
         now: datetime,
     ) -> StrategyContext:
+        # I-PE002: 라이브는 ctx.candles 의 iloc[-1] 이 진행 중 봉(ccxt watch_ohlcv 가
+        # 봉 진행 중 발행하는 tick). LAST_CLOSED_BAR_IDX 기준으로 진행 중 봉을 잘라
+        # plugin 이 항상 '직전 마감 봉까지' 만 보게 한다 → candles 직접 쓰는 plugin
+        # (trend_donchian 등)의 라이브-백테 신호 일치. 백테(-1)는 n_drop=0 무변경,
+        # 라이브(-2)는 마지막 1봉 제외. current_price 는 진입가용으로 현재가 유지.
+        n_drop = -1 - self.LAST_CLOSED_BAR_IDX
+        if n_drop > 0:
+            candles_per_tf = {
+                tf: (df.iloc[:-n_drop] if len(df) > n_drop else df.iloc[:0])
+                for tf, df in candles_per_tf.items()
+            }
         # 슬롯이 이 전략 소유면 해당 Position 노출, 아니면 None
         own_position = (
             self._position
@@ -453,9 +464,10 @@ class AbstractEngine(ABC):
             logger.info("Risk validation rejected entry for %s", strategy.name)
             return False
 
-        # SL/TP
+        # SL/TP (I-PE003: TP None = 미설정 → 거래소 등록·청산 체크 skip)
         sl_price = float(strategy.compute_stop_loss(ctx, signal))
-        tp_price = float(strategy.compute_take_profit(ctx, signal, sl_price))
+        tp_raw = strategy.compute_take_profit(ctx, signal, sl_price)
+        tp_price = float(tp_raw) if tp_raw is not None else None
 
         # 사이징 — 전략 params에서 risk_per_trade_pct/max_leverage 추출
         try:
@@ -509,9 +521,10 @@ class AbstractEngine(ABC):
             entry_order_id=entry_order_id,
         )
 
-        # 거래소 SL/TP pending (페이퍼는 no-op)
+        # 거래소 SL/TP pending (페이퍼는 no-op). I-PE003: TP None 이면 등록 skip.
         await self.broker.place_stop_loss(position_side, sl_price, size)
-        await self.broker.place_take_profit(position_side, tp_price, size)
+        if tp_price is not None:
+            await self.broker.place_take_profit(position_side, tp_price, size)
 
         # Position 등록
         self._position = Position(
@@ -541,13 +554,13 @@ class AbstractEngine(ABC):
             EventType.POSITION_OPENED.value, self._position
         )
         logger.info(
-            "ENTRY[%s]: %s %.4f @ %.2f, SL=%.2f, TP=%.2f, trade_id=%d",
+            "ENTRY[%s]: %s %.4f @ %.2f, SL=%.2f, TP=%s, trade_id=%d",
             strategy.name,
             position_side.value,
             size,
             ctx.current_price,
             sl_price,
-            tp_price,
+            f"{tp_price:.2f}" if tp_price is not None else "None",  # I-PE003: TP None 안전
             trade_id,
         )
         return True
