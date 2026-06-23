@@ -49,5 +49,8 @@ data/tf5_ablation/
 # PATH_E 자금관리 1차 (sizing) 결과 (탐사 산출물)
 data/tf5_sizing/
 
+# BTC 국면 분석 (regime) 결과 (탐사 산출물)
+data/regime_analysis/
+
 # 1회용 탐사/측정 스크립트 (규칙 8-4: commit 제외, 결과만 보고서에)
 scripts/_tmp_*.py
