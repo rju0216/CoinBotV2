@@ -111,3 +111,18 @@ trend_donchian:
   atr_period: 14
   atr_sl_mult: 2.0                    # 초기 SL = 진입가 ± ATR×2
                                       # TP 미설정 (compute_take_profit→None, trailing SL 청산)
+
+# ---- PATH_E TF-5a 실험 plugin (edge 강화 ablation, baseline freeze) ----
+# trend_donchian_exp: baseline + long_only/regime_filter 옵션. 1회용 ablation 스크립트가 변형 오버라이드.
+trend_donchian_exp:
+  risk_per_trade_pct: 0.01
+  max_leverage: 5
+  entry_period: 20
+  exit_period: 10
+  atr_period: 14
+  atr_sl_mult: 2.0
+  long_only: false
+  regime_filter_type: "none"          # adx/er/chop/ma/vol/di/none
+  regime_threshold: 25
+  vol_lookback: 100
+  vol_max_quantile: 0.8

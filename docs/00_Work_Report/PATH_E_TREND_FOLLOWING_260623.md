@@ -40,7 +40,45 @@ TF-1  compute_donchian + trend_donchian plugin 구현      ✅ 완료 (단위 13
 TF-2  백테 (전체 + 연도별 성과 분해)                      ✅ 완료 — 1차 GO (PF 1.31, +120%, R 2.42)
 TF-3  파라미터 민감도 스윕 (과최적화 배제)                ✅ 완료 — robust 확정 (14/14 조합 PF>1)
 TF-4  go/no-go (PF>1·양수 연도·Calmar·robust)            ✅ GO 확정 (funding 최악 상한도 PF 1.18)
+TF-5a edge 강화 코어 (exit·long-only·레짐필터)           ✅ 종착 — 채택 long_only+chop50 (PF 1.31→1.86)
+TF-5b cross-TF 추세 정렬 (1d)                            🔄 진행 (코어 순개선 → 조건 충족)
+TF-5c 고급 요소 (피라미딩/부분청산/chandelier/풀백)       ⬜ 선택적 (견고+이유 시만, 생략 가능)
 ```
+
+### 4.5 TF-5 edge 강화 — 로드맵·검증 프레임 (확정, 2026-06-23)
+- **단계적·조건부**: TF-5a 코어 → (순개선 시) TF-5b → (선택) TF-5c. 각 단계가 walkforward 순개선 입증해야 다음.
+- **멈춤 기준**: OOS 개선 미미 / robust·단순함 훼손 / 복잡도>가치 → 중단하고 라이브·자금관리로.
+- **검증 = 연도별 walkforward** (단일 in-sample/OOS 2분할 기각): 추세추종은 소수 큰 추세 의존이라 단일 OOS(2.4년) 변동 큼 + 단계 반복 시 OOS 신선도 상실. 각 edge 요소를 baseline 에 더해 전기간 연도별 baseline 대비 개선 측정, **다수 연도 일관 개선 시 채택**(TF-3 robust 논리). 레짐 임계는 robust 스윕(평탄성). 최종 OOS=라이브.
+- **격리**: baseline freeze, TF-5 는 새 plugin `trend_donchian_exp.py` + config 새 섹션 + (필요시) 새 indicator. paper 와 코드 독립.
+
+### 4.6 TF-5a 1차 ablation 결과 (2026-06-23)
+
+`_tmp_tf5_ablation.py` 17변형(exit/long_only/regime 6지표×임계). 결과: `data/tf5_ablation/`.
+- **정합 ✅**: `baseline`(옵션 off) = baseline trend_donchian **441거래/PF 1.31/pos 4/7/mdd 14.9%** 정확 일치 (exp plugin 정확성 검증).
+
+| 변형 | PF(dPF) | pos(dPos) | MDD(dMDD) | 판정 |
+|---|---|---|---|---|
+| long_only | **1.61**(+0.30) | 4/7(0) | **10.8**(−4.1) | ⭐ 채택 — short(PF0.96) 제거 구조적 개선 |
+| chop50 | 1.49(+0.18) | **6/7**(+2) | 11.8(−3.1) | ⭐ 채택 — 횡보 회피, ret 171.8% |
+| chop38 | **1.68**(+0.37) | 5/7(+1) | **8.0**(−6.9) | ⭐ (거래 197 적음) |
+| ma200 | 1.46(+0.15) | 5/7(+1) | 11.9(−3.0) | ○ 후보 |
+| er0.4 | 1.43(+0.12) | 5/7(+1) | 10.5(−4.4) | △ 임계 비단조(0.3 pos−1) = cherry-pick 의심 |
+| exit20 | 1.35(+0.04) | 4/7 | 16.9(+2.0) | △ 약함, MDD↑ |
+| adx/vol/di | ~0 | −1~0 | — | ✗ 기각(수익급감/해로움/무효) |
+
+- **robust 판정**: chop 38/50/62 **단조·평탄**(낮을수록 강한 필터·강한 개선) → cherry-pick 아님. long_only 구조적. er 은 0.4만 좋아 비단조 → 신중.
+- **결론**: whipsaw 회피(chop) + short 제거(long_only)가 추세추종 edge 실증 강화 — PF 1.31→1.5~1.6, MDD 15%→8~11%. → 조합 검증으로.
+
+**조합 검증 (8변형, 2026-06-23)**:
+| 변형 | PF(dPF) | pos | MDD | 거래 |
+|---|---|---|---|---|
+| **LO+chop50** | **1.86**(+0.55) | **6/7** | 10.8 | 205 |
+| LO+chop38 | **2.22**(+0.91) | 5/7 | **7.9** | 111 |
+| LO+ma200 | 1.82(+0.51) | 5/7 | 9.8 | 184 |
+
+- **시너지 확인 ✅**: 조합 PF가 각 단독보다 높음(LO+chop50 1.86 > long_only 1.61·chop50 1.49) — short 제거+횡보 회피 독립 메커니즘 곱셈 효과.
+- **채택 = `long_only + chop50`**: baseline 대비 **PF 1.31→1.86, 양수연도 4→6/7, MDD 14.9→10.8%**, 거래 205(연 32건 적정). LO+chop38은 PF 2.22지만 거래 111(연 17건 빈도 낮음·표본 약) → chop50 안전.
+- → **TF-5a 종착: edge 강화 확정**. 다음 TF-5b(cross-TF) 조건부 진행.
 
 ### 4.3 TF-4 funding 점검 + 최종 판정 (2026-06-23)
 
@@ -110,6 +148,8 @@ I-PE001 보수적 가정 근사(trades.csv 집계). 보유 평균 69.8h(8.4 fund
 | 2026-06-23 | TF-1 구현 | ✅ 완료 | (대기) | `compute_donchian`(causal shift) + `trend_donchian` plugin(진입/초기SL/TP비활성/trailing 단조) + config 섹션. 함정 반영(trailing 단조 plugin 보장, PositionSide≠SignalSide). 단위 13건 신규, 회귀 514→**527 pass**. 엔진 수정 0 |
 | 2026-06-23 | TF-2 백테 (사용자 수행) | ✅ 1차 GO | (대기) | 2020~2026 +120.93%, 441거래, 승률 35%, **PF 1.31, 평균 R 2.42**, MDD 14.89%. 양수 4/7년, 약세장(2022) short 방어. 결과 §4.1. ML(NO-GO)과 대비 — 추세추종 비대칭 보상 작동. funding/slippage 미반영 낙관 편향(I-PE001) → TF-3 + funding 점검으로 확정 |
 | 2026-06-23 | paper 검증 → I-PE002/003 fix | ✅ 완료 (e2e 검증) | (대기) | paper 첫 기동에서 **시작 직후 진입** 포착 → I-PE002(진행중 봉 신호, 라이브-백테 불일치) + I-PE003(TP 음수→거래소 등록 위험) 발견·수정. `_build_ctx` 진행중봉 제외 + TP None 지원 + ENTRY 로그 TP None 처리. 단위 4 신규, 회귀 527→**529**. 백테 불변(441/PF1.31/TP None). **paper 재기동 e2e ✅**: 에러 없음, 마감 봉(62846.30 실제 Donchian 돌파) SHORT 정상 진입, `TP=None` 표기 — 라이브-백테 신호 동등성 확보 |
+| 2026-06-23 | TF-5a 1차 ablation | ✅ 1차 결과 | (대기) | `trend_donchian_exp` plugin(long_only+regime 6지표) + 단위 8 + 회귀 529→**537**. 17변형 ablation: 정합✓(baseline_exp=441/PF1.31). **채택유력: long_only(PF→1.61,MDD−4.1), chop(38/50 robust, chop50 pos 6/7·ret171.8%)**. 후보 ma200. 기각 adx/vol/di/er(cherry-pick). §4.6. 다음=조합 검증. 1회용 `_tmp_tf5_ablation.py` |
+| 2026-06-23 | TF-5a 조합 종착 | ✅ 채택 | (대기) | 조합 8변형: **시너지 확인**(LO+chop50 PF1.86 > long_only 1.61·chop50 1.49 단독). **채택 = long_only+chop50** (PF 1.31→1.86, pos 4→6/7, MDD 14.9→10.8). LO+chop38 PF2.22지만 거래 111(빈도 낮음·표본 약) → chop50 안전. TF-5a 종착. 다음 TF-5b cross-TF |
 | 2026-06-23 | TF-3 파라미터 민감도 | ✅ robust 확정 | (대기) | 14조합 스윕 **전부 PF>1(1.14~1.41), 양수연도≥4/7, R 2.28~2.90**. 20/10/2.0=평탄영역 중간점(cherry-pick 아님). exit_period 길수록 우수. 결과 §4.2. 1회용 `_tmp_tf3_param_sweep.py`. 디버그: initialize() 누락 fix. 남은 관문=I-PE001 funding |
 | 2026-06-23 | TF-4 funding 점검 + 최종 | ✅ **GO 확정** | (대기) | funding 보수 점검: 최악 상한(0.02%/8h 모두 비용)도 PF 1.18>1, 현실(방향반영) 1.29~1.30≈원본(양방향 헤지). 결과 §4.3. **PATH_E 결론: 추세추종 실거래 후보 확보 — ML(NO-GO)과 대비** |
 
@@ -132,3 +172,4 @@ I-PE001 보수적 가정 근사(trades.csv 집계). 보유 평균 69.8h(8.4 fund
 | 시점 | 사안 | 결정 | 근거 |
 |---|---|---|---|
 | 2026-06-23 | 진입 룰/TF/검증 | Donchian 돌파+ATR trailing / 4h / plugin+BacktestEngine | 전형·단순·라이브백테 일관 |
+| 2026-06-23 | 사이징 최적화 (향후) | edge·라이브 검증 후 fractional Kelly + 목표 MDD 제약 기반. `max_leverage` cap 유지(저변동 size 폭증 안전장치). 변동성타깃은 TF-5② 통합 | risk%는 edge 무관·**위험선호 결정**(백테 수익최대화=파산위험 금지). 현재 1% 룰(실배율~0.4배)은 라이브 전 보수 유지. max_lev 5는 baseline 상속값(trend_donchian 특화 아님) |

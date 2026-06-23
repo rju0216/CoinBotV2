@@ -43,5 +43,8 @@ data/r2_scan/
 # PATH_E TF-3 파라미터 스윕 결과 (탐사 산출물)
 data/tf3_sweep/
 
+# PATH_E TF-5a edge 강화 ablation 결과 (탐사 산출물)
+data/tf5_ablation/
+
 # 1회용 탐사/측정 스크립트 (규칙 8-4: commit 제외, 결과만 보고서에)
 scripts/_tmp_*.py
