@@ -42,6 +42,11 @@ async def main() -> None:
         "--config", default="config/default.yaml", help="config YAML 경로"
     )
     parser.add_argument(
+        "--symbol",
+        help="심볼 오버라이드 (예: ETH/USDT:USDT). 미지정 시 config 의 exchange.symbol 사용. "
+        "멀티 종목 다운로드용 (MS, PATH_E §9).",
+    )
+    parser.add_argument(
         "--start", help="시작일 (YYYY-MM-DD). --limit와 상호 배타."
     )
     parser.add_argument(
@@ -60,6 +65,8 @@ async def main() -> None:
         parser.error("--start/--end 또는 --limit 중 하나는 필수")
 
     config = load_config(args.config)
+    if args.symbol:
+        config["exchange"]["symbol"] = args.symbol
     setup_logger(config)
 
     timeframes = [tf.strip() for tf in args.timeframe.split(",") if tf.strip()]

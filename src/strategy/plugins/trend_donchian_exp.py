@@ -71,7 +71,8 @@ class TrendDonchianExp(StrategyModule):
                 v = compute_choppiness(df, 14).iloc[-1]
                 return bool(v < thr) if pd.notna(v) else False
             if rtype == "ma":
-                ema = compute_ema(df, 200)
+                ma_period = int(self.params.get("ma_period", 200))
+                ema = compute_ema(df, ma_period)
                 e = ema.iloc[-1] if ema is not None else None
                 if e is None or pd.isna(e):
                     return False

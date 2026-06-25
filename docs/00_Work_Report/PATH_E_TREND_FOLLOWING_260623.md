@@ -174,6 +174,9 @@ ZigZag 20% 추세 전환 분할(32 세그먼트, 1d 2026-06-23 갱신) + LO+chop
 | 2026-06-24 | BTC 국면 분석 (라이브 타이밍) | ✅ 완료 | §8.6 | ZigZag 20% 32국면(1d 06-23) + LO+chop50 성과. **현재=하락 국면**(ADX 34, ATH −50%). **LO+chop50 상승장 전략**: up 12/16 양수(거래 153) vs down 3/16(거래 52). 현재 라이브 초기 불리 → 보수+인내+상승전환 대기 정당화. 결과 §4.7. 1회용 `_tmp_regime_analysis.py` |
 | 2026-06-23 | TF-3 파라미터 민감도 | ✅ robust 확정 | §8.6 | 14조합 스윕 **전부 PF>1(1.14~1.41), 양수연도≥4/7, R 2.28~2.90**. 20/10/2.0=평탄영역 중간점(cherry-pick 아님). exit_period 길수록 우수. 결과 §4.2. 1회용 `_tmp_tf3_param_sweep.py`. 디버그: initialize() 누락 fix. 남은 관문=I-PE001 funding |
 | 2026-06-23 | TF-4 funding 점검 + 최종 | ✅ **GO 확정** | §8.6 | funding 보수 점검: 최악 상한(0.02%/8h 모두 비용)도 PF 1.18>1, 현실(방향반영) 1.29~1.30≈원본(양방향 헤지). 결과 §4.3. **PATH_E 결론: 추세추종 실거래 후보 확보 — ML(NO-GO)과 대비** |
+| 2026-06-24 | MS 멀티 종목 검증 계획 수립 | 🔄 착수 | — | LO+chop50 종목 보편성 검증 (ETH/SOL/XRP/DOGE). 2단계 게이트(검증→탐색)+BTC robust 통제 그대로. 사전 함정 점검: **I-PE005(max_position_size_btc 수량 cap → 알트 백테 클램프) 발견**, ATR 변동성 흡수 ✅, 종목 동조성(0.7~0.9)으로 "보편" 신호 강등. 상세 §9. 다음=MS-1 데이터+cap 처리 |
+| 2026-06-24 | MS-1 데이터+cap / MS-2 검증 | ✅ 완료 | (미커밋) | `download_history.py --symbol` 추가. 5종목 4h 정합 통과(SOL 2021-01-25/DOGE 2020-07-11 상장보정). **검증: cap 무력화 불변(BTC 441/1.31 재현), DOGE 레버리지 실측 0.205x(부풀리기 없음·5x cap 0% 바인딩), funding=0 확인.** MS-2: **LO+chop50 5/5 PF>1·baseline 개선** → 추세추종 보편 입증(동조성 한정). ma200 계열 강함(ret 보존)→MS-3 후보. 결과 §9.5. 1회용 `_tmp_ms_multisymbol.py` |
+| 2026-06-25 | MS-3a/b 필터 robust 탐색 | ✅ 완료 | (미커밋) | chop 임계 평탄성 **5/5 단조**(cherry-pick 아님, c30 표본 과적합·c44~50 균형). 연도 walkforward: 공통 약점 2022/2026, **ma 계열 연도 일관 우수**(ETH/XRP 6/7). `trend_donchian_exp` ma_period 파라미터화(회귀 BTC LO+ma200 1.82 일치). ma 기간 스윕: **ma 가 chop 보다 임계 robust+ret 보존 우수**(chop 강필터 ret 붕괴, ma 평탄). 결과 §9.6. 다음=MS-4 chop50 vs ma 채택 재검토. 1회용 `_tmp_ms3_explore.py`/`_tmp_ms3b_filter_table.py` |
 
 ---
 
@@ -185,6 +188,7 @@ ZigZag 20% 추세 전환 분할(32 세그먼트, 1d 2026-06-23 갱신) + LO+chop
 | I-PE002 | **paper 검증 중 발견 (2026-06-23)** — 라이브/paper 에서 trend_donchian 이 `ctx.candles.iloc[-1]`(진행 중 봉, ccxt single tick)으로 신호·trailing 판정 → 백테(마감 봉, `_slice_candles`)와 불일치. 시작 직후 SHORT 진입이 증거. candles 직접 쓰는 plugin 공통(example 포함). ML plugin 은 `get_features_for_ctx(ts<now)`로 보호받아 무영향 | **✅ fix** — `_build_ctx`(engine_base)에서 `LAST_CLOSED_BAR_IDX` 기준 진행 중 봉 제외(`n_drop = -1 - IDX`; 백테 0 무변경, 라이브 1 제외). 추상화 교정(모드 차이를 엔진이 흡수). 백테 결과 불변(441/PF 1.31). 단위 2건 |
 | I-PE003 | I-PE002 분석 중 발견 — trend_donchian TP=`현재가±risk×RR(100)` 가 SHORT 에서 **음수 가격**(-97946). 라이브는 `place_take_profit`로 거래소(`takeProfitPrice`)에 실제 등록 → 음수 등록 시 거부·진입 실패 위험 | **✅ fix** — `compute_take_profit` 시그니처 `float\|None` 확장 + trend_donchian `→None`. 엔진: TP None 이면 거래소 등록 skip + check_candle_sl_tp skip. ENTRY 로그(`engine_base.py:557`) `TP=%.2f`→None 안전 처리(paper e2e 에서 발견). 추세추종 정석(TP 미설정, trailing SL 청산). 단위 2건 |
 | I-PE004 | 자금관리 1차 중 발견 — 백테 `equity_curve` 가 실현 잔고만 추적(미실현 drawdown 미반영, `engine.py:445` "unrealized 미추적") → 백테 MDD 가 실제 경험 MDD 보다 과소 | 미해결(영향 작음) — **영향 정량(post-hoc 재구성)**: 미실현/실현 MDD 배율 baseline 1.04x·LO+chop50 1.14x. 추세추종 짧은 보유(3.1일)+trailing 으로 차이 작아 기존 MDD 거의 유효. 근본 fix(엔진 매 봉 미실현 equity 추적)는 2차, 현재는 post-hoc 보정으로 충분 |
+| I-PE005 | **MS 계획 중 발견 (2026-06-24)** — `RiskManager.calculate_position_size`(`manager.py:214`)의 `size = min(raw_size, max_size_by_leverage, max_position_size_btc=1.0)` 가 **절대 수량 1.0 cap**. BTC(1.0≈$60k)는 raw_size 가 거의 안 걸려 무영향이나, 알트는 수량 의미가 달라(SOL 1.0≈$150, XRP 1.0≈$2, DOGE 1.0≈$0.2) **알트 백테 전 거래가 1.0 으로 클램프 → 결과 왜곡/무효**. cap 이 *수량* 기준이라 종목 간 비교 자체 불가 | **회피(백테)** — MS 백테 시 config `risk.max_position_size_btc` 무력화(1e12) 오버라이드 + BTC 재현으로 cap 미작동(결과 불변) 정합 확인. **근본(명목가 $ 기준 cap or 종목별 설정)은 멀티 종목 라이브 시 재설계 필요(carry)** — 단일 BTC 라이브엔 무영향 |
 
 신규 이슈는 I-PE001~ 형태로 등록.
 
@@ -203,7 +207,7 @@ ZigZag 20% 추세 전환 분할(32 세그먼트, 1d 2026-06-23 갱신) + LO+chop
 ## 8. 현재 상태 + 남은 작업 (★ 새 세션 진입점)
 
 ### 8.1 한 줄 요약
-**LO+chop50 추세추종 전략을 라이브 후보로 확정(백테·자금관리·국면 분석 완료). 현재 baseline `trend_donchian` paper 가동 중(SHORT 보유, 청산 대기). 다음 = paper 청산 → 라이브-백테 정합성 검증 → LO+chop50 정식화 → 소액 라이브(risk 1%).**
+**LO+chop50 추세추종 전략을 라이브 후보로 확정(백테·자금관리·국면 분석 완료). 현재 baseline `trend_donchian` paper 가동 중(SHORT 보유, 청산 대기). 병행 트랙으로 MS 멀티 종목 보편성 검증 착수(§9, ETH/SOL/XRP/DOGE). 다음 = MS-1(데이터+cap 처리) / paper 청산 → 라이브-백테 정합성 → LO+chop50 정식화 → 소액 라이브(risk 1%).**
 
 ### 8.2 채택 전략·사이징 (확정)
 - **전략 = LO+chop50**: `trend_donchian` + `long_only=True` + `regime_filter_type=chop` + `regime_threshold=50`.
@@ -230,6 +234,9 @@ ZigZag 20% 추세 전환 분할(32 세그먼트, 1d 2026-06-23 갱신) + LO+chop
 4. 정식화본 백테 재검증 재확인 (slippage/funding — 1차 완료, §169)
 5. 소액 라이브 시작 (risk 1%, 하락장 부진 각오, 검증 목적). 서버 운영 시 AWS Lightsail 1GB(~$7/월) or EC2 t4g.small(무료) + systemd + 텔레그램 모니터링
 6. 상승 전환 + 라이브 edge 확인 후 사이징 점진 증액 (→3%)
+
+[병행 트랙] MS 멀티 종목 보편성 검증 (§9) — LO+chop50 라이브 후보의 강건성 확인.
+  라이브 의사결정(LO+chop50 신뢰도)에 환류. 결과가 멀티 종목 동시 운영으로 확장 시 PATH_F 분기.
 ```
 
 ### 8.5 후순위·향후 (carry)
@@ -253,5 +260,134 @@ ZigZag 20% 추세 전환 분할(32 세그먼트, 1d 2026-06-23 갱신) + LO+chop
 - `_tmp_tf5_ablation.py` — TF-5a ablation (VARIANTS 수정해 1차 17변형/조합 8변형)
 - `_tmp_tf5_sizing.py` — 자금관리 1차(R-multiple·연속켈리·post-hoc 미실현 MDD·risk 스윕)
 - `_tmp_regime_analysis.py` — BTC 국면 분석(ZigZag 20%, 1d)
+- `_tmp_ms_multisymbol.py` — MS-2 멀티 종목 검증(5종목×8변형, cap 무력화)
+- `_tmp_ms3_explore.py` — MS-3a chop 임계 평탄성 + 연도 walkforward
+- `_tmp_ms3b_filter_table.py` — MS-3b chop·ma 임계 PF/ret 테이블(ma_period 스윕)
 - (PATH_D: `_tmp_r1_ic_scan.py`, `_tmp_r2_meanrev_sim.py`)
 - 재현: `config/default.yaml` active/params 오버라이드 + `BacktestEngine` (각 스크립트 상단 주석 참조)
+
+---
+
+## 9. MS — 멀티 종목 보편성 검증 (★ 2026-06-24 착수)
+
+### 9.0 목적
+LO+chop50 는 **BTC in-sample 으로 선택된** 설정(TF-5a ablation). 이를 ETH/SOL/XRP/DOGE 에
+**손대지 않고 그대로 던져** 추세추종 edge 가 종목 보편적인지(=과최적화 아닌지) 검증한다.
+부차로 종목별 통하는 로직을 탐색한다. 다른 종목 = (불완전한) out-of-sample 표본.
+
+### 9.1 설계 결정 (확정, 2026-06-24)
+| 항목 | 결정 | 근거 |
+|---|---|---|
+| 검증 구조 | **2단계 게이트**: ① 검증(BTC 확정 8변형 고정 파라미터) → ② 탐색(부진 종목, robust 통제) | 종목별 베스트 1개 선택 = 다중비교 함정. 검증을 탐색의 문지기로 두어 cherry-pick 억제 |
+| 종목 | ETH / SOL / XRP / DOGE | 대형·고변동강추세·횡보박스·밈 = 성격 분산(추세추종 우호/불리 모두 표본화) |
+| 방법론 | BTC robust 통제 **그대로**: 고정 변형 풀(즉흥 지표 금지)·임계 평탄성·연도 walkforward·표본 게이트 | TF-3/TF-5a 와 동일 잣대로 실재 edge vs 노이즈 구분 |
+| 평가 | 종목별 PF/양수연도/MDD/거래수 + **메타: 4종 중 몇 종에서 baseline 개선·PF>1·LO+chop50 재현** | "종목별 베스트 나열"이 아니라 "동일 설정의 종목 간 일관성"이 판정 포인트 |
+| 격리 | plugin/엔진/RiskManager 수정 0. config 오버라이드(symbol·cap)로만 전환. 1회용 스크립트 | 설계원칙·규칙 8(캡슐화). download_history `--symbol`만 영구 커밋(멀티 종목 영구 지원) |
+
+### 9.2 사전 함정 점검 (구현 전 코드 확인 완료)
+- **I-PE005 (치명, §6)**: `max_position_size_btc=1.0` 수량 cap → 알트 백테 클램프. **백테 무력화(1e12) 필수**. 미처리 시 MS-2 결과 전부 무효.
+- **ATR 변동성 흡수 ✅ 확인**: 사이징 `raw_size = (balance×risk%) / (ATR×mult)` (`manager.py:204`) — risk 는 $ 고정, 분모가 ATR 이라 변동성 큰 종목 size 자동 축소 → **같은 파라미터 던지기가 기술적으로 정당**(cap 만 제거하면).
+- **종목 동조성 한계**: ETH/SOL/XRP/DOGE ↔ BTC 0.7~0.9 상관(같은 매크로 사이클). 4종이 "4 독립 표본"이 아니라 사실상 1.x → **"보편 edge" 신호 강도 한 단계 낮춰** 해석.
+- **funding 낙관 편향**: 백테 funding=0(I-PE001). 알트는 funding 변동성·역프 커 BTC 보다 편향 큼 → 보수적 해석, 사후 점검.
+- **DOGE 데이터 제약**: OKX 무기한 상장 늦음(미확인, MS-1 실측). 데이터 짧으면 MS-3 탐색·연도 walkforward 신뢰 강등.
+
+### 9.3 단계 (MS-1 ~ MS-4)
+```
+MS-1  데이터 + cap 처리                                          ✅ 완료
+        a) download_history.py --symbol 인자 추가(영구 커밋 대기)
+        b) ETH/SOL/XRP/DOGE 4h 다운로드 — SOL/DOGE 상장 늦어 start 보정
+        c) 정합 검증 통과(gap·중복 0, 첫봉 거래량·가격 정상)
+        d) cap 무력화 + BTC 재현(441/PF1.31 불변) 정합 ✅ + DOGE 레버리지 실측
+MS-2  검증 — _tmp_ms_multisymbol.py: 5종목 × 8변형, 파라미터 고정   ✅ 완료 (§9.5)
+        → LO+chop50 5/5 PF>1·baseline 개선. 추세추종 보편 입증(동조성 한정)
+MS-3  탐색 — chop 임계 평탄성 + 연도 walkforward + ma 기간 robust    ✅ 완료 (§9.6)
+        → LO+필터 보편. chop 단조(PF↑/ret↓ trade-off), ma robust+ret 보존 우수
+MS-4  종합 — chop50 vs ma 채택 재검토 + 라이브 함의                 🔄 진행
+```
+
+### 9.4 코드 변경 매트릭스 (구현 계획)
+| 파일 | 변경 | 종류 |
+|---|---|---|
+| `scripts/download_history.py` | `--symbol` optional 인자 → config symbol 오버라이드 | **영구(commit)** |
+| `src/strategy/plugins/trend_donchian_exp.py` | ma 분기 `compute_ema(df,200)` → `ma_period` 파라미터화 (default 200 불변, MS-3b ma 스윕용) | **영구(commit)** |
+| `scripts/_tmp_ms_multisymbol.py` / `_tmp_ms3_explore.py` / `_tmp_ms3b_filter_table.py` | 신규 1회용 — 종목×변형/임계 스윕 + cap 무력화 | commit 제외 |
+| config / 엔진 / risk | **무변경** (스크립트 config 오버라이드로 흡수) | — |
+
+> 결과 텍스트는 본 §9 에 누적 보존. 1회용 스크립트는 `.gitignore`(`scripts/_tmp_*.py`).
+
+### 9.5 MS-1~2 결과 (2026-06-24)
+
+**MS-1 데이터** (4h, ccxt probe 로 상장 시점 확정):
+| 종목 | 봉수 | 시작 | 종료 | gap/중복 |
+|---|---|---|---|---|
+| BTC | 14193 | 2020-01-01 | 2026-06-23 | 0/0 |
+| ETH | 14059 | 2020-01-01 | 2026-06-01 | 0/0 |
+| XRP | 14059 | 2020-01-01 | 2026-06-01 | 0/0 |
+| SOL | 11719 | **2021-01-25** | 2026-06-01 | 0/0 |
+| DOGE | 12907 | **2020-07-11** | 2026-06-01 | 0/0 |
+- SOL/DOGE 는 OKX 무기한 상장이 2020-01-01 이후 → `--start` 보정. 첫 봉 거래량·가격 정상(실데이터).
+
+**검증 (사용자 "정상 결과인지" 점검 — 모두 통과)**:
+- **MS-1d cap 무력화 불변 ✅**: BTC baseline = 441거래/PF1.31/pos4-7/mdd14.9 정확 재현(기존 cap=1.0 대비). 8변형 전부 §4.6 일치.
+- **사이징 부풀리기 없음 ✅ (실측, DOGE baseline)**: 거래별 명목 레버리지 **평균 0.205x**(95% 0.38x, 최대 0.66x), **5x cap·수량 cap 0% 바인딩**. cap 무력화가 사이징을 안 부풀림 — risk 1% 사이징 100% 지배. ret 은 종목 추세를 risk 1%로 정직히 탄 결과.
+- **funding=0 확인 ✅**: DOGE funding_fee 합=$0(I-PE001 carry, 알트 낙관 편향 BTC 보다 큼). trading_fee=$2386(taker 0.05% 정상).
+- **ret_pct 정의**: `Σpnl/INIT = (최종-초기 balance)/INIT` = **복리 반영 equity 총수익률**(balance 비례 risk% 사이징). cap 무력화로 BTC ret 120.9→123.4(2020 저가구간 소량 클램프 해제, edge 구조 PF/pos/mdd 불변).
+
+**MS-2 종목 × 변형 (PF / pos_years / MDD%)** — `data/ms_multisymbol/results.csv`:
+| 종목 | baseline | long_only | chop50 | **LO+chop50** | ma200 | LO+ma200 |
+|---|---|---|---|---|---|---|
+| BTC | 1.31/4-7/14.9 | 1.61/4/10.8 | 1.49/6/11.8 | **1.86/6/10.8** | 1.46/5/11.9 | 1.82/5/9.8 |
+| ETH | 1.28/6-7/13.1 | 1.45/5/13.3 | 1.30/6/15.0 | **1.45/5/11.3** | 1.45/6/11.7 | 1.61/6/9.2 |
+| XRP | 1.32/4-7/30.2 | 1.69/5/20.5 | 1.36/5/27.0 | **1.79/5/18.6** | 1.45/5/24.6 | 1.88/6/16.9 |
+| SOL | 1.24/4-6/15.6 | 1.37/3/14.4 | 1.38/6/9.9 | **1.65/4/11.7** | 1.33/4/13.0 | 1.53/4/9.0 |
+| DOGE | 1.56/5-7/17.0 | 1.93/5/13.2 | 1.53/5/17.5 | **1.83/5/14.7** | 1.75/5/11.0 | 2.26/5/11.5 |
+
+**메타 (변형별 PF>1 종목 / baseline개선 종목, 전체 5)**:
+- baseline 5/5 PF>1 · long_only 5/5개선 · chop50 4/5개선 · ma200 5/5개선 · **LO+chop50 5/5개선** · LO+chop38 5/5 · LO+ma200 5/5.
+
+**판정**:
+- **추세추종 + LO+chop50 edge 는 5종목 PF>1·구조 보편 → 과최적화(BTC 특이) 아님 강하게 입증.**
+- 단 **동조성(BTC 0.7~0.9 상관)** 으로 독립 5표본 아님 → "BTC 결론 강화" 수준으로 해석(신호 강도 강등).
+- LO+chop50 개선폭 **ETH 가 최약(+0.17)**, chop50 단독은 ETH 거의 무효(+0.02)·chop38 강함(PF1.61/7-7). **ma200 계열은 5/5 개선 + ret 보존**(LO+chop50 과 다른 프로파일) → MS-3 1순위.
+- 종목 특이: XRP short 손실 큼(long_only MDD 30→20), SOL long_only 약화(pos 3/6, short 일부 기여), DOGE ret 321%는 역사적 폭등 의존(PF 1.56 신뢰).
+
+### 9.6 MS-3 결과 — 필터 robust 탐색 (2026-06-25)
+
+**MS-3a Part A — chop 임계 평탄성** (LO+chop, PF(거래수)): **5/5 단조(낮을수록 강필터·PF↑) = cherry-pick 아님.**
+| 종목 | c30 | c38 | c44 | c50 | c56 | c62 |
+|---|---|---|---|---|---|---|
+| BTC | 2.61(51) | 2.22(111) | 1.82(161) | 1.86(205) | 1.73(228) | 1.64(236) |
+| ETH | 2.62(40) | 1.76(115) | 1.62(174) | 1.45(227) | 1.45(252) | 1.45(258) |
+| XRP | 3.84(33) | 1.85(100) | 1.97(148) | 1.79(190) | 1.67(210) | 1.66(216) |
+| SOL | 2.33(26) | 1.80(80) | 1.68(133) | 1.65(165) | 1.41(197) | 1.41(201) |
+| DOGE | 3.27(38) | 2.36(89) | 2.26(129) | 1.83(163) | 1.74(187) | 1.89(188) |
+- ⚠️ c30 은 거래 26~51(연 4~10)로 **표본 과적합**(PF 화려해도 신뢰 못 함). **c44~50 이 표본·PF 균형**(chop50 채택 유효). ETH 특이성(앞 의심) 해소 — ETH 도 단조, c50~62 포화일 뿐.
+
+**MS-3a Part B — 연도 walkforward** (pos_years): 공통 약점 **2022(베어)·2026(하락 부분년)**, 나머지 다수 양수.
+- LO+chop50: BTC6/ETH5/XRP5/SOL4/DOGE5. ma200: BTC5/**ETH6**/XRP5/SOL4/DOGE5(BTC 2022 +937 방어). LO+ma200: **ETH6/XRP6**/BTC5/SOL4/DOGE5.
+- → **ma 계열이 연도 일관성 우수**(ETH/XRP 6/7). DOGE 는 모든 변형 2021 폭등 의존.
+
+**MS-3b — ma 기간 robust + PF/ret 동반** (plugin `ma_period` 파라미터화, 회귀 BTC LO+ma200 PF1.82=MS-2 일치 ✅). 전부 long_only.
+
+PF:
+| 종목 | chop30 | chop44 | **chop50** | chop62 | ma100 | ma150 | **ma200** | ma250 |
+|---|---|---|---|---|---|---|---|---|
+| BTC | 2.61 | 1.82 | **1.86** | 1.64 | 1.68 | 1.78 | **1.82** | 1.95 |
+| ETH | 2.62 | 1.62 | **1.45** | 1.45 | 1.51 | 1.60 | **1.61** | 1.52 |
+| XRP | 3.84 | 1.97 | **1.79** | 1.66 | 1.84 | 1.77 | **1.88** | 1.76 |
+| SOL | 2.33 | 1.68 | **1.65** | 1.41 | 1.46 | 1.50 | **1.53** | 1.71 |
+| DOGE | 3.27 | 2.26 | **1.83** | 1.89 | 2.22 | 2.32 | **2.26** | 2.44 |
+
+ret%:
+| 종목 | chop30 | chop44 | **chop50** | chop62 | ma100 | ma150 | **ma200** | ma250 |
+|---|---|---|---|---|---|---|---|---|
+| BTC | 42.1 | 109.6 | **149.3** | 129.8 | 130.1 | 135.7 | **126.6** | 135.8 |
+| ETH | 35.2 | 88.6 | **91.9** | 105.9 | 107.2 | 116.4 | **103.8** | 84.3 |
+| XRP | 62.8 | 155.8 | **163.0** | 152.2 | 168.3 | 137.7 | **140.8** | 113.6 |
+| SOL | 18.6 | 53.5 | **62.2** | 54.3 | 49.8 | 52.0 | **52.7** | 64.1 |
+| DOGE | 69.0 | 201.3 | **185.8** | 261.2 | 310.6 | 310.1 | **286.7** | 288.9 |
+
+**판정 (PF+ret 동반 해석)**:
+- **chop = PF↑ vs ret↓ trade-off**: 강필터(낮은 임계)일수록 PF↑지만 거래 급감 → ret 급락(BTC c30 ret 42 vs c50 149). chop30 고PF 는 표본 착시. 균형점 c44~50.
+- **ma = 임계 robust(평탄) + ret 보존**: ma100~250 PF 평탄(ma200 cherry-pick 아님), ret 도 안정. chop 같은 강필터 ret 붕괴 없음. **DOGE 는 ma 가 chop 압도**(ret 287~311 vs chop50 186).
+- → **ma 필터가 chop 보다 robust·ret 동시 우수.** MS-4 에서 **LO+chop50(현 채택) vs LO+ma 채택 재검토** 필요. 단 동조성·funding=0·DOGE 폭등의존 한계는 유지.
