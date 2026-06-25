@@ -176,7 +176,8 @@ ZigZag 20% 추세 전환 분할(32 세그먼트, 1d 2026-06-23 갱신) + LO+chop
 | 2026-06-23 | TF-4 funding 점검 + 최종 | ✅ **GO 확정** | §8.6 | funding 보수 점검: 최악 상한(0.02%/8h 모두 비용)도 PF 1.18>1, 현실(방향반영) 1.29~1.30≈원본(양방향 헤지). 결과 §4.3. **PATH_E 결론: 추세추종 실거래 후보 확보 — ML(NO-GO)과 대비** |
 | 2026-06-24 | MS 멀티 종목 검증 계획 수립 | 🔄 착수 | — | LO+chop50 종목 보편성 검증 (ETH/SOL/XRP/DOGE). 2단계 게이트(검증→탐색)+BTC robust 통제 그대로. 사전 함정 점검: **I-PE005(max_position_size_btc 수량 cap → 알트 백테 클램프) 발견**, ATR 변동성 흡수 ✅, 종목 동조성(0.7~0.9)으로 "보편" 신호 강등. 상세 §9. 다음=MS-1 데이터+cap 처리 |
 | 2026-06-24 | MS-1 데이터+cap / MS-2 검증 | ✅ 완료 | (미커밋) | `download_history.py --symbol` 추가. 5종목 4h 정합 통과(SOL 2021-01-25/DOGE 2020-07-11 상장보정). **검증: cap 무력화 불변(BTC 441/1.31 재현), DOGE 레버리지 실측 0.205x(부풀리기 없음·5x cap 0% 바인딩), funding=0 확인.** MS-2: **LO+chop50 5/5 PF>1·baseline 개선** → 추세추종 보편 입증(동조성 한정). ma200 계열 강함(ret 보존)→MS-3 후보. 결과 §9.5. 1회용 `_tmp_ms_multisymbol.py` |
-| 2026-06-25 | MS-3a/b 필터 robust 탐색 | ✅ 완료 | (미커밋) | chop 임계 평탄성 **5/5 단조**(cherry-pick 아님, c30 표본 과적합·c44~50 균형). 연도 walkforward: 공통 약점 2022/2026, **ma 계열 연도 일관 우수**(ETH/XRP 6/7). `trend_donchian_exp` ma_period 파라미터화(회귀 BTC LO+ma200 1.82 일치). ma 기간 스윕: **ma 가 chop 보다 임계 robust+ret 보존 우수**(chop 강필터 ret 붕괴, ma 평탄). 결과 §9.6. 다음=MS-4 chop50 vs ma 채택 재검토. 1회용 `_tmp_ms3_explore.py`/`_tmp_ms3b_filter_table.py` |
+| 2026-06-25 | MS-3a/b 필터 robust 탐색 | ✅ 완료 | `f236de9` | chop 임계 평탄성 **5/5 단조**(cherry-pick 아님, c30 표본 과적합·c44~50 균형). 연도 walkforward: 공통 약점 2022/2026, **ma 계열 연도 일관 우수**(ETH/XRP 6/7). `trend_donchian_exp` ma_period 파라미터화(회귀 BTC LO+ma200 1.82 일치). ma 기간 스윕: **ma 가 chop 보다 임계 robust+ret 보존 우수**(chop 강필터 ret 붕괴, ma 평탄). 결과 §9.6. 다음=MS-4 chop50 vs ma 채택 재검토. 1회용 `_tmp_ms3_explore.py`/`_tmp_ms3b_filter_table.py` |
+| 2026-06-26 | MS-4 종합 — 채택 결정 | ✅ 완료 | (미커밋) | LO+chop50 vs LO+ma200 정면 비교: **ma 위험조정(MDD 5/5)·연도 일관·효율 우위, BTC 동급**. **결정 (가) LO+ma200 으로 정식화 후보 전환**(§7/§9.7). §8 라이브 로드맵 갱신(정식화·자금관리 ma 기준). 한계(동조성·DOGE 폭등의존·funding=0) 유지. chop50 대안 후보 보존. **MS Phase 종착** |
 
 ---
 
@@ -201,20 +202,23 @@ ZigZag 20% 추세 전환 분할(32 세그먼트, 1d 2026-06-23 갱신) + LO+chop
 | 2026-06-23 | 진입 룰/TF/검증 | Donchian 돌파+ATR trailing / 4h / plugin+BacktestEngine | 전형·단순·라이브백테 일관 |
 | 2026-06-23 | 사이징 최적화 (향후) | edge·라이브 검증 후 fractional Kelly + 목표 MDD 제약 기반. `max_leverage` cap 유지(저변동 size 폭증 안전장치). 변동성타깃은 TF-5② 통합 | risk%는 edge 무관·**위험선호 결정**(백테 수익최대화=파산위험 금지). 현재 1% 룰(실배율~0.4배)은 라이브 전 보수 유지. max_lev 5는 baseline 상속값(trend_donchian 특화 아님) |
 | 2026-06-24 | 라이브 시작 방향 | **(가) 지금 소액(risk 1%) 시작 + 사이징 국면연동** | 라이브 목적=정합성·인프라·실체결 검증(edge 실현 아님) + 추세추종은 마켓타이밍 안 함("언제든 가동, 추세 오면 탄다"). 현재 하락 국면 부진=예상(국면분석), risk 1%+하락장 진입 적어 손실 작음. 가동 유지로 상승 전환 포착. **상승 전환+라이브 edge 확인 후 점진 증액(→3%)**. (나) 대기는 전환 타이밍 포착 불가+검증 지연 |
+| 2026-06-26 | 정식화 전략 (MS-4) | **(가) LO+chop50 → LO+ma200 전환** | 5종목 비교: ma 가 위험조정(MDD 5/5 낮음)·연도 일관(ETH/XRP 6/7)·거래효율(거래 적음) 우위, 절대 PF 약우위. BTC 동급(1.82 vs 1.86, MDD 9.8 vs 10.8)이라 전환 손해 없고 위험조정 이득. ma100~250 robust. 한계(동조성·DOGE 폭등의존·funding=0) 인지. chop50 은 대안 후보 보존. 결과 §9.7 |
 
 ---
 
 ## 8. 현재 상태 + 남은 작업 (★ 새 세션 진입점)
 
 ### 8.1 한 줄 요약
-**LO+chop50 추세추종 전략을 라이브 후보로 확정(백테·자금관리·국면 분석 완료). 현재 baseline `trend_donchian` paper 가동 중(SHORT 보유, 청산 대기). 병행 트랙으로 MS 멀티 종목 보편성 검증 착수(§9, ETH/SOL/XRP/DOGE). 다음 = MS-1(데이터+cap 처리) / paper 청산 → 라이브-백테 정합성 → LO+chop50 정식화 → 소액 라이브(risk 1%).**
+**추세추종 룰베이스 전략 라이브 후보 확정. MS 멀티 종목 검증(5종목, §9) 완료 → LO+필터 보편 입증 + MS-4 에서 정식화 후보를 LO+chop50 → `LO+ma200`(long_only+ma200 추세필터)로 전환(위험조정·연도일관·효율 우위, BTC 동급). 현재 baseline `trend_donchian` paper 가동 중(SHORT 보유, 청산 대기). 다음 = paper 청산 → 라이브-백테 정합성 → LO+ma200 정식화·자금관리 ma 재확인 → 소액 라이브(risk 1%).**
 
-### 8.2 채택 전략·사이징 (확정)
-- **전략 = LO+chop50**: `trend_donchian` + `long_only=True` + `regime_filter_type=chop` + `regime_threshold=50`.
-  - 백테 PF 1.86 / 비용·funding 차감 최악 PF 1.64 / 양수 6/7년 / 실제 MDD ~12%.
-  - ⚠️ **아직 정식 아님** — 실험 plugin `trend_donchian_exp`에 *옵션*으로만 존재. config `trend_donchian_exp` 섹션은 ablation 기본값(옵션 off=baseline 동일).
-- **baseline `trend_donchian`** (TF-1~4 GO, PF 1.31): 정식 plugin/config 완비, paper 운영 중. 인프라(엔진·trailing·TP None·진행중봉 fix)는 baseline·LO+chop50 공유.
-- **사이징**: 라이브 초기 `risk_per_trade_pct` **1%** → 검증 후 점진 **3%**(자금관리 1차, §170 진행기록). `max_leverage 5` cap 유지. 잠정값(라이브 후 켈리 재계산).
+### 8.2 채택 전략·사이징 (MS-4 갱신 2026-06-26)
+- **전략 = LO+ma200** (MS-4 채택, §9.7): `trend_donchian_exp` + `long_only=True` + `regime_filter_type=ma` + `ma_period=200`.
+  - 5종목 위험조정(MDD 5/5 chop50 대비 낮음)·연도 일관·거래효율 우위, BTC 동급(PF 1.82 vs chop50 1.86, MDD 9.8 vs 10.8).
+  - ma100~250 robust(평탄, cherry-pick 아님). ma_period 파라미터화 완료(회귀 537 pass).
+- **이전 후보 LO+chop50** (PF 1.86/MDD 10.8): BTC 동급이라 대안 후보로 보존. 전환 손해 없음.
+  - ⚠️ **아직 정식 아님** — 둘 다 실험 plugin `trend_donchian_exp` *옵션*. config 섹션은 ablation 기본값(옵션 off=baseline).
+- **baseline `trend_donchian`** (TF-1~4 GO, PF 1.31): 정식 plugin/config 완비, paper 운영 중. 인프라(엔진·trailing·TP None·진행중봉 fix·cap)는 공유.
+- **사이징**: 라이브 초기 `risk_per_trade_pct` **1%** → 검증 후 점진 **3%**(자금관리 1차, §170). `max_leverage 5` cap 유지. ⚠️ 자금관리는 LO+chop50 기준 — LO+ma200(MDD 더 낮음) 기준 재확인 필요(라이브 정식화 시). 단일 BTC 라이브엔 I-PE005(수량 cap) 무영향.
 - **라이브 방향**: (가) 지금 소액 시작 + 국면연동(§7). 현재 BTC **하락 국면**이라 초기 부진 예상(정상).
 
 ### 8.3 paper 운영 현황 (2026-06-23 20:54 기동)
@@ -228,15 +232,15 @@ ZigZag 20% 추세 전환 분할(32 세그먼트, 1d 2026-06-23 갱신) + LO+chop
 1. [진행 중] paper 청산 관찰 (baseline SHORT) → trailing/청산 e2e 검증 완성
 2. 라이브-백테 정합성 — paper 거래 vs 같은 기간 백테 1:1 비교
      (compare_live_backtest.py 를 paper용 단일구간 변형, 거래 발생 후 가볍게)
-3. ★ LO+chop50 정식화 — 방법 *미결정*:
+3. ★ LO+ma200 정식화 (MS-4 채택) — 방법 *미결정*:
      (a) baseline trend_donchian 에 long_only/regime 옵션 통합 (paper 청산 후, baseline freeze 해제)
-     (b) trend_donchian_exp 을 정식 채택 (config LO+chop50 고정값)
-4. 정식화본 백테 재검증 재확인 (slippage/funding — 1차 완료, §169)
+     (b) trend_donchian_exp 을 정식 채택 (config LO+ma200 고정값) — exp plugin 이미 ma_period 지원
+4. LO+ma200 백테 재검증 (slippage/funding 보수 차감 — chop50 기준 §169 완료, ma 기준 재확인) + 자금관리 ma 재확인
 5. 소액 라이브 시작 (risk 1%, 하락장 부진 각오, 검증 목적). 서버 운영 시 AWS Lightsail 1GB(~$7/월) or EC2 t4g.small(무료) + systemd + 텔레그램 모니터링
 6. 상승 전환 + 라이브 edge 확인 후 사이징 점진 증액 (→3%)
 
-[병행 트랙] MS 멀티 종목 보편성 검증 (§9) — LO+chop50 라이브 후보의 강건성 확인.
-  라이브 의사결정(LO+chop50 신뢰도)에 환류. 결과가 멀티 종목 동시 운영으로 확장 시 PATH_F 분기.
+[완료] MS 멀티 종목 보편성 검증 (§9) — LO+필터 5종목 robust 입증 + 정식화 후보 LO+ma200 전환(MS-4).
+  멀티 종목 동시 운영 확장 시 PATH_F 분기 (I-PE005 수량 cap 명목가 재설계 필요).
 ```
 
 ### 8.5 후순위·향후 (carry)
@@ -302,7 +306,8 @@ MS-2  검증 — _tmp_ms_multisymbol.py: 5종목 × 8변형, 파라미터 고정
         → LO+chop50 5/5 PF>1·baseline 개선. 추세추종 보편 입증(동조성 한정)
 MS-3  탐색 — chop 임계 평탄성 + 연도 walkforward + ma 기간 robust    ✅ 완료 (§9.6)
         → LO+필터 보편. chop 단조(PF↑/ret↓ trade-off), ma robust+ret 보존 우수
-MS-4  종합 — chop50 vs ma 채택 재검토 + 라이브 함의                 🔄 진행
+MS-4  종합 — chop50 vs ma 채택 재검토 + 라이브 함의                 ✅ 완료 (§9.7)
+        → (가) LO+ma200 정식화 후보 전환 (위험조정·연도·효율 우위, BTC 동급)
 ```
 
 ### 9.4 코드 변경 매트릭스 (구현 계획)
@@ -391,3 +396,29 @@ ret%:
 - **chop = PF↑ vs ret↓ trade-off**: 강필터(낮은 임계)일수록 PF↑지만 거래 급감 → ret 급락(BTC c30 ret 42 vs c50 149). chop30 고PF 는 표본 착시. 균형점 c44~50.
 - **ma = 임계 robust(평탄) + ret 보존**: ma100~250 PF 평탄(ma200 cherry-pick 아님), ret 도 안정. chop 같은 강필터 ret 붕괴 없음. **DOGE 는 ma 가 chop 압도**(ret 287~311 vs chop50 186).
 - → **ma 필터가 chop 보다 robust·ret 동시 우수.** MS-4 에서 **LO+chop50(현 채택) vs LO+ma 채택 재검토** 필요. 단 동조성·funding=0·DOGE 폭등의존 한계는 유지.
+
+### 9.7 MS-4 종합 — LO+chop50 vs LO+ma200 채택 결정 (2026-06-26)
+
+**정면 비교 (5종목, MS-2/3 데이터) — PF / pos_years / MDD% / 거래수**:
+| 종목 | LO+chop50 | LO+ma200 | 우위 |
+|---|---|---|---|
+| BTC | 1.86/6/10.8/205 | 1.82/5/**9.8**/184 | 동급(PF chop·MDD ma) |
+| ETH | 1.45/5/11.3/227 | **1.61/6/9.2**/204 | **ma 완승** |
+| XRP | 1.79/5/18.6/190 | **1.88/6/16.9**/156 | **ma 완승** |
+| SOL | **1.65**/4/11.7/165 | 1.53/4/**9.0**/153 | PF chop·MDD ma |
+| DOGE | 1.83/5/14.7/163 | **2.26/5/11.5**/137 | **ma 완승** |
+
+- **PF**: ma 3종 우위(ETH/XRP/DOGE), chop 2종(SOL·BTC 미세) → ma 약우위.
+- **MDD**: **ma 5/5 전종목 낮음**(위험조정 우위, 결정적).
+- **연도 일관**: ma 2종 우위(ETH·XRP 6/7), BTC만 chop.
+- **거래수**: ma 전종목 적음 → 수수료·funding 노출 적어 효율 유리.
+- **robust**: ma100~250 평탄(cherry-pick 아님) vs chop 강필터 ret 붕괴.
+
+**판정**: ma 가 위험조정·비용효율·연도 일관에서 전반 우위, 절대 PF 약우위. chop 의 BTC PF 미세 우위(1.86)는 MDD 열위(10.8 vs 9.8)로 상쇄.
+
+**한계 (결정적 우위는 아님)**: ① 동조성(독립 5표본 아님) ② ma 큰 ret 우위는 DOGE 폭등 의존(라이브 BTC 무관) ③ BTC 단독은 chop50≈ma200(위험조정만 ma 미세 우위) ④ funding=0 미정밀(단 ma 거래 적어 유리 방향).
+
+**결정 = (가) LO+ma200 으로 정식화 후보 전환** (2026-06-26, §7):
+- 위험조정(MDD 5/5)·연도 일관·효율 전반 우위 + BTC 동급 → 전환 손해 없고 위험조정 이득.
+- **신전략 = `trend_donchian_exp` + long_only=True + regime_filter_type=ma + ma_period=200**.
+- 후속(라이브 정식화 시): ① 자금관리(켈리·MDD) ma 기준 재확인 — BTC ma200 MDD 9.8%로 chop50(10.8) 보다 낮아 더 보수적, 기존 결론 대체로 유효 ② §4.7 국면분석(LO+chop50=상승장 전략) ma 도 long_only 기반이라 동일 적용 ③ paper 재검증.
