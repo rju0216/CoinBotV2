@@ -1,4 +1,4 @@
-"""I-BLE010: _on_bar_closed 청산 디스패치 — master_timeframe 가드 검증.
+"""_on_bar_closed 청산 디스패치 — master_timeframe 가드 검증.
 
 다중 TF(15m/1h/4h) 동시 마감 시 청산 경로(check_candle_sl_tp / check_strategy_exits)가
 master_timeframe 봉에서만 실행되어야 함. 비-master_tf 봉은 같은 포지션 청산을 중복
@@ -15,7 +15,8 @@ import pytest
 from src.core.enums import PositionSide, SignalSide
 from src.core.types import Position, Signal
 from src.live.engine import CoreEngine
-from src.strategy.base import StrategyModule
+from src.strategy.base import StrategyModule  # noqa: F401
+from tests.strategy_stub import StubStrategy
 from src.strategy.registry import register_strategy, reset_registry_for_testing
 
 
@@ -26,7 +27,7 @@ def _isolated_registry():
     reset_registry_for_testing()
 
 
-class _MultiTFStrategy(StrategyModule):
+class _MultiTFStrategy(StubStrategy):
     name = "multitf"
     entry_timeframe = "15m"
     required_timeframes = ["15m", "1h", "4h"]
@@ -58,7 +59,6 @@ def _build_multitf_engine() -> CoreEngine:
     eng.data_store.get_df = MagicMock(return_value=None)
     eng.data_store.log_equity = AsyncMock()
 
-    eng.oos_monitor = None
     eng.orderbook_collector = None
     eng._circuit_breaker_open = False
 

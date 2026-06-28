@@ -1,4 +1,4 @@
-"""src/utils/notifier.py 단위 테스트 (BL-2-1 Step 1)."""
+"""src/utils/notifier.py 단위 테스트."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ class TestLogNotifier:
     async def test_includes_meta(self, caplog):
         notifier = LogNotifier()
         with caplog.at_level(logging.INFO):
-            await notifier.send("INFO", "T", "M", strategy="ml_xgboost")
+            await notifier.send("INFO", "T", "M", strategy="my_strategy")
         assert any("strategy" in r.message for r in caplog.records)
 
     @pytest.mark.asyncio
@@ -67,7 +67,7 @@ class TestTelegramNotifierFallback:
 
 
 class TestTelegramTextFormat:
-    """I-BL014: parse_mode 제거 + plain text 검증."""
+    """parse_mode 제거 + plain text 검증."""
 
     @pytest.mark.asyncio
     async def test_plain_text_no_markdown_chars(self, monkeypatch):
@@ -80,8 +80,8 @@ class TestTelegramTextFormat:
 
         monkeypatch.setattr(notifier, "_send_sync", mock_send_sync)
         await notifier.send(
-            "INFO", "EXIT [ensemble] sl_hit", "net_pnl=$-40.71",
-            strategy="ensemble", pnl=-40.71368847497047, reason="sl_hit",
+            "INFO", "EXIT [my_strategy] sl_hit", "net_pnl=$-40.71",
+            strategy="my_strategy", pnl=-40.71368847497047, reason="sl_hit",
         )
         text = captured["text"]
         # Markdown 데코레이션 사라짐
@@ -89,10 +89,10 @@ class TestTelegramTextFormat:
         assert "_meta_" not in text
         assert "`{" not in text
         # 메시지 내용 plain text로 보존
-        assert text.startswith("[INFO] EXIT [ensemble] sl_hit\n")
+        assert text.startswith("[INFO] EXIT [my_strategy] sl_hit\n")
         assert "net_pnl=$-40.71" in text
         # meta plain key=value
-        assert "meta: strategy=ensemble" in text
+        assert "meta: strategy=my_strategy" in text
         assert "pnl=-40.71368847497047" in text
         assert "reason=sl_hit" in text
 

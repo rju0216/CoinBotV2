@@ -12,7 +12,7 @@ DataStore에 의존하지 않고 메모리에서 trades·equity_curve를 누적�
     └── equity_curve.png
 
 마스터 TF(가장 작은 활성 TF) 캔들을 순회하며:
-  1) SL/TP 캔들 체결 검사 (정책 (a) SL 우선)
+  1) SL/TP 캔들 체결 검사 (모델의 sl_tp_fill_priority 로 동시 hit 우선순위 결정)
   2) update_stop_loss / should_force_exit 훅 호출
   3) 봉 경계 TF별 evaluate_strategies_on_bar dispatch
 종료 시 잔여 포지션은 ENGINE_SHUTDOWN 사유로 강제 청산.
@@ -34,7 +34,6 @@ from src.core.engine_base import AbstractEngine
 from src.core.enums import ExitReason, PositionSide
 from src.core.types import Position
 from src.data.historical import TF_MS, HistoricalDataLoader
-from src.strategy.features import compute_multi_tf_features
 from src.utils.path_utils import resolve_unique_dir
 
 logger = logging.getLogger(__name__)
@@ -119,7 +118,7 @@ class BacktestEngine(AbstractEngine):
         self.end_dt = self._parse_dt(end)
         self.candles_per_tf: dict[str, pd.DataFrame] = {}
         self.equity_curve: list[tuple[datetime, float]] = []
-        # 메모리 trades 관리 (I-009 (나) — DataStore 미사용)
+        # 메모리 trades 관리 — DataStore 미사용 (백테는 종료 시 파일로만 출력)
         self._next_trade_id = 0
         self._open_trades: dict[int, dict[str, Any]] = {}
         self.trades: list[dict[str, Any]] = []
@@ -140,27 +139,8 @@ class BacktestEngine(AbstractEngine):
     async def initialize(self) -> None:
         await self.broker.initialize()
         balance = await self.broker.get_balance()
-        self.risk_manager.set_initial_balance(balance)
+        self.account_tracker.set_initial_balance(balance)
         await self._load_candles()
-        self._build_features_cache()
-
-    def _build_features_cache(self) -> None:
-        """활성 strategies의 entry_timeframe별로 OOS 전체 features 사전계산.
-
-        Phase E-2-2-OPT Step 1 — 매 봉 generate_signal에서 compute_multi_tf_features를
-        처음부터 재계산하던 것을 1회로 축소. plugin은 ctx.precomputed_features를
-        slice해서 사용 (lookahead는 features.get_features_for_ctx에서 ts < now로 차단).
-        """
-        entry_tfs = {s.entry_timeframe for s in self.strategies}
-        for tf in entry_tfs:
-            if tf in self.candles_per_tf and not self.candles_per_tf[tf].empty:
-                self._features_cache[tf] = compute_multi_tf_features(
-                    self.candles_per_tf, tf
-                )
-                logger.info(
-                    "Features cache built: entry_tf=%s, rows=%d",
-                    tf, len(self._features_cache[tf]),
-                )
 
     async def shutdown(self) -> None:
         await self.broker.close()
@@ -206,7 +186,7 @@ class BacktestEngine(AbstractEngine):
                     exit_price, reason = fill
                     await self.close_position(exit_price, reason, now=now)
 
-            # I-B007 수정: ts 시점에는 직전 봉까지의 데이터로 평가 + open 가격으로 진입
+            # ts 시점에는 직전 봉까지의 데이터로 평가 + open 가격으로 진입.
             # _slice_candles는 ts 미만 슬라이스 (lookahead 제거)
             candles_slice = self._slice_candles(ts)
             balance = await self.broker.get_balance()
@@ -244,7 +224,7 @@ class BacktestEngine(AbstractEngine):
 
         logger.info(
             "Backtest complete: equity=%.2f, trades=%d",
-            balance if self.equity_curve else self.risk_manager.initial_balance,
+            balance if self.equity_curve else self.account_tracker.initial_balance,
             len(self.trades),
         )
 
@@ -304,7 +284,7 @@ class BacktestEngine(AbstractEngine):
         rec.update(
             {
                 "exit_time": now,
-                "closed_at": now.isoformat(),    # I-BLE001 schema 일관
+                "closed_at": now.isoformat(),    # trades 스키마 일관 유지
                 "exit_price": exit_price,
                 "pnl": pnl,
                 "pnl_pct": pnl_pct,
@@ -319,9 +299,9 @@ class BacktestEngine(AbstractEngine):
     # ---- 캔들 로딩 ----
 
     async def _load_candles(self) -> None:
-        # I-BP002 fix: data.history_bars만큼 warmup 캔들 미리 로드 → indicator NaN
-        # 구간 단축. master_df slice는 run() 루프에서 [start, end]로 잘라내므로
-        # warmup 캔들은 features 사전계산용으로만 사용 (라이브 backfill과 동일 키 재사용).
+        # data.history_bars만큼 warmup 캔들을 미리 로드해 indicator NaN 구간을 단축.
+        # master_df slice는 run() 루프에서 [start, end]로 잘라내므로 warmup 캔들은
+        # 진입 전 indicator 워밍업용으로만 사용 (라이브 backfill과 동일 키 재사용).
         warmup_bars = int(self.config.get("data", {}).get("history_bars", 300))
         loader = HistoricalDataLoader(self.config)
         try:
@@ -354,7 +334,7 @@ class BacktestEngine(AbstractEngine):
         return False
 
     def _slice_candles(self, ts) -> dict[str, pd.DataFrame]:
-        """ts 시점 직전까지의 캔들 반환 (I-B007 lookahead 제거).
+        """ts 시점 직전까지의 캔들 반환 (lookahead 제거).
 
         과거에는 `df.loc[:ts]`로 ts 봉을 포함시켰으나,
         이는 봉 시작 시점에 그 봉의 close 정보가 피처에 들어가는 lookahead bias.
@@ -372,8 +352,8 @@ class BacktestEngine(AbstractEngine):
     # ---- 결과 집계 ----
 
     async def get_result(self) -> BacktestResult:
-        # I-010: equity_curve 비어있으면 initial_balance fallback
-        initial = self.risk_manager.initial_balance
+        # equity_curve 비어있으면 initial_balance fallback
+        initial = self.account_tracker.initial_balance
         if self.equity_curve:
             final = self.equity_curve[-1][1]
         else:
@@ -385,7 +365,7 @@ class BacktestEngine(AbstractEngine):
             trades=list(self.trades),
         )
 
-    # ---- 결과 파일 출력 (I-011) ----
+    # ---- 결과 파일 출력 ----
 
     def write_reports(
         self,
@@ -396,7 +376,7 @@ class BacktestEngine(AbstractEngine):
         `data/backtest_reports/00_Working/{tag}_backtest_{start}_{end}_{name}/{name}/`
         하위에 저장하고 디렉토리 경로를 반환.
 
-        out_root가 지정되면 기본 경로 대신 그 디렉토리를 사용 (Phase E-2 evaluate_models.py).
+        out_root가 지정되면 기본 경로 대신 그 디렉토리를 사용 (호출자가 출력 위치 지정 시).
         """
         config_name = "default"
         if config_path:
@@ -408,10 +388,10 @@ class BacktestEngine(AbstractEngine):
             out_root_path = REPORT_BASE / (
                 f"{today}_backtest_{start_str}_{end_str}_{config_name}"
             )
-            # BL-1 Step A: 동일 명칭 디렉토리 존재 시 _1, _2 postfix로 보존
+            # 동일 명칭 디렉토리 존재 시 _1, _2 postfix로 보존
             out_root_path = resolve_unique_dir(out_root_path)
         else:
-            # 호출자가 명시 지정한 out_root는 그대로 사용 (evaluate_models의 spec.label 등)
+            # 호출자가 명시 지정한 out_root는 그대로 사용
             out_root_path = Path(out_root)
         out = out_root_path / config_name
         out.mkdir(parents=True, exist_ok=True)
@@ -479,7 +459,7 @@ class BacktestEngine(AbstractEngine):
         return out
 
     def _build_metrics(self) -> dict[str, Any]:
-        initial = self.risk_manager.initial_balance
+        initial = self.account_tracker.initial_balance
         final = self.equity_curve[-1][1] if self.equity_curve else initial
         total_pnl = final - initial
         total_pct = (total_pnl / initial * 100.0) if initial > 0 else 0.0
@@ -573,7 +553,7 @@ class BacktestEngine(AbstractEngine):
 
         timestamps = [t for t, _ in self.equity_curve]
         balances = [b for _, b in self.equity_curve]
-        initial = self.risk_manager.initial_balance
+        initial = self.account_tracker.initial_balance
 
         fig, axes = plt.subplots(
             2, 1, figsize=(16, 9), gridspec_kw={"height_ratios": [3, 1]}

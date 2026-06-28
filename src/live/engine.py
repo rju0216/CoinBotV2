@@ -1,9 +1,8 @@
 """라이브·페이퍼 실시간 엔진 (CoreEngine).
 
 AbstractEngine을 상속하여 DataFeed의 BAR_CLOSED 이벤트로 구동한다.
-재시작 시 거래소 포지션과 DB의 open trades를 매칭하여 Position을 복원
-(자동 입양 정책 7-1). 뼈대 상태(전략 0개)에서 거래소 포지션이 있으면
-에러로 중단한다 (정책 7 (a)).
+재시작 시 거래소 포지션과 DB의 open trades를 매칭하여 Position을 복원한다
+(자동 입양). 뼈대 상태(전략 0개)에서 거래소 포지션이 있으면 에러로 중단한다.
 
 funding fee는 close 직전 fetch_funding_history로 조회하여 FeeModel의
 PnL 정산에 주입한다.
@@ -30,51 +29,13 @@ from src.core.types import Position
 from src.data.feed import DataFeed
 from src.data.store import DataStore
 from src.data.orderbook import OrderBookCollector
-from src.live.oos_monitor import LiveOOSMonitor
 from src.utils.notifier import Notifier, build_notifier_from_config
 
 logger = logging.getLogger(__name__)
 
 
-def _format_failure_detail(
-    strategy_name: str,
-    unavailable_subs: dict | None,
-    fail_reason: str | None,
-    meta: dict,
-) -> str:
-    """추론 실패 case 상세 포맷 (I-BL007 Phase 3-C)."""
-    def _format_sub(name: str, info: dict) -> str:
-        reason = info.get("reason", "unknown")
-        parts = [f"{name}={reason}"]
-        nan_by_tf = info.get("nan_by_tf")
-        if nan_by_tf:
-            tf_strs = [
-                f"{tf}: {','.join(cols)}"
-                for tf, cols in nan_by_tf.items()
-            ]
-            parts.append("{" + "; ".join(tf_strs) + "}")
-        avail = info.get("available_rows")
-        req = info.get("required_lookback")
-        if avail is not None and req is not None:
-            parts.append(f"{{available:{avail}/{req}}}")
-        return " ".join(parts)
-
-    if unavailable_subs:
-        return ", ".join(
-            _format_sub(name, info)
-            for name, info in unavailable_subs.items()
-        )
-    info = {
-        "reason": fail_reason,
-        "nan_by_tf": meta.get("nan_by_tf"),
-        "available_rows": meta.get("available_rows"),
-        "required_lookback": meta.get("required_lookback"),
-    }
-    return _format_sub(strategy_name, info)
-
-
 def _fmt_dollar(value: float) -> str:
-    """I-BLE006: 부호 + $ + 절대값 형식. 양수: +$X.XX, 음수: -$X.XX. 0: +$0.00.
+    """부호 + $ + 절대값 형식. 양수: +$X.XX, 음수: -$X.XX. 0: +$0.00.
 
     ACCOUNT 로그의 unrealized_pnl / total_balance_diff / daily_pnl 영역에서 사용.
     dd 영역은 항상 손실 표기 (텍스트 -$%.2f) 라 미사용.
@@ -84,9 +45,9 @@ def _fmt_dollar(value: float) -> str:
 
 
 def _fmt_hold(seconds: float) -> str:
-    """BLE-7-2: 보유 시간 포맷 (XhYYm). [POSITION] 로그 + EXIT 알림 공유 (DRY).
+    """보유 시간 포맷 (XhYYm). [POSITION] 로그와 EXIT 알림이 공유한다.
 
-    I-BLE008: 음수 방어 — abs + 부호 prefix 로 정확 표기 (-1h52m). 정상 매칭 시
+    음수 방어 — abs + 부호 prefix 로 정확 표기 (-1h52m). 정상 매칭 시
     음수는 발생 안 하나, orphan(entry_time=now) 등 이상 case 에서 floor division
     오표기 방지. 음수 hold 자체가 이상 신호이므로 0 clamp 대신 정확 표기.
     """
@@ -96,10 +57,10 @@ def _fmt_hold(seconds: float) -> str:
 
 
 def _build_entry_message(pos) -> str:
-    """BLE-7-2: ENTRY 텔레그램 본문 — 콘솔 [POSITION] 수준 정보량.
+    """ENTRY 텔레그램 본문 — 콘솔 [POSITION] 수준 정보량.
 
     SL/TP Δ% 는 entry_price 대비 (진입 시점 기준; 콘솔 [POSITION]은 current 대비).
-    SL/TP 가 None (orphan 등) 이면 해당 부분 생략. plain text (I-BL014 유지).
+    SL/TP 가 None (orphan 등) 이면 해당 부분 생략. plain text.
 
     샘플:
       LONG 0.0149 @ 67100.00
@@ -119,10 +80,10 @@ def _build_entry_message(pos) -> str:
 
 
 def _build_exit_message(pos, pnl, exit_price=None, pnl_pct=None, closed_at=None) -> str:
-    """BLE-7-2: EXIT 텔레그램 본문 — entry→exit 가격 / net_pnl / pnl% / 보유 시간.
+    """EXIT 텔레그램 본문 — entry→exit 가격 / net_pnl / pnl% / 보유 시간.
 
-    exit_price / pnl_pct / closed_at 는 POSITION_CLOSED payload 신규 키 (BLE-7-2).
-    None 이면 해당 부분 생략 (구버전 payload·orphan 안전). plain text (I-BL014 유지).
+    exit_price / pnl_pct / closed_at 는 POSITION_CLOSED payload 키.
+    None 이면 해당 부분 생략 (구버전 payload·orphan 안전). plain text.
 
     샘플:
       LONG 0.0149 @ 67100.00 → 68000.00
@@ -156,7 +117,7 @@ def _candles_to_df(candles: list) -> pd.DataFrame:
 
 
 class CoreEngine(AbstractEngine):
-    # I-BLE005: 라이브 영역의 df 구조 — ccxt watch_ohlcv 가 새 봉 시작 시점에 single tick
+    # 라이브 영역의 df 구조 — ccxt watch_ohlcv 가 새 봉 시작 시점에 single tick
     # (open=high=low=close) 으로 발행 → append_candle 이 iloc[-1] 에 single tick row 추가.
     # 따라서 *직전 마감 봉* 은 iloc[-2]. bar_context 의 close/high/low 가 진정한 봉 OHLC 영역.
     LAST_CLOSED_BAR_IDX = -2
@@ -169,7 +130,7 @@ class CoreEngine(AbstractEngine):
         self.data_store = DataStore(config, mode)
         self.data_feed: DataFeed | None = None
         self._stop = asyncio.Event()
-        # (I-005) ccxt.pro watch_ohlcv가 진행 중 봉을 재발행할 수 있어,
+        # ccxt.pro watch_ohlcv가 진행 중 봉을 재발행할 수 있어,
         # TF별 마지막 처리 타임스탬프를 유지해 중복 전략 평가를 차단.
         self._processed_bars: dict[str, int] = {}
 
@@ -183,29 +144,14 @@ class CoreEngine(AbstractEngine):
             self.config, self.event_bus, timeframes=self.timeframes
         )
         await self._backfill_candles()
-        # BP-2-3: OOS monitor 초기화 (config.live.oos_monitoring.enabled=true일 때만 활성)
-        oos_cfg = (self.config.get("live", {}) or {}).get(
-            "oos_monitoring", {}
-        ) or {}
-        if oos_cfg.get("enabled", False):
-            self.oos_monitor = LiveOOSMonitor(self.config)
-            # BL-2-1: OOS monitor가 EventBus publish 가능하도록 attach
-            self.oos_monitor.attach_event_bus(self.event_bus)
-            logger.info(
-                "OOS monitor enabled: window=%d, horizon=%d, threshold=%.3f",
-                self.oos_monitor.window,
-                self.oos_monitor.horizon,
-                self.oos_monitor.min_acc_threshold,
-            )
 
-        # BL-2-1: notifier 인프라 초기화 + EventBus subscribe
+        # notifier 인프라 초기화 + EventBus subscribe
         self.notifier: Notifier = build_notifier_from_config(self.config)
-        self.risk_manager.attach_event_bus(self.event_bus)
         self._setup_notifier_subscriptions()
-        # Circuit breaker 발동 시 새 진입 차단 (사안 U''=나)
+        # Circuit breaker 발동 시 새 진입 차단
         self._circuit_breaker_open: bool = False
 
-        # BL-2-2: 호가창 collector 초기화 (config.live.orderbook.enabled=true 시)
+        # 호가창 collector 초기화 (config.live.orderbook.enabled=true 시)
         # paper 모드에서만 의미. live 모드는 거래소가 자동 처리.
         # collector는 ccxt async 클라이언트 필요 — DataFeed의 exchange 재사용
         self.orderbook_collector: OrderBookCollector | None = None
@@ -221,187 +167,15 @@ class CoreEngine(AbstractEngine):
         # 최신 호가창 캐시 (BAR_CLOSED 시 fetch 후 try_enter/close_position에 전달)
         self._latest_orderbook: dict | None = None
 
-        # BL-2 추가 step (DD''=가): OOS monitor warm-up
-        # 학습 cutoff 이후 historical candles로 buffer 사전 채움 → 라이브 시작 즉시 적중률 보유
-        if self.oos_monitor is not None:
-            try:
-                await self._warmup_oos_monitor()
-            except Exception as e:
-                logger.warning("OOS warmup failed (non-blocking): %s", e)
-
-    async def _warmup_oos_monitor(self) -> None:
-        """학습 cutoff 이후 historical candles로 OOS monitor buffer 사전 채움.
-
-        I-BL003 fix: train_meta 추출은 strategy.extract_train_meta()로 위임.
-        단일 모델은 default impl이 model_path → train_meta.json 처리. ensemble은
-        sub-plugin 집계 (cutoff=min, acc=mean) override 사용. paper 운영 중
-        record_prediction되는 buffer key가 strategy.name이므로 active strategy
-        자체를 warm-up해야 buffer가 활용됨.
-        """
-        from src.data.historical import HistoricalDataLoader
-        loader = HistoricalDataLoader(self.config)
-        try:
-            for strategy in self.strategies:
-                try:
-                    await self._warmup_one_strategy(strategy, loader)
-                except Exception as e:
-                    logger.warning(
-                        "OOS warmup [%s] failed: %s", strategy.name, e,
-                    )
-        finally:
-            await loader.close()
-
-    async def _warmup_one_strategy(self, strategy, loader) -> None:
-        """단일 strategy warm-up — train_meta로 cutoff/learned_acc 추출 + 시뮬."""
-        # 1. train_meta 추출 (I-BL003 fix: strategy.extract_train_meta로 위임)
-        cutoff_dt, learned_acc = strategy.extract_train_meta()
-        if cutoff_dt is None:
-            logger.warning(
-                "OOS warmup [%s]: train cutoff 추출 실패 — skip",
-                strategy.name,
-            )
-            return
-
-        # 2. cutoff_dt 이후 ~ 현재까지 historical candles 다운로드 (캐시 활용)
-        from datetime import datetime, timezone
-        end_dt = datetime.now(timezone.utc)
-        # warmup용 인디케이터 history_bars 추가 (entry_tf max indicator window 고려)
-        history_bars = int(self.config.get("data", {}).get("history_bars", 300))
-        entry_tf = strategy.entry_timeframe
-
-        candles_per_tf: dict = {}
-        for tf in strategy.required_timeframes:
-            from src.data.historical import TF_MS
-            tf_ms = TF_MS.get(tf, 60_000)
-            start_ms = int(cutoff_dt.timestamp() * 1000) - history_bars * tf_ms
-            end_ms = int(end_dt.timestamp() * 1000)
-            df = await loader.download_range_merged(tf, start_ms, end_ms)
-            candles_per_tf[tf] = df
-
-        if entry_tf not in candles_per_tf or candles_per_tf[entry_tf].empty:
-            logger.warning("OOS warmup [%s]: entry_tf 데이터 없음 — skip", strategy.name)
-            return
-
-        # 3. signal_iter 정의 — ts마다 ctx 빌드 + plugin.generate_signal
-        master_df = candles_per_tf[entry_tf]
-        import pandas as pd
-
-        # I-BL004 fix: warmup용 features 1회 사전계산 후 self._features_cache에 임시 주입.
-        # _build_ctx가 cache 자동 lookup → plugin.generate_signal이 매 ts마다 81 피처를
-        # 처음부터 재계산(O(N²))하던 것을 1회로 축소. BacktestEngine._build_features_cache
-        # 와 동일 패턴 (DRY). warmup 종료 시 finally에서 cache 비움 → 라이브 entry path
-        # 무영향 (라이브는 매 봉 재계산이 default 의도).
-        from src.strategy.features import compute_multi_tf_features
-        try:
-            self._features_cache[entry_tf] = compute_multi_tf_features(
-                candles_per_tf, entry_tf,
-            )
-            logger.info(
-                "OOS warmup [%s]: features cache built (entry_tf=%s, rows=%d)",
-                strategy.name, entry_tf, len(self._features_cache[entry_tf]),
-            )
-        except Exception as e:
-            logger.warning(
-                "OOS warmup [%s]: features cache build 실패 — fallback to per-bar compute: %s",
-                strategy.name, e,
-            )
-
-        try:
-            def signal_iter(ts_dt):
-                ts = pd.Timestamp(ts_dt).tz_convert("UTC") if pd.Timestamp(ts_dt).tz else pd.Timestamp(ts_dt, tz="UTC")
-                # ts 직전까지 slice (lookahead 차단, I-B007 패턴)
-                slice_dict = {
-                    tf: df[df.index < ts] for tf, df in candles_per_tf.items()
-                }
-                # current_price = open of ts
-                try:
-                    current_price = float(master_df.loc[ts, "open"])
-                except KeyError:
-                    return None  # ts 미존재
-                ctx = self._build_ctx(strategy, slice_dict, current_price, 10000.0, ts_dt)
-                try:
-                    signal = strategy.generate_signal(ctx)
-                    return signal.side
-                except Exception as e:
-                    logger.debug("warmup signal_iter [%s] ts=%s 실패: %s", strategy.name, ts_dt, e)
-                    return None
-
-            # 4. monitor에 warm-up 위임. cutoff 이후 entry_tf 봉만 처리
-            # (signal_iter가 None 반환하면 record_prediction 시 SignalSide(None) 오류 → 사전 필터)
-            from src.core.enums import SignalSide
-
-            def safe_signal_iter(ts_dt):
-                side = signal_iter(ts_dt)
-                return side if side is not None else SignalSide.HOLD
-
-            result = self.oos_monitor.warmup_from_history(
-                strategy_name=strategy.name,
-                entry_timeframe=entry_tf,
-                bars=master_df,
-                signal_iter=safe_signal_iter,
-                cutoff_dt=cutoff_dt,
-                learned_oos_acc=learned_acc,
-            )
-
-            # 5. 결과 로그 + 격차 알림 (EE''=yes)
-            logger.info(
-                "OOS warmup [%s] complete: samples=%d, accuracy=%s, learned_oos_acc=%s, gap=%s",
-                strategy.name, result["samples"],
-                f"{result['accuracy']:.4f}" if result["accuracy"] is not None else None,
-                f"{result['learned_oos_acc']:.4f}" if result["learned_oos_acc"] is not None else None,
-                f"{result['gap']:+.4f}" if result["gap"] is not None else None,
-            )
-            # 격차 임계 도달 시 oos_decay publish (EE''=yes)
-            decay_threshold = float(
-                (self.config.get("live", {}) or {}).get("oos_monitoring", {}).get(
-                    "warmup_decay_threshold_pct", 0.10,
-                )
-            )
-            if result["gap"] is not None and result["gap"] >= decay_threshold:
-                await self.event_bus.publish("oos_decay", {
-                    "strategy": strategy.name,
-                    "accuracy": result["accuracy"],
-                    "threshold": self.oos_monitor.min_acc_threshold,
-                    "learned_oos_acc": result["learned_oos_acc"],
-                    "gap": result["gap"],
-                    "warmup_samples": result["samples"],
-                    "source": "warmup",
-                })
-        finally:
-            # I-BL004 fix: warmup 종료 시 cache 비움 — 라이브 entry path가 stale 데이터
-            # 사용 안 하도록 (cache가 cutoff 시점까지만 포함, 라이브 새 봉 미반영).
-            self._features_cache.pop(entry_tf, None)
-
     def _setup_notifier_subscriptions(self) -> None:
-        """BL-2-1: 주요 EventType → notifier 송신 라우팅.
+        """주요 EventType → notifier 송신 라우팅.
 
-        levels config로 각 이벤트의 송신 활성/비활성 결정 (V'' 사용자 결정 반영).
+        levels config로 각 이벤트의 송신 활성/비활성 결정.
         """
         notif_cfg = (self.config.get("live", {}) or {}).get(
             "notifications", {}
         ) or {}
         levels = notif_cfg.get("levels", {}) or {}
-
-        async def _on_drawdown_locked(data):
-            if not levels.get("drawdown_lock", True):
-                return
-            await self.notifier.send(
-                "ERROR",
-                "Drawdown lock triggered",
-                f"DD {data.get('drawdown_pct', 0):.2f}% >= "
-                f"{data.get('max_drawdown_pct', 0):.2f}%. Trading halted.",
-                **data,
-            )
-
-        async def _on_daily_loss_locked(data):
-            if not levels.get("daily_loss_lock", True):
-                return
-            await self.notifier.send(
-                "ERROR",
-                "Daily loss limit reached",
-                f"PnL ${data.get('daily_pnl', 0):.2f} <= ${data.get('limit', 0):.2f}",
-                **data,
-            )
 
         async def _on_circuit_breaker(data):
             if not levels.get("circuit_breaker", True):
@@ -415,21 +189,10 @@ class CoreEngine(AbstractEngine):
                 **data,
             )
 
-        async def _on_oos_decay(data):
-            if not levels.get("oos_decay", True):
-                return
-            await self.notifier.send(
-                "WARNING",
-                f"OOS decay [{data.get('strategy', 'unknown')}]",
-                f"accuracy {data.get('accuracy', 0):.3f} < "
-                f"threshold {data.get('threshold', 0):.3f}",
-                **data,
-            )
-
         async def _on_position_opened(pos):
-            if not levels.get("position_open", True):  # V'' 사용자 결정으로 default true
+            if not levels.get("position_open", True):  # default true
                 return
-            # BLE-7-2: SL/TP 가격 + entry 대비 Δ% 보강 (_build_entry_message)
+            # SL/TP 가격 + entry 대비 Δ% 보강 (_build_entry_message)
             await self.notifier.send(
                 "INFO",
                 f"ENTRY [{pos.strategy_name}]",
@@ -441,14 +204,14 @@ class CoreEngine(AbstractEngine):
             )
 
         async def _on_position_closed(data):
-            if not levels.get("position_close", True):  # V'' 사용자 결정으로 default true
+            if not levels.get("position_close", True):  # default true
                 return
             pos = data.get("position")
             pnl = data.get("pnl", 0)
             reason = data.get("reason", "")
             if pos is None:
                 return
-            # BLE-7-2: entry→exit 가격 / pnl% / 보유 시간 보강 (_build_exit_message)
+            # entry→exit 가격 / pnl% / 보유 시간 보강 (_build_exit_message)
             await self.notifier.send(
                 "INFO",
                 f"EXIT [{pos.strategy_name}] {reason}",
@@ -463,10 +226,7 @@ class CoreEngine(AbstractEngine):
                 reason=reason,
             )
 
-        self.event_bus.subscribe("drawdown_locked", _on_drawdown_locked)
-        self.event_bus.subscribe("daily_loss_locked", _on_daily_loss_locked)
         self.event_bus.subscribe("circuit_breaker_open", _on_circuit_breaker)
-        self.event_bus.subscribe("oos_decay", _on_oos_decay)
         self.event_bus.subscribe(EventType.POSITION_OPENED.value, _on_position_opened)
         self.event_bus.subscribe(EventType.POSITION_CLOSED.value, _on_position_closed)
 
@@ -477,29 +237,29 @@ class CoreEngine(AbstractEngine):
         await self.broker.close()
         await self.data_store.close()
 
-    # ---- 상태 복원 (잠재 이슈 I-001/I-002 해결) ----
+    # ---- 상태 복원 ----
 
     async def _restore_daily_pnl(self) -> None:
-        """I-BLE001 ③: 오늘 누적 daily_pnl 을 DB 에서 복원.
+        """오늘 누적 daily_pnl 을 DB 에서 복원.
 
         `_restore_state` 의 case 1/2/4 끝에서 호출 (case 3 raise 는 엔진 종료라 무관).
         get_daily_pnl 이 COALESCE(closed_at, timestamp) 쿼리라 자정 경계 case 정확 반영.
         """
         restored = await self.data_store.get_daily_pnl()
-        self.risk_manager.daily_pnl = restored
+        self.account_tracker.daily_pnl = restored
         logger.info(
-            "[RiskManager] daily_pnl restored from DB: $%.2f (today=%s UTC)",
+            "[AccountTracker] daily_pnl restored from DB: $%.2f (today=%s UTC)",
             restored,
             datetime.now(timezone.utc).strftime("%Y-%m-%d"),
         )
 
     async def _restore_state(self) -> None:
-        """재시작 시 잔액·포지션·DD락 복원.
+        """재시작 시 잔액·포지션 복원.
 
         포지션 매칭 정책:
           - 거래소 O + DB O + strategy_name match:
               - active 리스트에 있으면 정상 OPEN, 없으면 ORPHAN
-          - 거래소 O + DB ∅ + 전략 0개: 에러 중단 (정책 7 (a))
+          - 거래소 O + DB ∅ + 전략 0개: 에러 중단
           - 거래소 O + DB ∅ + 전략 ≥1: strategy_name="_unknown" ORPHAN
           - 거래소 ∅ + DB O: DB의 open trades 사후 closed 처리
           - 거래소 ∅ + DB ∅: 정상 빈 슬롯
@@ -510,11 +270,11 @@ class CoreEngine(AbstractEngine):
         if initial is None:
             await self.data_store.set_initial_balance(balance)
             initial = balance
-        self.risk_manager.set_initial_balance(initial)
+        self.account_tracker.set_initial_balance(initial)
         peak = await self.data_store.get_peak_equity()
         if peak > 0:
-            self.risk_manager.peak_equity = peak
-        self.risk_manager.update_equity(balance)
+            self.account_tracker.peak_equity = peak
+        self.account_tracker.update_equity(balance)
 
         # 포지션 매칭
         exchange_pos = await self.broker.get_position()
@@ -523,17 +283,16 @@ class CoreEngine(AbstractEngine):
         # 1) 거래소 없음 + DB 없음
         if exchange_pos is None and not open_trades:
             logger.info("Clean startup: no open position")
-            await self._restore_daily_pnl()       # I-BLE001 ③
+            await self._restore_daily_pnl()
             return
 
         # 2) 거래소 없음 + DB 있음 → DB의 open trades 사후 청산 처리
-        # I-BL013 fix: 거래소 trade history에서 실제 청산 정보 fetch 시도.
+        # 거래소 trade history에서 실제 청산 정보 fetch 시도.
         # SL/TP 자동 청산 케이스에서 정확한 exit_price/pnl 복원. fetch 실패 시 fallback
         # (SL 가격 추정 + WARNING — 사용자가 OKX 웹에서 정확한 PnL 확인 후 수동 update 권장).
-        # I-BL016 fix (BL-2-4 hotfix-L): same-day(UTC) 청산이면 risk_manager.daily_pnl
-        # 누적. daily_loss_limit 정확성 보장. 결정 (B-3 나/B-4 나):
+        # same-day(UTC) 청산 누적은 아래 _restore_daily_pnl 의 get_daily_pnl 쿼리가 처리.
         #   - 텔레그램 EXIT 알림 발송 안 함 (시작 시점 noise/지연 알림 혼란 회피)
-        #   - update_equity 추가 호출 안 함 (라인 423 초기 호출이 broker.get_balance
+        #   - update_equity 추가 호출 안 함 (위 초기 호출이 broker.get_balance
         #     ground truth 기반이라 충분, 추가 호출은 effectively no-op)
         if exchange_pos is None and open_trades:
             logger.warning(
@@ -574,7 +333,7 @@ class CoreEngine(AbstractEngine):
                     actual_pnl / trade["entry_price"] * 100
                     if trade["entry_price"] > 0 else 0.0
                 )
-                # I-BLE001: OKX exit ts 우선, 없으면 now (fallback)
+                # OKX exit ts 우선, 없으면 now (fallback)
                 closed_at_iso = (
                     datetime.fromtimestamp(exit_ts_ms / 1000, tz=timezone.utc).isoformat()
                     if exit_ts_ms is not None
@@ -589,13 +348,12 @@ class CoreEngine(AbstractEngine):
                     closed_at=closed_at_iso,
                 )
 
-            # I-BLE001 ⑥: case 2 의 same-day add_pnl 분기 제거.
             # close_trade 가 closed_at=exit_ts_iso 로 호출 → 아래 _restore_daily_pnl 의
             # get_daily_pnl 쿼리 (COALESCE 기반) 가 자동으로 same-day 만 합산.
-            await self._restore_daily_pnl()       # I-BLE001 ③
+            await self._restore_daily_pnl()
             return
 
-        # 3) 거래소 있음 + 전략 0개 → 에러 중단 (정책 7 (a))
+        # 3) 거래소 있음 + 전략 0개 → 에러 중단
         if exchange_pos is not None and not self.strategies:
             raise RuntimeError(
                 "Exchange has an open position but no active strategies "
@@ -634,7 +392,7 @@ class CoreEngine(AbstractEngine):
             trade_id = None
             entry_time = datetime.now(timezone.utc)
 
-        # 자동 입양 (7-1): active 리스트에 있으면 OPEN, 없으면 ORPHAN
+        # 자동 입양: active 리스트에 있으면 OPEN, 없으면 ORPHAN
         status = (
             PositionStatus.OPEN
             if strategy_name in self.strategy_by_name
@@ -669,15 +427,15 @@ class CoreEngine(AbstractEngine):
             trade_id,
         )
 
-        # I-BL011 fix: 거래소 conditional order(SL/TP) 살아있는지 검증 + 누락 시 재등록
+        # 거래소 conditional order(SL/TP) 살아있는지 검증 + 누락 시 재등록
         if self.broker.is_live and self._position is not None:
             await self._verify_and_restore_sl_tp()
 
-        # I-BLE001 ③: case 4 (자동 입양/orphan 포함) 모든 처리 후 daily_pnl 복원
+        # case 4 (자동 입양/orphan 포함) 모든 처리 후 daily_pnl 복원
         await self._restore_daily_pnl()
 
     async def _verify_and_restore_sl_tp(self) -> None:
-        """I-BL011: 거래소의 SL/TP conditional order 생존 검증 + 누락 시 재등록.
+        """거래소의 SL/TP conditional order 생존 검증 + 누락 시 재등록.
 
         재시작 시 거래소가 conditional order를 유지하는 게 일반적이지만 보장 X
         (사용자 수동 cancel, 거래소 정책 변경 등). 누락 시 자금 위험 노출이라
@@ -694,7 +452,7 @@ class CoreEngine(AbstractEngine):
             )
             return
 
-        # I-BLE009: SL/TP 는 OKX conditional algo order(orders-algo-pending)라
+        # SL/TP 는 OKX conditional algo order(orders-algo-pending)라
         # 일반 fetch_open_orders(orders-pending)로는 누락됨 → 살아있는데 missing
         # 오판 → 재등록 중복. broker.fetch_open_algo_orders 로 algo endpoint 조회.
         try:
@@ -749,7 +507,7 @@ class CoreEngine(AbstractEngine):
             logger.info("SL/TP conditional orders verified alive on exchange")
 
     def _position_to_trade_dict(self) -> dict:
-        """I-BL015: self._position을 _fetch_actual_exit 호환 trade dict로 변환."""
+        """self._position을 _fetch_actual_exit 호환 trade dict로 변환."""
         pos = self._position
         return {
             "id": pos.trade_id,
@@ -762,7 +520,7 @@ class CoreEngine(AbstractEngine):
         }
 
     async def _sync_unexpected_close(self, last_known_price: float, now: datetime) -> None:
-        """I-BL015: 거래소가 우리 모르게 청산한 포지션 동기화.
+        """거래소가 우리 모르게 청산한 포지션 동기화.
 
         라이브 운영 중 다음 case에서 봉 OHLC 기반 check_candle_sl_tp가 인지 못함:
         1) SL/TP spike만 도달 (봉 OHLC 범위 밖)
@@ -770,11 +528,11 @@ class CoreEngine(AbstractEngine):
         3) 거래소 강제 청산 (margin call, liquidation)
 
         흐름:
-        - I-BL013 _fetch_actual_exit으로 정확한 exit_price/reason fetch
+        - _fetch_actual_exit으로 정확한 exit_price/reason fetch
         - 실패 시 last_known_price + ENGINE_SHUTDOWN fallback
         - _close_with_funding 호출 → 정상 close 흐름 진행
-          - I-BL010이 거래소 ∅ 인지 → close_position skip
-          - I-BL012 강건성 path → DB close + event publish + self._position=None
+          - close_position이 거래소 ∅ 인지 → 거래소 close skip
+          - DB close + event publish + self._position=None
           - 텔레그램 EXIT 알림 발송
           - daily_pnl 누적
         """
@@ -785,7 +543,7 @@ class CoreEngine(AbstractEngine):
         exit_data = await self._fetch_actual_exit(trade_dict)
 
         if exit_data is not None:
-            # I-BL016: 운영 중이라 timestamp 미사용 (now ≈ 청산 시각, same-day 보장)
+            # 운영 중이라 timestamp 미사용 (now ≈ 청산 시각, same-day 보장)
             exit_price, _, reason_str, _ = exit_data
             try:
                 reason = ExitReason(reason_str)
@@ -807,24 +565,23 @@ class CoreEngine(AbstractEngine):
                 exit_price,
             )
 
-        # _close_with_funding 호출 → 정상 close 흐름 (I-BL010 skip + DB close + event)
+        # _close_with_funding 호출 → 정상 close 흐름 (거래소 close skip + DB close + event)
         await self._close_with_funding(exit_price, reason, now)
 
     async def _fetch_actual_exit(
         self, trade: dict,
     ) -> tuple[float, float, str, int | None] | None:
-        """I-BL013: 거래소에서 trade의 실제 청산 정보 fetch.
+        """거래소에서 trade의 실제 청산 정보 fetch.
 
         ccxt `fetch_closed_orders`로 reduceOnly + 반대 방향 closed order 찾아
         (exit_price, pnl, reason, exit_ts_ms) 반환. fetch_my_trades보다 reduceOnly
-        식별이 정확 (진단 결과 fetch_my_trades는 reduceOnly key 누락).
+        식별이 정확 (fetch_my_trades는 reduceOnly key 누락).
 
         PnL = (exit - entry) × size × side_sign - 진입_fee - 청산_fee
         - 수수료는 config의 taker_fee_pct로 추정 (실제 OKX 표시값과 ~$0.5 오차 가능)
 
-        I-BL016 (BL-2-4 hotfix-L): exit_ts_ms 추가 반환 — `_restore_state` case 2의
-        same-day(UTC) 판정에 사용. 운영 중 `_sync_unexpected_close`는 미사용 (now ≈
-        청산 시각이라 same-day 보장).
+        exit_ts_ms 반환 — `_restore_state` case 2의 same-day(UTC) 판정에 사용.
+        운영 중 `_sync_unexpected_close`는 미사용 (now ≈ 청산 시각이라 same-day 보장).
 
         Returns:
             (exit_price, pnl, reason, exit_ts_ms) 또는 None.
@@ -894,7 +651,7 @@ class CoreEngine(AbstractEngine):
                         ExitReason.SL_HIT.value if exit_price > entry_price
                         else ExitReason.TP_HIT.value
                     )
-                # I-BL016: ccxt order의 timestamp (UTC ms). caller(case 2)가 same-day 판정에 사용
+                # ccxt order의 timestamp (UTC ms). caller(case 2)가 same-day 판정에 사용
                 exit_ts_ms = o.get("timestamp")
                 return exit_price, net_pnl, reason, exit_ts_ms
             return None
@@ -908,11 +665,11 @@ class CoreEngine(AbstractEngine):
     ) -> dict | None:
         """거래소 포지션과 DB open trade 매칭: side + size 기준.
 
-        I-BLE008: size tolerance 를 trade_sync.SIZE_TOLERANCE_BTC (0.005 = 0.5
-        contract) 로 완화. DB size 는 사이징 공식 full precision (예 0.06907371),
+        size tolerance 는 trade_sync.SIZE_TOLERANCE_BTC (0.005 = 0.5 contract) 로
+        완화한다. DB size 는 사이징 공식 full precision (예 0.06907371),
         거래소 체결은 contract 단위 절삭 (예 0.069) 이라 구조적으로 ~7e-5 차이 →
         기존 1e-6 tolerance 로는 정상 포지션이 orphan 으로 오복원됨.
-        max_concurrent_positions=1 이라 side+size 로 사실상 유일 (첫 매칭 반환).
+        단일 슬롯이라 side+size 로 사실상 유일 (첫 매칭 반환).
         trade_sync 의 sync 매칭과 동일 tolerance 로 일관 (DRY).
         """
         from src.live.trade_sync import SIZE_TOLERANCE_BTC
@@ -989,7 +746,7 @@ class CoreEngine(AbstractEngine):
             logger.error("append_candle failed: %s", e, exc_info=True)
             return
 
-        # BL-2-1: Circuit breaker 감시 — broker(LiveExecutor)의 cb 상태가 OPEN이면 publish
+        # Circuit breaker 감시 — broker(LiveExecutor)의 cb 상태가 OPEN이면 publish
         if not self._circuit_breaker_open:
             executor = getattr(self.broker, "executor", None)
             if executor is not None:
@@ -1001,13 +758,13 @@ class CoreEngine(AbstractEngine):
                         "threshold": cb.failure_threshold,
                     })
 
-        # 진행 중 봉 재발행이면 전략 평가 skip (I-005)
+        # 진행 중 봉 재발행이면 전략 평가 skip
         if not self._should_process_bar(tf, ts_ms):
             return
 
-        # BL-2-2: master timeframe BAR_CLOSED에서만 호가창 fetch (Y''=가)
+        # master timeframe BAR_CLOSED에서만 호가창 fetch
         # — 다른 timeframe BAR_CLOSED 이벤트마다 fetch하면 중복
-        # I-BL005 fix: _should_process_bar 후로 이동 — ccxt가 봉 진행 중 close 변동마다
+        # _should_process_bar 후에 위치 — ccxt가 봉 진행 중 close 변동마다
         # _on_bar_closed를 트리거하므로 같은 ts 중복 fetch 방지 필수
         if (
             self.orderbook_collector is not None
@@ -1027,8 +784,8 @@ class CoreEngine(AbstractEngine):
             candle["timestamp"], unit="ms", utc=True
         ).to_pydatetime()
 
-        # I-BL015: 라이브 모드에서 거래소 포지션 상태 사전 동기화 (master_tf만).
-        # 거래소가 우리 모르게 청산한 4가지 case(SL/TP spike, manual close, 강제 청산)
+        # 라이브 모드에서 거래소 포지션 상태 사전 동기화 (master_tf만).
+        # 거래소가 우리 모르게 청산한 case(SL/TP spike, manual close, 강제 청산)
         # 차단. 봉 OHLC 기반 check_candle_sl_tp는 spike를 인지 못함.
         if (
             self.broker.is_live
@@ -1046,7 +803,7 @@ class CoreEngine(AbstractEngine):
                 # 거래소 ∅ → 우리 모르게 청산. 동기화 후 SL/TP 캔들 검사 skip
                 await self._sync_unexpected_close(close, now)
 
-        # I-BLE010: 청산 검사(1, 2)는 master_timeframe 봉에서만 수행.
+        # 청산 검사(1, 2)는 master_timeframe 봉에서만 수행.
         # 다중 TF(15m/1h/4h) 동시 마감(4h 경계 등) 시 _on_bar_closed 가 TF마다
         # 동시 실행(data_feed asyncio.gather)되는데, 청산 경로에 TF 가드가 없으면
         # 1h/4h 봉도 같은 포지션 청산을 감지 → POSITION_CLOSED 중복 발행 (EXIT
@@ -1054,7 +811,7 @@ class CoreEngine(AbstractEngine):
         # 청산 판정에 가장 정밀하며, _sync_unexpected_close(master_tf 거래소 ∅ 감지)
         # + 거래소 conditional order 가 spike/외부청산을 보완한다.
         if tf == self.master_timeframe:
-            # 1) SL/TP 캔들 체결 검사 (엔진 담당 정책 (a))
+            # 1) SL/TP 캔들 체결 검사 (엔진 담당)
             if self._position is not None:
                 fill = self.check_candle_sl_tp(self._position, high, low)
                 if fill is not None:
@@ -1077,21 +834,14 @@ class CoreEngine(AbstractEngine):
             tf, candles_slice, close, balance, now
         )
 
-        # BL-2-3 hotfix-E: 슬롯 차있을 때 master_tf 봉 마감마다 position 상태 로그.
+        # 슬롯 차있을 때 master_tf 봉 마감마다 position 상태 로그.
         # 슬롯 비었을 때는 evaluate_strategies_on_bar 안에서 _log_signal_status 호출됨.
         if self._position is not None and tf == self.master_timeframe:
             self._log_position_status(self._position, close, now)
 
-        # BL-2-4 hotfix-G: master_tf 봉 마감마다 계정 재정 상태 로그 (포지션 무관)
+        # master_tf 봉 마감마다 계정 재정 상태 로그 (포지션 무관)
         if tf == self.master_timeframe:
             self._log_account_status(balance, close)
-
-        # BP-2-3: OOS monitor 평가 (horizon 도달한 pending prediction 채점)
-        if self.oos_monitor is not None:
-            try:
-                self.oos_monitor.evaluate_pending(now, close)
-            except Exception as e:
-                logger.warning("oos_monitor.evaluate_pending failed: %s", e)
 
         # 4) equity 로깅
         try:
@@ -1112,8 +862,8 @@ class CoreEngine(AbstractEngine):
             exit_price, reason, funding_fee=funding, now=now
         )
 
-        # BLE-6-1: 라이브 close 직후 batch sync (best-effort, 라이브 전용).
-        # paper/backtest 영향 0 — sync 함수 자체에 broker.is_live 가드 (K=가)
+        # 라이브 close 직후 batch sync (best-effort, 라이브 전용).
+        # paper/backtest 영향 0 — sync 함수 자체에 broker.is_live 가드
         if self.broker.is_live:
             from src.live.trade_sync import sync_all_unsynced
             try:
@@ -1130,18 +880,18 @@ class CoreEngine(AbstractEngine):
                         result["failed_count"],
                         len(result["errors"]),
                     )
-                # I-BLE001 ④: synced_count > 0 시 memory daily_pnl 재정렬
+                # synced_count > 0 시 memory daily_pnl 재정렬
                 # (sync 후 DB pnl 이 OKX 실값으로 갱신됐으므로 메모리 추정값과 어긋남)
                 if result["synced_count"] > 0:
                     new_daily_pnl = await self.data_store.get_daily_pnl()
-                    delta = new_daily_pnl - self.risk_manager.daily_pnl
+                    delta = new_daily_pnl - self.account_tracker.daily_pnl
                     if abs(delta) > 0.01:
                         logger.info(
-                            "[RiskManager] daily_pnl recalibrated after sync: "
+                            "[AccountTracker] daily_pnl recalibrated after sync: "
                             "$%.2f → $%.2f (Δ=%+.2f, OKX 실값 반영)",
-                            self.risk_manager.daily_pnl, new_daily_pnl, delta,
+                            self.account_tracker.daily_pnl, new_daily_pnl, delta,
                         )
-                    self.risk_manager.daily_pnl = new_daily_pnl
+                    self.account_tracker.daily_pnl = new_daily_pnl
             except Exception as e:
                 logger.warning("Trade sync failed (best-effort, close 흐름 유지): %s", e)
 
@@ -1190,14 +940,14 @@ class CoreEngine(AbstractEngine):
             funding_fee=funding_fee,
             exit_reason=exit_reason,
             exit_order_id=exit_order_id,
-            closed_at=now.isoformat(),    # I-BLE001
+            closed_at=now.isoformat(),
         )
 
     async def _fetch_funding_since_entry(self) -> float:
-        """OKX fetch_funding_history 영역 amount 의 *holder net 영향* 영역 합산.
+        """OKX fetch_funding_history 의 amount 를 holder net 영향 기준으로 합산.
 
-        I-BLE007: abs() 영역 제거 — funding 부호 영역 그대로 보존 (양수=수익, 음수=비용).
-        calc_pnl 영역 영역 `net = gross - fees + funding` 영역 영역 일관 영역.
+        funding 부호를 그대로 보존한다 (양수=수익, 음수=비용).
+        calc_pnl 의 `net = gross - fees + funding` 식과 일관.
         """
         if self._position is None or self._position.entry_time is None:
             return 0.0
@@ -1210,75 +960,28 @@ class CoreEngine(AbstractEngine):
             logger.warning("fetch_funding_history failed: %s", e)
             return 0.0
 
-    # ---- BL-2-3 hotfix-E: 모니터링 hook override (라이브/페이퍼 INFO 출력) ----
+    # ---- 모니터링 hook override (라이브/페이퍼 INFO 출력) ----
 
     def _log_signal_status(self, strategy, signal, bar_context=None) -> None:
-        """매 entry_tf 봉 마감 시 슬롯 비었을 때 호출.
+        """매 entry_tf 봉 마감 시 슬롯 비었을 때 호출 (라이브/페이퍼 INFO 출력).
 
-        정상 inference 샘플 (BLE-7-1 후, sub_probs + bar 컨텍스트 추가):
-          [SIGNAL] ensemble HOLD probs=[S:0.05 H:0.92 L:0.03] conf=0.92 threshold=0.55
-                   contributors=[ml_lightgbm, ml_xgboost, dl_lstm, dl_transformer]
-                   sub_probs={ml_lightgbm:[S:0.04 H:0.93 L:0.03] ...}
+        전략 비종속 generic 포맷 — side / confidence / (옵션) bar 컨텍스트만 출력한다.
+        전략이 `signal.meta["note"]` (문자열) 을 채우면 그대로 덧붙인다.
+        모델별 진단 정보(확률 분포·기여도 등)는 각 전략 plugin 이 자체 로깅하거나
+        meta["note"] 로 요약해 전달한다.
+
+        샘플:
+          [SIGNAL] my_strategy LONG conf=0.82 → ENTRY
                    bar=80050.00 (Δ-0.12% prev) range=0.15%
-
-        I-BL007 Phase 3-C: 정상 + dropped > 0 (진행 중 봉 영향 잔존):
-          [SIGNAL] ... (gap=1, used_ts=2026-05-06 04:30:00)
-
-        I-BL007 Phase 3-C: 추론 실패 + 진단 정보:
-          [SIGNAL] ensemble HOLD (no inference: ml_lightgbm=all_features_nan
-                   {1h: body_ratio,upper_shadow; 4h: atr_pct},
-                   dl_lstm=dropna_lt_lookback {available:45/60}) threshold=0.55
         """
         meta = signal.meta or {}
-        probs = meta.get("probs")
-        contributors = meta.get("contributors")
-        threshold = float(strategy.params.get("confidence_threshold", 0.55))
         conf = signal.confidence if signal.confidence is not None else 0.0
-
-        # 추론 실패 case
-        unavailable_subs = meta.get("unavailable_subs")
-        fail_reason = meta.get("fail_reason")
-        if unavailable_subs or (fail_reason and not probs):
-            detail = _format_failure_detail(
-                strategy.name, unavailable_subs, fail_reason, meta,
-            )
-            # BLE-7-1 보강: 끝 \n 으로 다음 record 와 빈 줄 분리
-            logger.info(
-                "[SIGNAL] %s %s (no inference: %s) threshold=%.2f\n",
-                strategy.name, signal.side.value.upper(), detail, threshold,
-            )
-            return
-
-        # 정상 case
-        probs_str = ""
-        # BLE-7-1 보강: conf class label — probs argmax 기반 (S/H/L). signal.side 와
-        # 다를 수 있음 (threshold 미달 시 argmax=L 이어도 signal=HOLD)
-        conf_str = f"conf={conf:.2f}"
-        if probs and len(probs) == 3:
-            probs_str = (
-                f" probs=[S:{probs[0]:.2f} H:{probs[1]:.2f} L:{probs[2]:.2f}]"
-            )
-            pred_idx = max(range(3), key=lambda i: probs[i])
-            pred_label = ["S", "H", "L"][pred_idx]
-            conf_str = f"conf={pred_label}:{conf:.2f}"
         action_marker = " → ENTRY" if signal.is_actionable else ""
-        # BLE-7-1 보강: 옵셔널 부분을 멀티라인으로 (\n + 9 space, [SIGNAL] prefix 정렬)
-        contrib_str = (
-            f"\n         contributors={contributors}" if contributors else ""
-        )
 
-        # BLE-7-1: sub_probs 풀 [S:H:L] 표기 (ensemble 만 셋팅, 단일 모델 plugin 은 None)
-        sub_probs_str = ""
-        sub_probs = meta.get("sub_probs")
-        if sub_probs:
-            parts = [
-                f"{name}:[S:{p[0]:.2f} H:{p[1]:.2f} L:{p[2]:.2f}]"
-                for name, p in sub_probs.items() if p and len(p) == 3
-            ]
-            if parts:
-                sub_probs_str = "\n         sub_probs={" + " ".join(parts) + "}"
+        note = meta.get("note")
+        note_str = f"\n         {note}" if note else ""
 
-        # BLE-7-1: bar 컨텍스트 — close + Δ% (prev) + range%
+        # bar 컨텍스트 — close + Δ% (prev) + range%
         bar_str = ""
         if bar_context:
             close = bar_context.get("close")
@@ -1294,29 +997,18 @@ class CoreEngine(AbstractEngine):
                     range_pct = (high - low) / low * 100
                     bar_str += f" range={range_pct:.2f}%"
 
-        # I-BL007 Phase 3-C: gap > 0인 경우만 진단 정보 추가 (noise 최소화)
-        diag_str = ""
-        gap = meta.get("gap_to_latest", 0)
-        if gap and gap > 0:
-            used_ts = meta.get("used_row_ts")
-            if used_ts is not None:
-                diag_str = f"\n         (gap={gap}, used_ts={used_ts})"
-            else:
-                diag_str = f"\n         (gap={gap})"
-
         logger.info(
-            "[SIGNAL] %s %s%s %s threshold=%.2f%s%s%s%s%s\n",
-            strategy.name, signal.side.value.upper(), probs_str, conf_str, threshold,
-            action_marker, contrib_str, sub_probs_str, bar_str, diag_str,
+            "[SIGNAL] %s %s conf=%.2f%s%s%s\n",
+            strategy.name, signal.side.value.upper(), conf,
+            action_marker, note_str, bar_str,
         )
-
 
     def _log_position_status(self, position, current_price, now) -> None:
         """master_tf 봉 마감 시 슬롯 차있을 때 호출.
 
-        BLE-7-1: SL/TP 가격 + 현재가 대비 Δ% 추가.
+        SL/TP 가격 + 현재가 대비 Δ% 표기.
         샘플:
-          [POSITION] ensemble LONG size=0.0149 entry=67100.00 current=67235.00
+          [POSITION] my_strategy LONG size=0.0149 entry=67100.00 current=67235.00
                      unrealized_pnl=+$2.01 (1h32m held)
                      SL=66500.00 (-1.09% from current) TP=68000.00 (+1.14%)
         """
@@ -1328,8 +1020,8 @@ class CoreEngine(AbstractEngine):
         else:
             unrealized = (position.entry_price - current_price) * position.size
 
-        # BLE-7-1: SL/TP 거리 표기 (None 일 수 있음 — orphan 등)
-        # BLE-7-1 보강: \n + 11 space ([POSITION] prefix 정렬)
+        # SL/TP 거리 표기 (None 일 수 있음 — orphan 등)
+        # \n + 11 space ([POSITION] prefix 정렬)
         sl_tp_str = ""
         if current_price > 0:
             parts = []
@@ -1353,14 +1045,15 @@ class CoreEngine(AbstractEngine):
         )
 
     def _log_account_status(self, balance, current_price) -> None:
-        """master_tf 봉 마감 시 계정 재정 상태 출력 (포지션 유무 무관).
+        """master_tf 봉 마감 시 계정 재정 상태(계측치) 출력 (포지션 유무 무관).
 
-        BLE-7-1 / I-BLE005 / I-BLE006: 가시화 영역 전면 갱신 (사용자 요청).
+        리스크 한도/락은 모델 정책(allow_entry)이라 여기선 표기하지 않는다 —
+        엔진은 계측치(잔액·equity·peak·daily_pnl·dd)만 보여준다.
         샘플 (포지션 없음, balance=$5260.46, initial=$5159.87, peak=$5320.57):
           [ACCOUNT] initial_balance=$5159.87 current_balance=$5260.46 equity=$5260.46 unrealized_pnl=+$0.00
                     total_balance_diff=+$100.59 (+1.95%)
-                    daily_pnl=+$0.00 (limit -5% / -$263.02)
-                    dd=-$60.11 (lock -35% / -$1862.20, vs peak equity $5320.57)
+                    daily_pnl=+$0.00
+                    dd=-$60.11 (vs peak equity $5320.57)
         """
         from src.core.enums import PositionSide
         unrealized = 0.0
@@ -1375,33 +1068,23 @@ class CoreEngine(AbstractEngine):
                 ) * self._position.size
 
         equity = balance + unrealized
-        rm = self.risk_manager
-        initial = rm.initial_balance
-        daily_pnl = rm.daily_pnl
+        tracker = self.account_tracker
+        initial = tracker.initial_balance
+        daily_pnl = tracker.daily_pnl
+        dd_abs = max(0.0, tracker.peak_equity - equity)
 
-        # I-BLE006: daily 한도 — config 의 max_daily_loss_pct (예: 5%) + balance 대비 절대값
-        daily_limit_pct = rm.max_daily_loss_pct * 100        # 예: 5
-        daily_limit_abs = balance * rm.max_daily_loss_pct    # 예: $263.02
-
-        # I-BLE006: dd 영역 — 절대값만 (% 제거) + 락 한도 % + 락 한도 절대값 + peak equity
-        dd_abs = max(0.0, rm.peak_equity - equity)
-        dd_lock_pct = rm.max_drawdown_pct * 100              # 35
-        dd_lock_abs = rm.peak_equity * rm.max_drawdown_pct   # 락 한도 절대값
-
-        # I-BLE005 / I-BLE006: total_balance_diff — initial 대비 누적 손익 (입금 영향 별개,
-        # initial_balance 가 BLE-7-3 입금 가이드로 갱신되므로 자동 반영)
+        # total_balance_diff — initial 대비 누적 손익
         total = balance - initial
         total_pct = (total / initial * 100) if initial > 0 else 0.0
 
-        # I-BLE006: 멀티라인 (\n + 10 space, [ACCOUNT] prefix 정렬) + 끝 \n
         logger.info(
             "[ACCOUNT] initial_balance=$%.2f current_balance=$%.2f equity=$%.2f "
             "unrealized_pnl=%s"
             "\n          total_balance_diff=%s (%+.2f%%)"
-            "\n          daily_pnl=%s (limit -%.0f%% / -$%.2f)"
-            "\n          dd=-$%.2f (lock -%.0f%% / -$%.2f, vs peak equity $%.2f)\n",
+            "\n          daily_pnl=%s"
+            "\n          dd=-$%.2f (vs peak equity $%.2f)\n",
             initial, balance, equity, _fmt_dollar(unrealized),
             _fmt_dollar(total), total_pct,
-            _fmt_dollar(daily_pnl), daily_limit_pct, daily_limit_abs,
-            dd_abs, dd_lock_pct, dd_lock_abs, rm.peak_equity,
+            _fmt_dollar(daily_pnl),
+            dd_abs, tracker.peak_equity,
         )

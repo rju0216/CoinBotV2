@@ -1,4 +1,4 @@
-"""DataStore 단위 테스트 — closed_at 컬럼 + get_daily_pnl COALESCE 쿼리 (I-BLE001).
+"""DataStore 단위 테스트 — closed_at 컬럼 + get_daily_pnl COALESCE 쿼리.
 
 실제 SQLite DB (tmp_path 격리) 로 schema/쿼리 검증.
 """
@@ -22,14 +22,14 @@ def _make_config(db_path: str) -> dict:
 
 @pytest.mark.asyncio
 async def test_close_trade_persists_closed_at(tmp_path):
-    """I-BLE001: close_trade(closed_at=...) 호출 후 SELECT 결과 일치."""
+    """close_trade(closed_at=...) 호출 후 SELECT 결과 일치."""
     db_path = os.path.join(tmp_path, "test_coinbot.db")
     store = DataStore(_make_config(db_path), mode="paper")
     await store.initialize()
     try:
         # trade 생성
         trade_id = await store.log_trade(
-            strategy_name="ensemble",
+            strategy_name="my_strategy",
             side="long",
             size=0.075,
             entry_price=82000.0,
@@ -65,13 +65,13 @@ async def test_close_trade_persists_closed_at(tmp_path):
 
 @pytest.mark.asyncio
 async def test_close_trade_default_closed_at_uses_now(tmp_path):
-    """I-BLE001: close_trade(closed_at=None) → datetime.now(timezone.utc) fallback."""
+    """close_trade(closed_at=None) → datetime.now(timezone.utc) fallback."""
     db_path = os.path.join(tmp_path, "test_coinbot.db")
     store = DataStore(_make_config(db_path), mode="paper")
     await store.initialize()
     try:
         trade_id = await store.log_trade(
-            strategy_name="ensemble", side="long", size=0.075,
+            strategy_name="my_strategy", side="long", size=0.075,
             entry_price=82000.0, stop_loss=81500.0, take_profit=83000.0,
         )
         before = datetime.now(timezone.utc)
@@ -92,8 +92,8 @@ async def test_close_trade_default_closed_at_uses_now(tmp_path):
 
 @pytest.mark.asyncio
 async def test_get_daily_pnl_uses_coalesce_closed_at(tmp_path):
-    """I-BLE001 ② 핵심: 자정 경계 case — 어제 open + 오늘 close 가 오늘 daily_pnl 에 합산.
-    open 기준 (기존) 으로는 어제로 계산됐을 영역이 closed_at 기준으로 정확 반영.
+    """자정 경계 case — 어제 open + 오늘 close 가 오늘 daily_pnl 에 합산.
+    open 기준 (기존) 으로는 어제로 계산됐을 거래가 closed_at 기준으로 정확 반영.
     """
     db_path = os.path.join(tmp_path, "test_coinbot.db")
     store = DataStore(_make_config(db_path), mode="paper")
@@ -134,7 +134,7 @@ async def test_get_daily_pnl_uses_coalesce_closed_at(tmp_path):
         await store._db.commit()
 
         daily_pnl = await store.get_daily_pnl()
-        # 합산 영역: Trade B (20.0) + Trade C (5.0) + Trade D (3.0) = 28.0
+        # 합산 대상: Trade B (20.0) + Trade C (5.0) + Trade D (3.0) = 28.0
         # Trade A (어제 closed_at) 는 제외
         assert daily_pnl == pytest.approx(28.0)
     finally:
@@ -143,7 +143,7 @@ async def test_get_daily_pnl_uses_coalesce_closed_at(tmp_path):
 
 @pytest.mark.asyncio
 async def test_get_daily_pnl_coalesce_fallback_to_timestamp(tmp_path):
-    """I-BLE001: closed_at NULL 인 기존 trade 는 COALESCE 로 timestamp 사용 (legacy 호환)."""
+    """closed_at NULL 인 기존 trade 는 COALESCE 로 timestamp 사용 (legacy 호환)."""
     db_path = os.path.join(tmp_path, "test_coinbot.db")
     store = DataStore(_make_config(db_path), mode="paper")
     await store.initialize()

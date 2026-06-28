@@ -1,81 +1,59 @@
-# CoinBot 뼈대 프로토타입 기본 config.
-# subcommand(paper/live/backtest)로 실행 모드 결정 (§7). mode 필드 없음.
-# OKX API 자격증명은 .env의 OKX_API_KEY / OKX_SECRET / OKX_PASSPHRASE로 주입.
+# CoinBot 뼈대 기본 config.
+# 실행 모드는 subcommand(paper/live/backtest)로 결정 — config 에 mode 필드 없음.
+# OKX API 자격증명은 .env 의 OKX_API_KEY / OKX_SECRET / OKX_PASSPHRASE 로 주입.
 
 exchange:
-  name: "okx"
   symbol: "BTC/USDT:USDT"
   sandbox: false
-  leverage: 5                         # 거래소 단일 레버리지 설정 (전략별 max_leverage와 구분)
+  leverage: 5                         # 거래소 단일 레버리지 (전략 사이징과 별개)
 
-engine:
-  reverse_signal_policy: "ignore"    # "ignore" | "reverse" | "same_strategy_only"
+# 거래 정책(사이징·SL/TP·reverse·진입 게이트)은 전략(모델)이 소유한다.
+# 정책 임계값은 각 전략의 <strategy.name> 섹션 params 로 둔다. 엔진엔 정책값 없음.
 
-risk:                                # 엔진 전역 안전장치
-  max_daily_loss_pct: 0.05
-  max_drawdown_pct: 0.35
-  max_position_size_btc: 1.0
-  max_concurrent_positions: 1        # (C) 배타적 경합 — 전역 슬롯 1개
-  volatility_targeting:              # BP-2-2: 동적 사이징 (사안 J 가, K 가, L 가)
-    enabled: false                   # default 비활성 — 활성화 시 ATR 기반 size 축소만 적용
-    target_atr_pct: 0.005            # 평소 변동성 기준 (entry_timeframe ATR_pct)
-    lookback: 14                     # ATR 산출 기간
-  circuit_breaker:                   # BL-2-1: API 연속 실패 자동 차단 (사안 G 나)
-    enabled: true                    # default 활성 (라이브 안전망)
-    failure_threshold: 5             # 연속 실패 5회 → CircuitBreakerOpen + 새 진입 차단
-    auto_resume: false               # 사용자 manual 해제 (CoreEngine 재시작 또는 broker.executor.circuit_breaker.reset())
+risk:                                # 거래소 연결 안전장치(circuit breaker)만 — 거래 정책 아님
+  circuit_breaker:                   # API 연속 실패 자동 차단 (라이브 안전망)
+    enabled: true
+    failure_threshold: 5             # 연속 실패 N회 → CircuitBreakerOpen + 새 진입 차단
+    # OPEN 후 자동 재개 없음 — manual 해제만 (CoreEngine 재시작 또는 broker.executor.circuit_breaker.reset())
 
 accounting:
   taker_fee_pct: 0.0005
   slippage_pct: 0.0
-  funding_enabled: true              # 라이브는 fetch_funding_history, 백테는 0
+  funding_enabled: true              # 라이브는 close 시 fetch_funding_history 로 funding 반영, 백테는 0
 
 paper:
   initial_balance: 10000.0
 
 live:
-  oos_monitoring:                    # BP-2-3: 라이브 OOS 모니터링 (사안 D 나: 알림만)
-    enabled: false                   # default 비활성
-    window: 100                      # 최근 N개 신호의 적중률 계산
-    horizon: 10                      # 평가 horizon (entry_timeframe 봉 단위)
-    threshold_pct: 0.003             # actual label 분류 임계 (0.3%)
-    min_acc_threshold: 0.50          # 적중률 < 이 값이면 알림
-    cooldown_bars: 10                # 알림 후 재알림까지 최소 봉 수
-    alert_method: "log"              # 현재 "log"만 지원. 미래: "telegram" / "email"
-    warmup_decay_threshold_pct: 0.10 # BL-2 추가: 학습 OOS Acc - warmup 적중률 ≥ 이 값이면 alpha decay 알림
-
-  orderbook:                         # BL-2-2: 호가창 수집 인프라 (paper 모드용)
+  orderbook:                         # 호가창 수집 인프라 (paper 모드 슬리피지 시뮬용)
     enabled: false                   # default 비활성 (paper 시연 시 활성)
-    depth: 20                        # 호가 단계 수 (사안 Z'' 나)
+    depth: 20                        # 호가 단계 수
     save_dir: "data/orderbook"       # parquet 저장 디렉토리
 
-  notifications:                     # BL-2-1: 알림 인프라 (사안 T'' 가, V'' default+POSITION on)
+  notifications:                     # 알림 인프라
     enabled: true                    # default 활성 (LogNotifier만)
-    channels: ["log"]                # 사용자가 텔레그램 추가 시 ["log", "telegram"]
+    channels: ["log"]                # 텔레그램 추가 시 ["log", "telegram"]
     telegram:
-      bot_token: ""                  # @BotFather에서 발급 후 입력
+      bot_token: ""                  # @BotFather 발급 후 입력
       chat_id: ""                    # 본인 chat_id 입력
-    email:                           # 옵션 (사용자 SMTP 설정 시)
+    email:                           # 옵션 (SMTP 설정 시)
       smtp_host: ""
       smtp_port: 587
       username: ""
       password: ""
       from_addr: ""
       to_addr: ""
-    levels:                          # 각 이벤트의 송신 활성/비활성 (사안 V'')
-      drawdown_lock: true
-      daily_loss_lock: true
+    levels:                          # 각 이벤트의 송신 활성/비활성
       circuit_breaker: true
-      oos_decay: true
-      position_open: true            # V'' default on 결정
-      position_close: true           # V'' default on 결정
+      position_open: true
+      position_close: true
 
 data:
   history_bars: 300
   candle_dir: "data/candles"
 
 database:
-  path: "data/coinbot.db"             # mode별 접미사 자동 부여 (coinbot_live.db, coinbot_paper.db, coinbot_backtest.db)
+  path: "data/coinbot.db"             # mode별 접미사 자동 부여 (coinbot_live.db, coinbot_paper.db). 백테는 메모리라 DB 미생성
 
 logging:
   level: "INFO"
@@ -84,45 +62,17 @@ logging:
   backup_count: 5
 
 strategies:
-  active: []                          # 뼈대 상태 — 사용자가 전략 이름을 추가해야 매매 발생.
-                                      # 예: ["example_macross"] 로 켜면 아래 샘플 전략이 활성화됨.
-                                      # (C) 정책: 리스트 순서 = 우선순위.
+  active: []                          # 뼈대 상태 — 전략 이름을 추가해야 매매 발생.
+                                      # 새 전략: src/strategy/plugins/<name>.py 작성 +
+                                      # 아래에 <name>: 섹션 추가 + 이 리스트에 "<name>" 추가.
+                                      # 리스트 순서 = 단일 슬롯 경합 시 우선순위.
 
-# ---- 샘플 전략 섹션 (참고용) ----
-# strategy/plugins/example.py 의 ExampleMACross 가 등록되어 있다.
-# active 리스트에 "example_macross" 를 추가해야 실제로 동작한다.
-example_macross:
-  risk_per_trade_pct: 0.01            # 필수 (엔진 사이징)
-  max_leverage: 5                     # 필수 (엔진 사이징)
-  ma_fast: 20
-  ma_slow: 50
-  atr_period: 14
-  atr_sl_mult: 1.5
-  reward_risk_ratio: 2.0
-
-# ---- PATH_E 추세추종 전략 (룰베이스) ----
-# strategy/plugins/trend_donchian.py 의 TrendDonchian. Donchian 돌파 + exit channel trailing.
-# 백테: active 에 "trend_donchian" 임시 추가 후 실행 → 종료 시 [] 복구 (규칙 7).
-trend_donchian:
-  risk_per_trade_pct: 0.01            # 필수 (엔진 사이징)
-  max_leverage: 5                     # 필수 (엔진 사이징)
-  entry_period: 20                    # 진입 Donchian 채널 (직전 N봉 돌파)
-  exit_period: 10                     # 청산 Donchian 채널 (trailing)
-  atr_period: 14
-  atr_sl_mult: 2.0                    # 초기 SL = 진입가 ± ATR×2
-                                      # TP 미설정 (compute_take_profit→None, trailing SL 청산)
-
-# ---- PATH_E TF-5a 실험 plugin (edge 강화 ablation, baseline freeze) ----
-# trend_donchian_exp: baseline + long_only/regime_filter 옵션. 1회용 ablation 스크립트가 변형 오버라이드.
-trend_donchian_exp:
-  risk_per_trade_pct: 0.01
-  max_leverage: 5
-  entry_period: 20
-  exit_period: 10
-  atr_period: 14
-  atr_sl_mult: 2.0
-  long_only: false
-  regime_filter_type: "none"          # adx/er/chop/ma/vol/di/none
-  regime_threshold: 25
-  vol_lookback: 100
-  vol_max_quantile: 0.8
+# ---- 전략 섹션 (전략 추가 시 여기에 <strategy.name>: 블록을 둔다) ----
+# 엔진이 강제하는 필수 키는 없다 — 거래 정책(사이징·리스크 등)은 전략 메서드가 소유한다.
+# 정책 임계값은 전략이 자기 params 로 정의하고 compute_position_size / allow_entry 등에서 읽는다.
+# 예:
+# my_strategy:
+#   risk_per_trade_pct: 0.01   # 예) 전략이 compute_position_size 에서 읽는 param
+#   max_leverage: 5            # 예) 전략이 compute_position_size 에서 읽는 param
+#   max_drawdown_pct: 0.35     # 예) 전략이 allow_entry 에서 읽는 param
+#   <전략 고유 파라미터>: ...

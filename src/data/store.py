@@ -1,7 +1,6 @@
 """SQLite 기반 거래·자산 기록 저장소.
 
-owner 분기와 exit_plan partial 트레이드 흐름은 제거. trades 테이블에
-strategy_name 컬럼을 도입하여 전략별 추적과 단계 7의 자동 입양 기반을 마련.
+trades 테이블에 strategy_name 컬럼을 두어 전략별 추적을 지원한다.
 """
 
 from __future__ import annotations
@@ -61,14 +60,14 @@ class DataStore:
             )
             """
         )
-        # BLE-6-1 / I-BLE001: 기존 DB 마이그레이션 — 신규 컬럼 추가 (ADD COLUMN 표준 sqlite)
+        # 기존 DB 마이그레이션 — 신규 컬럼 추가 (ADD COLUMN 표준 sqlite)
         cursor = await self._db.execute("PRAGMA table_info(trades)")
         existing_cols = {row[1] for row in await cursor.fetchall()}
         for col_name, col_type in [
             ("entry_order_id", "TEXT"),
             ("exit_order_id", "TEXT"),
             ("synced_at", "TEXT"),
-            ("closed_at", "TEXT"),       # I-BLE001: 실 close 시각 (open=timestamp 와 분리)
+            ("closed_at", "TEXT"),       # 실 close 시각 (open=timestamp 와 분리)
         ]:
             if col_name not in existing_cols:
                 await self._db.execute(
@@ -198,7 +197,7 @@ class DataStore:
         exit_order_id: str | None = None,
         closed_at: str | None = None,
     ) -> None:
-        """I-BLE001: closed_at 추가 — ISO timestamp (UTC), caller (engine close 시각) 전달.
+        """closed_at: ISO timestamp (UTC), caller (engine close 시각) 전달.
         None 시 datetime.now(timezone.utc) fallback.
         """
         if closed_at is None:
@@ -212,7 +211,7 @@ class DataStore:
         )
         await self._db.commit()
 
-    # ---- BLE-6-1: OKX sync 메서드 ----
+    # ---- OKX sync 메서드 ----
 
     async def get_unsynced_trades(self) -> list[dict[str, Any]]:
         """status='closed' AND synced_at IS NULL — sync 대기 중인 trade 목록."""
@@ -241,10 +240,10 @@ class DataStore:
     ) -> None:
         """OKX 실값 기반 trade 갱신 + synced_at 기록.
 
-        I-BLE007: positions-history 영역 직접 사용 영역 영역 — size, funding_fee, pnl_pct,
-        closed_at 영역 신규 인자. 기존 영역 (BLE-6-1) 호환 위해 None 기본값.
+        size, funding_fee, pnl_pct, closed_at 은 positions-history 값을 직접
+        반영하기 위한 인자. 구버전 호출과의 호환을 위해 None 기본값.
         """
-        # I-BLE007: size/funding_fee/pnl_pct/closed_at 영역 None 영역이면 기존 값 유지 (COALESCE)
+        # size/funding_fee/pnl_pct/closed_at 이 None 이면 기존 값 유지 (COALESCE)
         await self._db.execute(
             """UPDATE trades SET entry_price=?, exit_price=?, trading_fee=?, pnl=?,
                size=COALESCE(?, size),
@@ -275,7 +274,7 @@ class DataStore:
         return await self.get_trades(status="open")
 
     async def get_daily_pnl(self) -> float:
-        """I-BLE001: closed_at 기준 합산 — 자정 경계 case (어제 open + 오늘 close) 정확 반영.
+        """closed_at 기준 합산 — 자정 경계 case (어제 open + 오늘 close) 정확 반영.
         closed_at NULL 인 기존 trade 는 COALESCE 로 timestamp(=open 시각) fallback.
         """
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")

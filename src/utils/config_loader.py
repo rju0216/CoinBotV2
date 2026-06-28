@@ -39,7 +39,7 @@ def load_config(config_path: str | Path) -> dict[str, Any]:
     if os.getenv("OKX_PASSPHRASE") is not None:
         exchange["passphrase"] = os.getenv("OKX_PASSPHRASE", "")
 
-    # BL-2-1: Telegram 봇 자격증명 — config의 live.notifications.telegram.bot_token/chat_id에 주입.
+    # Telegram 봇 자격증명 — config의 live.notifications.telegram.bot_token/chat_id에 주입.
     # config에 빈 문자열로 두고 .env에서 실값 주입 (보안)
     if os.getenv("TELEGRAM_BOT_TOKEN") is not None or os.getenv("TELEGRAM_CHAT_ID") is not None:
         live = config.setdefault("live", {})

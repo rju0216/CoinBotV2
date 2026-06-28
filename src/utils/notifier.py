@@ -1,4 +1,4 @@
-"""알림 인프라 (BL-2-1, 사안 T''=가 log+telegram).
+"""알림 인프라 (기본 채널: log + telegram).
 
 abstract Notifier + 구현체 4종 (Log / Telegram / Email / Composite).
 config 기반 factory로 자동 인스턴스화. CoreEngine이 EventBus subscribe해서 호출.
@@ -81,8 +81,8 @@ class TelegramNotifier(Notifier):
                 self._fallback_warned = True
             await LogNotifier().send(level, title, message, **meta)
             return
-        # I-BL014 fix: parse_mode 제거 + plain text. Markdown V1 파서가 메시지 내
-        # 특수 문자(`-`, `$`, 긴 float 등)와 충돌 시 400 Bad Request reject 발생
+        # parse_mode 제거 + plain text. Markdown V1 파서가 메시지 내 특수
+        # 문자(`-`, `$`, 긴 float 등)와 충돌 시 400 Bad Request reject 발생
         # (예: EXIT 메시지의 `net_pnl=$-40.71` + meta의 매우 긴 float pnl). plain
         # text는 모든 문자 안전 처리.
         text = f"[{level}] {title}\n{message}"
@@ -98,7 +98,7 @@ class TelegramNotifier(Notifier):
         import urllib.parse
         import urllib.request
         url = self.API_URL.format(token=self.bot_token)
-        # I-BL014 fix: parse_mode 제거 — plain text 사용
+        # parse_mode 제거 — plain text 사용
         data = urllib.parse.urlencode({
             "chat_id": self.chat_id,
             "text": text,

@@ -1,15 +1,14 @@
-"""Lookahead bias 추가 점검 (BL-1-1).
+"""Lookahead bias 점검.
 
-PATH_B_LIVE_TRADING §3.2.3에 명시된 3가지 점검:
+인프라 레이어(indicators / 데이터 로더)의 forward-bias 회귀 방지:
 
-1. **Indicator forward-bias** — pandas_ta 기반 11개 indicator의 행 i 결과가
-   행 i+1, i+2, ... 데이터에 의존하지 않는지 합성 데이터로 검증.
-2. **Walk-forward embargo 시간 격차** — train 끝과 test 시작 사이 horizon
-   이상의 시간 격차가 보장되는지 (apply_embargo + generate_walk_forward_splits 결합).
-3. **OHLCV fetch fresh-bar 점검** — `HistoricalDataLoader.download` 응답에
+1. **Indicator forward-bias** — indicators.py 의 행 i 결과가 행 i+1, i+2, ...
+   데이터에 의존하지 않는지 합성 데이터로 검증 (causal 보장).
+2. **OHLCV fetch fresh-bar 점검** — `HistoricalDataLoader.download` 응답에
    미완성 봉(현재 진행 중)이 포함되지 않는지 검증. 합성 mock으로 점검.
 
-I-B007 (Phase E-2-1)에서 엔진 측 lookahead는 해결됨. 본 모듈은 그 보완.
+엔진 측 lookahead(BacktestEngine._slice_candles, _build_ctx 의 진행 중 봉 절단)는
+별도로 처리됨. 본 모듈은 인프라 지표/로더 보완 점검.
 """
 
 from __future__ import annotations
@@ -22,7 +21,6 @@ import pandas as pd
 import pytest
 
 from src.data.historical import HistoricalDataLoader
-from src.ml.walk_forward import apply_embargo, generate_walk_forward_splits
 from src.strategy.indicators import (
     compute_adx,
     compute_atr,
@@ -160,59 +158,7 @@ class TestIndicatorForwardBias:
 
 
 # ───────────────────────────────────────────────────────────────
-# 2. Walk-forward embargo 시간 격차 검증
-# ───────────────────────────────────────────────────────────────
-
-
-class TestWalkForwardEmbargoTime:
-    """generate_walk_forward_splits + apply_embargo가 train 끝 ~ test 시작
-    사이에 horizon 이상의 시간 격차를 만드는지 검증."""
-
-    def _idx(self, months: int = 24) -> pd.DatetimeIndex:
-        return pd.date_range(
-            "2022-01-01", periods=months * 30 * 24 * 4, freq="15min", tz="UTC"
-        )
-
-    def test_embargo_creates_time_gap(self):
-        """train 끝 horizon개 행 제거 후 마지막 train 시점 < test 시작."""
-        idx = self._idx(24)
-        folds = generate_walk_forward_splits(
-            idx, train_months=6, test_months=2, step_months=2
-        )
-        horizon = 10
-        for fold in folds:
-            train_idx_full = idx[
-                (idx >= fold.train_start) & (idx <= fold.train_end)
-            ]
-            train_idx_embargoed = apply_embargo(train_idx_full, horizon)
-            if len(train_idx_embargoed) == 0:
-                continue
-            last_train_ts = train_idx_embargoed[-1]
-            # test_start와 last train ts 사이 격차 ≥ horizon 봉 (15min × horizon)
-            gap_bars = (fold.test_start - last_train_ts).total_seconds() / (15 * 60)
-            assert gap_bars >= horizon, (
-                f"Fold {fold.fold_id}: gap={gap_bars:.1f} bars < horizon={horizon}"
-            )
-
-    def test_embargo_prevents_label_leakage_at_horizon_30(self):
-        """더 보수적인 horizon=30에서도 격차 보장."""
-        idx = self._idx(24)
-        folds = generate_walk_forward_splits(idx)
-        horizon = 30
-        for fold in folds:
-            train_idx_full = idx[
-                (idx >= fold.train_start) & (idx <= fold.train_end)
-            ]
-            train_idx_embargoed = apply_embargo(train_idx_full, horizon)
-            if len(train_idx_embargoed) == 0:
-                continue
-            last_train_ts = train_idx_embargoed[-1]
-            gap_bars = (fold.test_start - last_train_ts).total_seconds() / (15 * 60)
-            assert gap_bars >= horizon
-
-
-# ───────────────────────────────────────────────────────────────
-# 3. OHLCV fetch fresh-bar 점검 (mock)
+# 2. OHLCV fetch fresh-bar 점검 (mock)
 # ───────────────────────────────────────────────────────────────
 
 
@@ -263,7 +209,7 @@ class TestOhlcvFreshBar:
 
         # **현재 동작 점검**: ccxt 응답을 그대로 반환하므로 진행 중 봉도 포함될 가능성
         # 본 테스트는 사실상 "현 동작 documentation" — 진행 중 봉이 포함되면
-        # plugin/엔진 측에서 ts < now 차단 (I-B007) 또는 BacktestEngine._slice_candles로 처리됨
+        # plugin/엔진 측에서 ts < now 차단 또는 BacktestEngine._slice_candles로 처리됨
         # 라이브 ccxt.pro는 봉 마감 이벤트 (BAR_CLOSED)로 처리 — 미완성 봉 미발행
         last_ts_ms = int(df.index[-1].timestamp() * 1000)
         # 진행 중 봉 timestamp가 (현재시간 - 15분) 미만인지 검증 (관용 기준)

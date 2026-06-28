@@ -33,24 +33,13 @@ data/candles/*.csv
 # ML 모델 아티팩트 (학습 산출물, 크기 큼)
 models/
 
-# 피처 캐시 (parquet, 학습 시 자동 생성)
+# 피처 캐시 (parquet, ML 학습 시 자동 생성)
 data/features/
 
-# PATH_D Phase R 측정 결과 (탐사 산출물, 결과는 보고서에 텍스트 보존)
-data/r1_scan/
-data/r2_scan/
-
-# PATH_E TF-3 파라미터 스윕 결과 (탐사 산출물)
-data/tf3_sweep/
-
-# PATH_E TF-5a edge 강화 ablation 결과 (탐사 산출물)
-data/tf5_ablation/
-
-# PATH_E 자금관리 1차 (sizing) 결과 (탐사 산출물)
-data/tf5_sizing/
-
-# BTC 국면 분석 (regime) 결과 (탐사 산출물)
-data/regime_analysis/
+# 탐사/측정 산출물 (1회용 분석 결과 — 결과는 작업 보고서에 텍스트 보존)
+data/*_scan/
+data/*_sweep/
+data/*_ablation/
 
 # 1회용 탐사/측정 스크립트 (규칙 8-4: commit 제외, 결과만 보고서에)
 scripts/_tmp_*.py

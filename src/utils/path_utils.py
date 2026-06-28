@@ -1,10 +1,10 @@
-"""디렉토리 충돌 방지 helper (BL-1 Step A).
+"""디렉토리 충돌 방지 helper.
 
 두 가지 패턴:
-1. `next_model_version(models_root)` — `v001`/`v002`/... 모델 디렉토리에서 max + 1.
-   v005처럼 의도적으로 비워둔 번호 자동 skip. train_*.py 4개가 사용.
+1. `next_model_version(models_root)` — `v001`/`v002`/... 버전 디렉토리에서 max + 1.
+   v005처럼 의도적으로 비워둔 번호 자동 skip.
 2. `resolve_unique_dir(base_dir)` — 임의 디렉토리 충돌 시 `_1`/`_2`/... postfix.
-   백테 결과(BacktestEngine.write_reports), 평가 결과(evaluate_models.py)가 사용.
+   백테 결과(BacktestEngine.write_reports)가 사용.
 
 설계 원칙:
 - 파일시스템에 부수효과 없음 (mkdir 안 함). 호출자가 결과 path로 mkdir.

@@ -1,4 +1,4 @@
-"""DataFeed WebSocket 동작 테스트 (I-BL006 watchdog timeout 포함)."""
+"""DataFeed WebSocket 동작 테스트 (watchdog timeout 포함)."""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ def _make_feed(exchange):
 
 
 class TestWatchTfWatchdog:
-    """I-BL006: watch_ohlcv hang 시 watchdog timeout으로 재시도 루프 진입."""
+    """watch_ohlcv hang 시 watchdog timeout으로 재시도 루프 진입."""
 
     @pytest.mark.asyncio
     async def test_hang_triggers_timeout_and_retries(self, monkeypatch, caplog):

@@ -1,6 +1,6 @@
-"""FeeModel.calc_pnl 영역 funding 부호 fix 검증 (I-BLE007).
+"""FeeModel.calc_pnl funding 부호 검증.
 
-funding 영역 의미: holder net 영향 (양수=수익, 음수=비용).
+funding 의미: holder net 영향 (양수=수익, 음수=비용).
 net = gross - fees + funding
 """
 
@@ -17,7 +17,7 @@ def _make_fm():
 
 
 class TestCalcPnlFundingSign:
-    """I-BLE007: calc_pnl 영역 funding 부호 영역 검증."""
+    """calc_pnl funding 부호 검증."""
 
     def test_long_positive_funding_added_to_net(self):
         """LONG + 수익 funding (양수) → net 가산."""
@@ -38,7 +38,7 @@ class TestCalcPnlFundingSign:
         assert result["pnl_pct"] == pytest.approx(1.225)
 
     def test_long_negative_funding_subtracted_from_net(self):
-        """LONG + 비용 funding (음수) → net 차감 (가산 영역 부호 영역으로 차감 효과)."""
+        """LONG + 비용 funding (음수) → net 차감 (음수 가산으로 차감 효과)."""
         fm = _make_fm()
         result = fm.calc_pnl(
             side=PositionSide.LONG,
@@ -52,7 +52,7 @@ class TestCalcPnlFundingSign:
         assert result["net_pnl"] == pytest.approx(94.5)
 
     def test_short_positive_funding_added_to_net(self):
-        """SHORT + 수익 funding (양수) → net 가산. Trade 18 영역 케이스 재현."""
+        """SHORT + 수익 funding (양수) → net 가산. 실거래 케이스 재현."""
         fm = _make_fm()
         result = fm.calc_pnl(
             side=PositionSide.SHORT,
@@ -60,11 +60,11 @@ class TestCalcPnlFundingSign:
             exit_price=72637.5,
             size=0.127,
             fees=9.28,
-            funding=0.84,    # 양수 (수익) — 사용자 OKX Trade 18 영역
+            funding=0.84,    # 양수 (수익) — 실 OKX 거래 값
         )
         # gross = (73446.6 - 72637.5) × 0.127 = 102.7557
         assert result["gross_pnl"] == pytest.approx(102.7557, abs=0.01)
-        # net = 102.76 - 9.28 + 0.84 = 94.32 — 사용자 OKX 표기 일치
+        # net = 102.76 - 9.28 + 0.84 = 94.32 — 실 OKX 표기 일치
         assert result["net_pnl"] == pytest.approx(94.32, abs=0.01)
 
     def test_zero_funding_unchanged(self):

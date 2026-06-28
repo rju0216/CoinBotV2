@@ -1,6 +1,6 @@
-"""AbstractEngine 단위 테스트 (단계 8).
+"""AbstractEngine 단위 테스트.
 
-추상 메서드(initialize/shutdown/run)는 단계 9/10에서 구체 엔진과 통합 테스트.
+추상 메서드(initialize/shutdown/run)는 구체 엔진 통합 테스트에서 다룬다.
 여기서는 추상 거부, TF union, 캔들 SL/TP 체결 판정만 검증한다.
 """
 
@@ -21,7 +21,7 @@ from src.core.enums import (
     SignalSide,
 )
 from src.core.types import Position
-from src.strategy.base import StrategyModule
+from tests.strategy_stub import StubStrategy
 from src.strategy.registry import (
     register_strategy,
     reset_registry_for_testing,
@@ -46,7 +46,7 @@ def _config_with_active(active: list[str], **strategy_params) -> dict:
         "database": {"path": "data/test.db"},
         "strategies": {"active": active},
     }
-    # 활성 전략 각각에 필수 키 default 주입 (I-008 startup 검증 통과용)
+    # 활성 전략 각각에 기본 param 주입 (startup 검증 통과용)
     for name in active:
         cfg[name] = dict(_STRATEGY_PARAMS_DEFAULT)
     cfg.update(strategy_params)
@@ -60,7 +60,7 @@ def _isolated_registry():
     reset_registry_for_testing()
 
 
-class _FastSlowStrategy(StrategyModule):
+class _FastSlowStrategy(StubStrategy):
     name = "fast_strategy"
     entry_timeframe = "1m"
     required_timeframes = ["1m", "15m"]
@@ -70,7 +70,7 @@ class _FastSlowStrategy(StrategyModule):
     def compute_take_profit(self, ctx, signal, sl): return 0.0
 
 
-class _SlowStrategy(StrategyModule):
+class _SlowStrategy(StubStrategy):
     name = "slow_strategy"
     entry_timeframe = "4h"
     required_timeframes = ["1d", "4h"]
@@ -145,7 +145,7 @@ def _make_position(
 
 
 class TestCandleSLTPFill:
-    """캔들 high/low로 SL/TP 체결 판정. SL 우선 (정책 (a))."""
+    """캔들 high/low로 SL/TP 체결 판정. 한 캔들 내 둘 다 도달 시 SL 우선."""
 
     def setup_method(self):
         register_strategy(_FastSlowStrategy)
@@ -163,7 +163,7 @@ class TestCandleSLTPFill:
         assert result == (68000, ExitReason.TP_HIT)
 
     def test_long_both_hit_sl_wins(self):
-        """SL과 TP 모두 한 캔들 내 도달 시 SL 우선 (정책 (a))."""
+        """SL과 TP 모두 한 캔들 내 도달 시 SL 우선."""
         pos = _make_position(PositionSide.LONG, 67000, sl=66500, tp=68000)
         result = self.eng.check_candle_sl_tp(pos, candle_high=68100, candle_low=66400)
         assert result == (66500, ExitReason.SL_HIT)
@@ -195,107 +195,3 @@ class TestCandleSLTPFill:
         assert self.eng.check_candle_sl_tp(None, 67800, 66600) is None  # type: ignore
 
 
-# ---- BP-2-2 동적 사이징 helper ----
-
-
-class _ATRStrategy(StrategyModule):
-    name = "atr_strategy"
-    entry_timeframe = "15m"
-    required_timeframes = ["15m"]
-
-    def generate_signal(self, ctx): return None  # type: ignore
-    def compute_stop_loss(self, ctx, signal): return 0.0
-    def compute_take_profit(self, ctx, signal, sl): return 0.0
-
-
-def _make_ctx_with_candles(candles_15m):
-    """단순 ctx mock — _compute_volatility_factor가 사용하는 필드만."""
-    from src.core.types import StrategyContext
-    return StrategyContext(
-        candles={"15m": candles_15m},
-        current_price=float(candles_15m["close"].iloc[-1]),
-        balance=10000.0,
-        position=None,
-        is_slot_occupied=False,
-        params={},
-        now=datetime(2024, 1, 1, tzinfo=timezone.utc),
-        precomputed_features=None,
-    )
-
-
-def _synthetic_15m_candles(n: int, atr_pct: float, base_price: float = 67000.0):
-    """일정한 ATR_pct를 갖는 합성 15m 캔들 (high-low = base × atr_pct)."""
-    import pandas as pd
-    timestamps = pd.date_range(
-        "2024-01-01", periods=n, freq="15min", tz="UTC"
-    )
-    range_ = base_price * atr_pct
-    rows = []
-    for _ in range(n):
-        o = base_price
-        c = base_price
-        h = base_price + range_ / 2
-        low = base_price - range_ / 2
-        rows.append([o, h, low, c, 1.0])
-    df = pd.DataFrame(
-        rows, columns=["open", "high", "low", "close", "volume"], index=timestamps
-    )
-    df.index.name = "timestamp"
-    return df
-
-
-class TestVolatilityFactorHelper:
-    def test_disabled_returns_one(self):
-        register_strategy(_ATRStrategy)
-        cfg = _config_with_active(["atr_strategy"])
-        cfg["risk"] = {"volatility_targeting": {"enabled": False}}
-        eng = _ConcreteEngine(cfg, mode="backtest")
-        strategy = next(s for s in eng.strategies if s.name == "atr_strategy")
-        ctx = _make_ctx_with_candles(_synthetic_15m_candles(30, atr_pct=0.01))
-        assert eng._compute_volatility_factor(strategy, ctx) == 1.0
-
-    def test_enabled_factor_above_one_when_volatile(self):
-        register_strategy(_ATRStrategy)
-        cfg = _config_with_active(["atr_strategy"])
-        cfg["risk"] = {
-            "volatility_targeting": {
-                "enabled": True,
-                "target_atr_pct": 0.005,
-                "lookback": 14,
-            }
-        }
-        eng = _ConcreteEngine(cfg, mode="backtest")
-        strategy = next(s for s in eng.strategies if s.name == "atr_strategy")
-        # ATR_pct = 0.01 (target 0.005의 2배) → factor ≈ 2.0
-        ctx = _make_ctx_with_candles(_synthetic_15m_candles(30, atr_pct=0.01))
-        factor = eng._compute_volatility_factor(strategy, ctx)
-        assert factor == pytest.approx(2.0, rel=0.05)
-
-    def test_enabled_factor_below_one_when_calm(self):
-        register_strategy(_ATRStrategy)
-        cfg = _config_with_active(["atr_strategy"])
-        cfg["risk"] = {
-            "volatility_targeting": {
-                "enabled": True,
-                "target_atr_pct": 0.005,
-                "lookback": 14,
-            }
-        }
-        eng = _ConcreteEngine(cfg, mode="backtest")
-        strategy = next(s for s in eng.strategies if s.name == "atr_strategy")
-        # ATR_pct = 0.0025 → factor ≈ 0.5
-        ctx = _make_ctx_with_candles(_synthetic_15m_candles(30, atr_pct=0.0025))
-        factor = eng._compute_volatility_factor(strategy, ctx)
-        assert factor == pytest.approx(0.5, rel=0.10)
-
-    def test_insufficient_candles_returns_one(self):
-        register_strategy(_ATRStrategy)
-        cfg = _config_with_active(["atr_strategy"])
-        cfg["risk"] = {
-            "volatility_targeting": {"enabled": True, "lookback": 14}
-        }
-        eng = _ConcreteEngine(cfg, mode="backtest")
-        strategy = next(s for s in eng.strategies if s.name == "atr_strategy")
-        # 5봉만 (lookback 14보다 적음) → fallback 1.0
-        ctx = _make_ctx_with_candles(_synthetic_15m_candles(5, atr_pct=0.01))
-        assert eng._compute_volatility_factor(strategy, ctx) == 1.0

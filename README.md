@@ -42,7 +42,11 @@ python -m src.main paper --config config/default.yaml
 python -m src.main live  --config config/default.yaml
 ```
 
-⚠️ live 는 실거래 모드. 시작 전 [USER_GUIDE §6](docs/01_Guides/USER_GUIDE.md) 필독.
+⚠️ live 는 실거래 모드. 시작 전 [INFRA_GUIDE §4 주의점](docs/INFRA_GUIDE.md) 필독.
+
+> **현재 상태**: 새 퀀트 모델 구현을 위해 인프라 뼈대만 남긴 상태
+> (`InitialInfraSetup` 브랜치). `strategies.active: []` 무거래.
+> 전략 plugin 은 비어 있으며, 아래 3단계로 추가한다.
 
 ---
 
@@ -86,7 +90,7 @@ strategies:
   active: ["my_strategy"]   # 빈 리스트 [] 이면 무거래 (뼈대 상태)
 ```
 
-상세는 [DEVELOPER_GUIDE](docs/01_Guides/DEVELOPER_GUIDE.md).
+상세·인프라 구조상 주의점은 [INFRA_GUIDE](docs/INFRA_GUIDE.md).
 
 ---
 
@@ -106,13 +110,11 @@ src/
 ├── risk/         # 사이징 + DD락 + 일일 한도
 ├── accounting/   # 수수료 / 슬리피지 / 펀딩비
 ├── data/         # WebSocket / 캔들 캐시 / DB
-├── utils/        # config_loader / logger
+├── utils/        # config_loader / logger / notifier / path_utils
 └── main.py       # CLI
 
 config/default.yaml   # 통합 설정 1개
-docs/
-├── 00_Work_Report/   # 작업 보고서 (시점별)
-└── 01_Guides/        # USER_GUIDE / DEVELOPER_GUIDE
+docs/INFRA_GUIDE.md   # 인프라 구조·신규 전략 추가·구조상 주의점
 tests/                # pytest 단위·통합 테스트
 scripts/              # download_history / run_full_backtest / merge_reports
 ```
@@ -123,9 +125,7 @@ scripts/              # download_history / run_full_backtest / merge_reports
 
 | 문서 | 대상 |
 |---|---|
-| [USER_GUIDE](docs/01_Guides/USER_GUIDE.md) | 설치·CLI·백테 결과 해석·라이브 운영 |
-| [DEVELOPER_GUIDE](docs/01_Guides/DEVELOPER_GUIDE.md) | 전략 작성·플러그인 인터페이스·엔진 hook |
-| [PROTOTYPE_DESIGN_260425](docs/00_Work_Report/PROTOTYPE_DESIGN_260425.md) | 설계 사양 (Day 1 시점) |
+| [INFRA_GUIDE](docs/INFRA_GUIDE.md) | 아키텍처·모듈 구조·신규 전략 추가법·인프라 구조상 주의점·명령어 |
 
 ---
 

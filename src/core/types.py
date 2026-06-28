@@ -72,7 +72,7 @@ class Position:
     trade_id: int | None = None
     status: PositionStatus = PositionStatus.OPEN
     meta: dict[str, Any] = field(default_factory=dict)
-    # BLE-6-1: 라이브 진입 시 OKX exchange order id (paper 도 fake id 가능)
+    # 라이브 진입 시 OKX exchange order id (paper 도 fake id 가능)
     entry_order_id: str | None = None
 
     @property
@@ -91,6 +91,21 @@ class ExitDecision:
 
 
 @dataclass
+class AccountState:
+    """진입 게이트·사이징이 참조하는 계좌 텔레메트리 (엔진 tracking → 모델).
+
+    drawdown_pct = (peak_equity - equity) / peak_equity (>=0). 정책 판단은 모델 몫;
+    이 값들은 계측치일 뿐이다.
+    """
+    balance: float
+    equity: float
+    peak_equity: float
+    daily_pnl: float
+    initial_balance: float
+    drawdown_pct: float
+
+
+@dataclass
 class StrategyContext:
     candles: dict[str, pd.DataFrame]
     current_price: float
@@ -99,7 +114,6 @@ class StrategyContext:
     is_slot_occupied: bool
     params: dict[str, Any]
     now: datetime
-    # Phase E-2-2-OPT Step 1: 백테에서 BacktestEngine이 OOS 전체 features를 사전계산해
-    # 주입. cutoff(ts < now) 처리는 features.get_features_for_ctx가 담당.
-    # 라이브에서는 항상 None — get_features_for_ctx가 즉시 계산 경로로 fallback.
-    precomputed_features: pd.DataFrame | None = None
+    # 계좌 텔레메트리 (allow_entry/compute_position_size 의 리스크 판단 재료).
+    # 엔진이 _build_ctx 에서 AccountTracker 상태로 채운다.
+    account: AccountState | None = None

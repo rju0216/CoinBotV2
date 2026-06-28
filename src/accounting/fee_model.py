@@ -72,9 +72,9 @@ class FeeModel:
         fees: float = 0.0,
         funding: float = 0.0,
     ) -> dict[str, float]:
-        """I-BLE007: funding 영역 의미 영역 *holder net 영향* 영역으로 정정.
-        - 양수 funding: 수익 (가산) — short 영역의 positive funding rate 영역 등
-        - 음수 funding: 비용 (차감) — long 영역의 positive funding rate 영역 등
+        """PnL 정산. funding 은 보유자 입장의 net 영향(부호 포함)으로 전달받는다.
+        - 양수 funding: 수익 (가산) — 예: positive funding rate 구간의 short 보유
+        - 음수 funding: 비용 (차감) — 예: positive funding rate 구간의 long 보유
         net = gross - fees + funding (funding 부호 그대로 가산)
         """
         if side == PositionSide.LONG:

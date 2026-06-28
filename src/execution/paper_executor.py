@@ -22,9 +22,9 @@ class PaperExecutor:
         paper_cfg = config.get("paper", {}) or {}
         self.initial_balance = float(paper_cfg.get("initial_balance", 10000.0))
         self.balance = self.initial_balance
-        # I-B012 fix (2026-05-03): paper 시뮬레이션이 fees를 balance에 반영해야
-        # equity_curve / metrics가 정확. 라이브 거래소는 자동 차감되지만 paper는
-        # 자체 처리 필요. 라이브-백테 일관성 (CLAUDE.md 정체성) 충족.
+        # paper 시뮬레이션이 fees를 balance에 반영해야 equity_curve / metrics가 정확.
+        # 라이브 거래소는 자동 차감되지만 paper는 자체 처리 필요.
+        # 라이브-백테 일관성 (CLAUDE.md 정체성) 충족.
         self.fee_model = FeeModel.from_config(config)
         # 보유 포지션 정보 (None = 슬롯 비어있음)
         self._position: dict | None = None
@@ -72,7 +72,7 @@ class PaperExecutor:
         if fill_price is None or fill_price <= 0:
             logger.error("Cannot open paper position without fill_price")
             return {}
-        # BL-2-2 (사안 CC''' 가): orderbook 가용 시 VWAP 침투 가격으로 effective_price.
+        # orderbook 가용 시 VWAP 침투 가격으로 effective_price.
         # None / 계산 실패 시 fill_price fallback (silent, 기존 동작 보존)
         effective_price = fill_price
         if orderbook is not None:
@@ -113,7 +113,7 @@ class PaperExecutor:
     ) -> dict:
         if self._position is None or fill_price is None:
             return {}
-        # BL-2-2: 청산 시 반대 방향으로 호가창 침투 (LONG 청산 = bids, SHORT 청산 = asks).
+        # 청산 시 반대 방향으로 호가창 침투 (LONG 청산 = bids, SHORT 청산 = asks).
         # close 방향은 진입 side의 반대.
         effective_price = fill_price
         if orderbook is not None:
@@ -143,7 +143,7 @@ class PaperExecutor:
             gross_pnl = (entry - exit_price) * size
         else:
             gross_pnl = 0.0
-        # I-B012 fix: round-trip fees(수수료+슬리피지)를 balance에서 차감하여
+        # round-trip fees(수수료+슬리피지)를 balance에서 차감하여
         # equity_curve / metrics가 net PnL을 반영하도록 함 (trades.csv는 이미 net)
         fees = self.fee_model.estimate_round_trip(entry, exit_price, size)
         net_pnl = gross_pnl - fees

@@ -17,6 +17,7 @@ from src.strategy.registry import (
     register_strategy,
     reset_registry_for_testing,
 )
+from tests.strategy_stub import StubStrategy
 
 
 @pytest.fixture(autouse=True)
@@ -27,7 +28,7 @@ def _isolated_registry():
     reset_registry_for_testing()
 
 
-class _DummyStrategy(StrategyModule):
+class _DummyStrategy(StubStrategy):
     name = "dummy"
     entry_timeframe = "15m"
     required_timeframes = ["15m"]
@@ -69,14 +70,10 @@ class TestRegistration:
     def test_register_duplicate_name_different_class_raises(self):
         register_strategy(_DummyStrategy)
 
-        class _OtherDummy(StrategyModule):
+        class _OtherDummy(StubStrategy):
             name = "dummy"
             entry_timeframe = "15m"
             required_timeframes = ["15m"]
-
-            def generate_signal(self, ctx): return Signal(side=SignalSide.HOLD)
-            def compute_stop_loss(self, ctx, s): return 0.0
-            def compute_take_profit(self, ctx, s, sl): return 0.0
 
         with pytest.raises(ValueError, match="already registered"):
             register_strategy(_OtherDummy)
@@ -103,6 +100,18 @@ class TestRegistration:
         with pytest.raises(TypeError, match="entry_timeframe"):
             register_strategy(_NoTF)
 
+    def test_register_missing_fill_priority_raises(self):
+        class _NoFillPrio(StrategyModule):
+            name = "no_fill_prio"
+            entry_timeframe = "15m"
+            required_timeframes = ["15m"]
+            def generate_signal(self, ctx): return Signal(side=SignalSide.HOLD)
+            def compute_stop_loss(self, ctx, s): return 0.0
+            def compute_take_profit(self, ctx, s, sl): return 0.0
+
+        with pytest.raises(TypeError, match="sl_tp_fill_priority"):
+            register_strategy(_NoFillPrio)
+
 
 class TestLookup:
     def test_unknown_strategy_raises_keyerror(self):
@@ -114,21 +123,17 @@ class TestLoadActiveStrategies:
     def test_loads_in_declared_order(self):
         register_strategy(_DummyStrategy)
 
-        class _SecondDummy(StrategyModule):
+        class _SecondDummy(StubStrategy):
             name = "dummy2"
             entry_timeframe = "4h"
             required_timeframes = ["4h"]
-            def generate_signal(self, ctx): return Signal(side=SignalSide.HOLD)
-            def compute_stop_loss(self, ctx, s): return 0.0
-            def compute_take_profit(self, ctx, s, sl): return 0.0
 
         register_strategy(_SecondDummy)
 
-        base = {"risk_per_trade_pct": 0.01, "max_leverage": 5}
         config = {
             "strategies": {"active": ["dummy2", "dummy"]},
-            "dummy": {**base, "foo": 1},
-            "dummy2": {**base, "bar": 2},
+            "dummy": {"foo": 1},
+            "dummy2": {"bar": 2},
         }
         instances = load_active_strategies(config)
         # 우선순위 = 선언 순서
@@ -136,31 +141,14 @@ class TestLoadActiveStrategies:
         assert instances[0].params["bar"] == 2
         assert instances[1].params["foo"] == 1
 
-    def test_missing_required_param_raises(self):
-        """I-008: 전략 params 필수 키 누락은 시작 시점에 감지."""
-        register_strategy(_DummyStrategy)
-        # risk_per_trade_pct 누락
-        config = {
-            "strategies": {"active": ["dummy"]},
-            "dummy": {"max_leverage": 5},
-        }
-        with pytest.raises(ValueError, match="missing required params.*risk_per_trade_pct"):
-            load_active_strategies(config)
-
-    def test_missing_max_leverage_raises(self):
-        register_strategy(_DummyStrategy)
-        config = {
-            "strategies": {"active": ["dummy"]},
-            "dummy": {"risk_per_trade_pct": 0.01},
-        }
-        with pytest.raises(ValueError, match="missing required params.*max_leverage"):
-            load_active_strategies(config)
-
-    def test_empty_params_raises(self):
+    def test_empty_params_ok(self):
+        """사이징·리스크가 모델 메서드 소유라, 엔진이 강제하는 필수 param 은 없다.
+        빈 params 도 정상 로드된다."""
         register_strategy(_DummyStrategy)
         config = {"strategies": {"active": ["dummy"]}, "dummy": {}}
-        with pytest.raises(ValueError, match="missing required params"):
-            load_active_strategies(config)
+        instances = load_active_strategies(config)
+        assert len(instances) == 1
+        assert instances[0].params == {}
 
     def test_empty_active_returns_empty(self):
         config = {"strategies": {"active": []}}

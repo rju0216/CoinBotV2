@@ -1,4 +1,4 @@
-"""PaperExecutor 단위 테스트 — orderbook 통합 (BL-2-2 Step 2)."""
+"""PaperExecutor 단위 테스트 — orderbook 통합."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ class TestOpenPositionWithoutOrderbook:
 
 
 class TestOpenPositionWithOrderbook:
-    """BL-2-2: orderbook 주입 시 VWAP 침투 가격 사용."""
+    """orderbook 주입 시 VWAP 침투 가격 사용."""
 
     @pytest.mark.asyncio
     async def test_long_uses_ask_vwap(self):
@@ -79,7 +79,7 @@ class TestOpenPositionWithOrderbook:
 
     @pytest.mark.asyncio
     async def test_empty_orderbook_falls_back_to_fill_price(self):
-        """사안 CC''' 가: orderbook depth 부족 (또는 빈 dict) → fill_price 그대로."""
+        """orderbook depth 부족 (또는 빈 dict) → fill_price 그대로."""
         ex = PaperExecutor(_config())
         await ex.initialize()
         ob_empty = {"bids": [], "asks": []}

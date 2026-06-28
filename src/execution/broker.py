@@ -55,7 +55,7 @@ class Broker:
         order_type: OrderType = OrderType.MARKET,
         orderbook: dict | None = None,
     ) -> dict:
-        # BL-2-2: orderbook은 PaperExecutor만 사용 (LiveExecutor는 거래소가 자동 처리).
+        # orderbook은 PaperExecutor만 사용 (LiveExecutor는 거래소가 자동 처리).
         # LiveExecutor.open_position은 orderbook 인자 없으므로 mode 분기.
         if self.mode == "live":
             return await self._executor.open_position(

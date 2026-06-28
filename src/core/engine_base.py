@@ -16,6 +16,7 @@ from typing import Any
 
 import pandas as pd
 
+from src.accounting.account_tracker import AccountTracker
 from src.accounting.fee_model import FeeModel
 from src.core.enums import (
     EventType,
@@ -25,16 +26,15 @@ from src.core.enums import (
     SignalSide,
 )
 from src.core.event_bus import EventBus
-from src.core.policies import (
-    IgnoreReversePolicy,
-    ReverseSignalPolicy,
-    build_reverse_policy,
+from src.core.types import (
+    AccountState,
+    ExitDecision,
+    Position,
+    Signal,
+    StrategyContext,
 )
-from src.core.types import ExitDecision, Position, Signal, StrategyContext
 from src.execution.broker import Broker
-from src.risk.manager import RiskManager
 from src.strategy.base import StrategyModule
-from src.strategy.indicators import compute_atr
 from src.strategy.registry import load_active_strategies
 
 logger = logging.getLogger(__name__)
@@ -59,7 +59,7 @@ def signal_side_to_position_side(side: SignalSide) -> PositionSide:
 
 
 class AbstractEngine(ABC):
-    # I-BLE005: bar_context 생성 시 *직전 마감 봉* 의 df 인덱스.
+    # bar_context 생성 시 *직전 마감 봉* 의 df 인덱스.
     # 백테 default (-1): df = _slice_candles(ts) (ts 미만 슬라이스) → iloc[-1] = 직전 마감 봉.
     # CoreEngine override (-2): df = data_store.get_df() (ccxt watch_ohlcv 새 봉
     # single tick 포함) → iloc[-2] = 직전 마감 봉. 각 엔진이 자기 영역의 df 구조
@@ -71,13 +71,8 @@ class AbstractEngine(ABC):
         self.mode = mode
         self.event_bus = EventBus()
         self.fee_model = FeeModel.from_config(config)
-        self.risk_manager = RiskManager(config)
+        self.account_tracker = AccountTracker()
         self.broker = Broker(config, mode)
-
-        engine_cfg = config.get("engine", {}) or {}
-        self.reverse_policy: ReverseSignalPolicy = build_reverse_policy(
-            engine_cfg.get("reverse_signal_policy", "ignore")
-        )
 
         self.strategies: list[StrategyModule] = load_active_strategies(config)
         self.strategy_by_name: dict[str, StrategyModule] = {
@@ -89,17 +84,8 @@ class AbstractEngine(ABC):
             self.timeframes[0] if self.timeframes else None
         )
 
-        # (C) 배타적 경합 — 전역 슬롯 1개
+        # 배타적 경합 — 전역 슬롯 1개 (동시에 한 포지션만 보유)
         self._position: Position | None = None
-
-        # Phase E-2-2-OPT Step 1: entry_timeframe별 features 사전계산 cache.
-        # BacktestEngine.initialize에서 OOS 전체로 채움. CoreEngine(라이브)에선
-        # 빈 dict 유지 → _build_ctx가 None 반환 → plugin이 즉시 계산 경로 사용.
-        self._features_cache: dict[str, pd.DataFrame] = {}
-
-        # BP-2-3: Live OOS monitor (CoreEngine.initialize에서만 채움; 백테는 None 유지)
-        # 순환 import 방지: 런타임 type만 Any로 두고 CoreEngine이 LiveOOSMonitor 주입
-        self.oos_monitor: Any | None = None
 
     # ---- properties ----
 
@@ -132,7 +118,7 @@ class AbstractEngine(ABC):
         now: datetime,
         entry_order_id: str | None = None,
     ) -> int:
-        """진입 기록. 반환값은 trade_id. BLE-6-1: entry_order_id 옵션."""
+        """진입 기록. 반환값은 trade_id. entry_order_id 는 옵션."""
 
     @abstractmethod
     async def _record_trade_close(
@@ -148,7 +134,7 @@ class AbstractEngine(ABC):
         now: datetime,
         exit_order_id: str | None = None,
     ) -> None:
-        """청산 기록. BLE-6-1: exit_order_id 옵션."""
+        """청산 기록. exit_order_id 는 옵션."""
 
     # ---- 활성 TF 산출 ----
 
@@ -175,10 +161,10 @@ class AbstractEngine(ABC):
         balance: float,
         now: datetime,
     ) -> StrategyContext:
-        # I-PE002: 라이브는 ctx.candles 의 iloc[-1] 이 진행 중 봉(ccxt watch_ohlcv 가
+        # 라이브는 ctx.candles 의 iloc[-1] 이 진행 중 봉(ccxt watch_ohlcv 가
         # 봉 진행 중 발행하는 tick). LAST_CLOSED_BAR_IDX 기준으로 진행 중 봉을 잘라
-        # plugin 이 항상 '직전 마감 봉까지' 만 보게 한다 → candles 직접 쓰는 plugin
-        # (trend_donchian 등)의 라이브-백테 신호 일치. 백테(-1)는 n_drop=0 무변경,
+        # plugin 이 항상 '직전 마감 봉까지' 만 보게 한다 → candles 를 직접 쓰는
+        # plugin 의 라이브-백테 신호 일치. 백테(-1)는 n_drop=0 무변경,
         # 라이브(-2)는 마지막 1봉 제외. current_price 는 진입가용으로 현재가 유지.
         n_drop = -1 - self.LAST_CLOSED_BAR_IDX
         if n_drop > 0:
@@ -201,15 +187,37 @@ class AbstractEngine(ABC):
             is_slot_occupied=self._position is not None,
             params=strategy.params,
             now=now,
-            precomputed_features=self._features_cache.get(strategy.entry_timeframe),
+            account=self._build_account_state(balance, current_price),
         )
 
-    # ---- bar_context 빌더 (I-BLE005) ----
+    def _build_account_state(
+        self, balance: float, current_price: float
+    ) -> AccountState:
+        """allow_entry/compute_position_size 가 참조할 계좌 텔레메트리 (계측치)."""
+        unrealized = 0.0
+        pos = self._position
+        if pos is not None and current_price > 0:
+            if pos.side == PositionSide.LONG:
+                unrealized = (current_price - pos.entry_price) * pos.size
+            elif pos.side == PositionSide.SHORT:
+                unrealized = (pos.entry_price - current_price) * pos.size
+        equity = balance + unrealized
+        tracker = self.account_tracker
+        return AccountState(
+            balance=balance,
+            equity=equity,
+            peak_equity=tracker.peak_equity,
+            daily_pnl=tracker.daily_pnl,
+            initial_balance=tracker.initial_balance,
+            drawdown_pct=tracker.drawdown_pct(equity),
+        )
+
+    # ---- bar_context 빌더 ----
 
     def _build_bar_context(
         self, df: pd.DataFrame | None, current_price: float,
     ) -> dict | None:
-        """I-BLE005: 직전 마감 봉의 OHLC + 그 직전 봉 close 추출 → SIGNAL 로그용.
+        """직전 마감 봉의 OHLC + 그 직전 봉 close 추출 → SIGNAL 로그용.
 
         `LAST_CLOSED_BAR_IDX` attribute 가 *직전 마감 봉* 인덱스 결정 (백테 -1, 라이브 -2).
         라이브 영역 (CoreEngine, -2) 은 ccxt watch_ohlcv 가 새 봉 시작 시점에 발행하는
@@ -252,21 +260,20 @@ class AbstractEngine(ABC):
         1) 모든 전략에 on_bar_close 훅 dispatch (관련 TF에 한해)
         2) 슬롯이 비었으면: bar_close_tf == entry_timeframe 인 전략을 우선순위로
            generate_signal 호출, 첫 actionable 신호로 진입 시도 (C 정책)
-        3) 슬롯이 차있고 reverse_policy != ignore 이면 reverse 검사
+        3) 슬롯이 차있으면 보유 전략의 should_reverse 로 reverse 여부 결정
         4) 슬롯이 차있고 보유 전략이 supports_pyramiding 이면 generate_pyramid_signal
         """
-        # I-BL018 (BL-2-4 hotfix-N): 자정 경계 인식 시 daily_pnl reset.
-        # 백테/페이퍼/라이브 일관 적용 (CLAUDE.md 라이브-백테 일관성 원칙).
-        if self.risk_manager.maybe_reset_for_new_day(now):
+        # 자정 경계 인식 시 daily_pnl reset (백테/페이퍼/라이브 일관).
+        if self.account_tracker.maybe_reset_for_new_day(now):
             logger.info(
-                "[RiskManager] new UTC day boundary — daily_pnl reset "
+                "[AccountTracker] new UTC day boundary — daily_pnl reset "
                 "(last_reset_date=%s)",
-                self.risk_manager.last_reset_date,
+                self.account_tracker.last_reset_date,
             )
 
-        # BLE-7-1 / I-BLE005: bar_context — _log_signal_status 의 가격 컨텍스트 출력용.
+        # bar_context — _log_signal_status 의 가격 컨텍스트 출력용.
         # 백테에선 _log_signal_status default no-op 이라 미사용 (오버헤드 거의 0).
-        # I-BLE005: 직전 마감 봉 영역 사용 (라이브 새 봉 single tick 영역 회피).
+        # 직전 마감 봉 영역 사용 (라이브 새 봉 single tick 영역 회피).
         bar_context = self._build_bar_context(
             candles_per_tf.get(bar_close_tf), current_price,
         )
@@ -291,17 +298,18 @@ class AbstractEngine(ABC):
                     strategy, candles_per_tf, current_price, balance, now
                 )
                 signal = strategy.generate_signal(ctx)
-                self._record_oos_signal(strategy, signal, current_price, now)
                 self._log_signal_status(strategy, signal, bar_context)
                 if not signal.is_actionable:
                     continue
                 if await self.try_enter(strategy, signal, ctx, now):
-                    return  # (C) 첫 진입 성공 시 종료
+                    return  # 첫 진입 성공 시 종료
             return
 
-        # 3) 슬롯 참 + reverse_policy 적용 — ignore이면 스킵
-        if not isinstance(self.reverse_policy, IgnoreReversePolicy):
-            current_strategy_name = self._position.strategy_name
+        # 3) 슬롯 참 → 보유(owner) 전략이 reverse 여부를 결정 (정책=모델 소유).
+        #    후보 전략이 actionable 신호를 내면, 보유 전략의 should_reverse 가
+        #    True 일 때만 청산 후 후보 신호로 재진입. orphan(보유 전략 부재)이면 skip.
+        held_strategy = self.strategy_by_name.get(self._position.strategy_name)
+        if held_strategy is not None:
             for strategy in self.strategies:
                 if strategy.entry_timeframe != bar_close_tf:
                     continue
@@ -309,21 +317,22 @@ class AbstractEngine(ABC):
                     strategy, candles_per_tf, current_price, balance, now
                 )
                 signal = strategy.generate_signal(ctx)
-                self._record_oos_signal(strategy, signal, current_price, now)
                 self._log_signal_status(strategy, signal, bar_context)
                 if not signal.is_actionable:
                     continue
-                if self.reverse_policy.should_reverse(
-                    self._position,
-                    signal,
-                    current_strategy_name,
-                    strategy.name,
-                ):
+                held_ctx = self._build_ctx(
+                    held_strategy, candles_per_tf, current_price, balance, now
+                )
+                if held_strategy.should_reverse(held_ctx, self._position, signal):
                     await self.close_position(
                         current_price, ExitReason.REVERSE_SIGNAL, now=now
                     )
                     if await self.try_enter(strategy, signal, ctx, now):
                         return
+
+        # reverse 가 청산했으나 재진입에 실패한 경우 슬롯이 비어 있을 수 있음 → 종료
+        if self._position is None:
+            return
 
         # 4) 피라미딩 (보유 전략이 opt-in 인 경우)
         held_strategy = self.strategy_by_name.get(self._position.strategy_name)
@@ -340,10 +349,10 @@ class AbstractEngine(ABC):
                         "Pyramid signal from %s (not yet implemented)",
                         held_strategy.name,
                     )
-                    # 단계 8: 피라미딩 hook은 받되 실 청산/추가 진입 처리는 미구현.
-                    # 향후 단계에서 add_to_position 흐름으로 확장 가능.
+                    # 피라미딩 hook은 받되 실 청산/추가 진입 처리는 미구현.
+                    # 향후 add_to_position 흐름으로 확장 가능.
 
-    # ---- BL-2-3 hotfix-E: 신호/포지션 모니터링 hook ----
+    # ---- 신호/포지션 모니터링 hook ----
 
     def _log_signal_status(
         self,
@@ -356,7 +365,7 @@ class AbstractEngine(ABC):
         backtest는 매 봉 수만 줄 출력 회피 위해 default no-op. CoreEngine이
         override해서 라이브/페이퍼 모드에서만 INFO 출력.
 
-        BLE-7-1: bar_context = {"close", "prev_close", "high", "low"} 또는 None.
+        bar_context = {"close", "prev_close", "high", "low"} 또는 None.
         라이브 [SIGNAL] 로그에 가격 컨텍스트 출력에 사용.
         """
         return None
@@ -383,64 +392,6 @@ class AbstractEngine(ABC):
         """
         return None
 
-    # ---- BP-2-3 OOS monitor helper ----
-
-    def _record_oos_signal(
-        self,
-        strategy: StrategyModule,
-        signal: Signal,
-        current_price: float,
-        now: datetime,
-    ) -> None:
-        """generate_signal 결과를 oos_monitor에 push (라이브 전용; backtest는 monitor=None)."""
-        if self.oos_monitor is None:
-            return
-        try:
-            self.oos_monitor.record_prediction(
-                strategy_name=strategy.name,
-                entry_timeframe=strategy.entry_timeframe,
-                ts=now,
-                signal_side=signal.side,
-                entry_close=current_price,
-            )
-        except Exception as e:
-            logger.warning("oos_monitor.record_prediction failed: %s", e)
-
-    # ---- BP-2-2 동적 사이징 helper ----
-
-    def _compute_volatility_factor(
-        self, strategy: StrategyModule, ctx: StrategyContext
-    ) -> float:
-        """volatility_targeting.enabled=true일 때 entry_timeframe ATR_pct 기반 factor.
-
-        factor = current_atr_pct / target_atr_pct (>1 → 변동성 평소 이상 → size 축소)
-        반환 1.0이면 비활성과 동일 (RiskManager가 size 변경 안 함).
-        """
-        vt_cfg = (self.config.get("risk", {}) or {}).get(
-            "volatility_targeting", {}
-        ) or {}
-        if not vt_cfg.get("enabled", False):
-            return 1.0
-        target = float(vt_cfg.get("target_atr_pct", 0.005))
-        lookback = int(vt_cfg.get("lookback", 14))
-        if target <= 0:
-            return 1.0
-        df = ctx.candles.get(strategy.entry_timeframe)
-        if df is None or len(df) < lookback + 1:
-            return 1.0
-        try:
-            atr_series = compute_atr(df, period=lookback)
-        except Exception:
-            return 1.0
-        if atr_series is None or atr_series.empty:
-            return 1.0
-        atr = float(atr_series.iloc[-1])
-        close = float(df["close"].iloc[-1])
-        if close <= 0 or pd.isna(atr) or atr <= 0:
-            return 1.0
-        current_atr_pct = atr / close
-        return current_atr_pct / target
-
     # ---- 진입 ----
 
     async def try_enter(
@@ -453,51 +404,30 @@ class AbstractEngine(ABC):
         if self._position is not None:
             return False
 
-        # BL-2-1: Circuit breaker OPEN 시 새 진입 차단 (사안 U''=나 trade 일시 중단)
+        # Circuit breaker OPEN 시 새 진입 차단 (거래소 연결 안전장치)
         if getattr(self, "_circuit_breaker_open", False):
             return False
 
-        # 위험 검증
-        if not self.risk_manager.validate_order(
-            ctx.balance, current_position_count=0
-        ):
-            logger.info("Risk validation rejected entry for %s", strategy.name)
+        # 진입 게이트(리스크 정책) — 모델 소유
+        if not strategy.allow_entry(ctx):
+            logger.info("allow_entry rejected entry for %s", strategy.name)
             return False
 
-        # SL/TP (I-PE003: TP None = 미설정 → 거래소 등록·청산 체크 skip)
-        sl_price = float(strategy.compute_stop_loss(ctx, signal))
+        # SL/TP — 모델 소유. SL None = standing SL 미설정 (청산은 should_force_exit).
+        sl_raw = strategy.compute_stop_loss(ctx, signal)
+        sl_price = float(sl_raw) if sl_raw is not None else None
         tp_raw = strategy.compute_take_profit(ctx, signal, sl_price)
         tp_price = float(tp_raw) if tp_raw is not None else None
 
-        # 사이징 — 전략 params에서 risk_per_trade_pct/max_leverage 추출
-        try:
-            risk_pct = float(strategy.params["risk_per_trade_pct"])
-            max_lev = float(strategy.params["max_leverage"])
-        except KeyError as e:
-            logger.error(
-                "Strategy '%s' missing required param: %s",
-                strategy.name,
-                e,
-            )
-            return False
-
-        volatility_factor = self._compute_volatility_factor(strategy, ctx)
-
-        size = self.risk_manager.calculate_position_size(
-            ctx.current_price,
-            sl_price,
-            ctx.balance,
-            risk_per_trade_pct=risk_pct,
-            max_leverage=max_lev,
-            volatility_factor=volatility_factor,
-        )
+        # 사이징(공식·레버리지) — 모델 소유
+        size = float(strategy.compute_position_size(ctx, signal, sl_price))
         if size <= 0:
-            logger.info("Sizing returned 0 for %s", strategy.name)
+            logger.info("compute_position_size returned 0 for %s", strategy.name)
             return False
 
         # 진입 주문
         position_side = signal_side_to_position_side(signal.side)
-        # BL-2-2: paper 모드에서 호가창 가용 시 VWAP 침투 가격 사용 (silent fallback)
+        # paper 모드에서 호가창 가용 시 VWAP 침투 가격 사용 (silent fallback)
         order = await self.broker.open_position(
             position_side, size, fill_price=ctx.current_price,
             orderbook=getattr(self, "_latest_orderbook", None),
@@ -506,7 +436,7 @@ class AbstractEngine(ABC):
             logger.error("Open order failed for %s", strategy.name)
             return False
 
-        # BLE-6-1: 진입 order id 추출 (라이브 OKX exchange order id, paper fake id)
+        # 진입 order id 추출 (라이브 OKX exchange order id, paper fake id)
         entry_order_id = order.get("id") if isinstance(order, dict) else None
 
         # 거래 기록 (구체 엔진이 DB 또는 메모리에 저장)
@@ -521,8 +451,9 @@ class AbstractEngine(ABC):
             entry_order_id=entry_order_id,
         )
 
-        # 거래소 SL/TP pending (페이퍼는 no-op). I-PE003: TP None 이면 등록 skip.
-        await self.broker.place_stop_loss(position_side, sl_price, size)
+        # 거래소 SL/TP pending (페이퍼는 no-op). SL/TP None 이면 등록 skip.
+        if sl_price is not None:
+            await self.broker.place_stop_loss(position_side, sl_price, size)
         if tp_price is not None:
             await self.broker.place_take_profit(position_side, tp_price, size)
 
@@ -554,13 +485,13 @@ class AbstractEngine(ABC):
             EventType.POSITION_OPENED.value, self._position
         )
         logger.info(
-            "ENTRY[%s]: %s %.4f @ %.2f, SL=%.2f, TP=%s, trade_id=%d",
+            "ENTRY[%s]: %s %.4f @ %.2f, SL=%s, TP=%s, trade_id=%d",
             strategy.name,
             position_side.value,
             size,
             ctx.current_price,
-            sl_price,
-            f"{tp_price:.2f}" if tp_price is not None else "None",  # I-PE003: TP None 안전
+            f"{sl_price:.2f}" if sl_price is not None else "None",
+            f"{tp_price:.2f}" if tp_price is not None else "None",
             trade_id,
         )
         return True
@@ -586,12 +517,12 @@ class AbstractEngine(ABC):
             logger.warning("cancel_all_orders failed: %s", e)
 
         # 거래소/시뮬 청산
-        # BL-2-2: paper 모드에서 호가창 가용 시 VWAP 침투 가격 사용 (silent fallback)
-        # I-BL012 fix: broker.close_position이 exception 발생해도 시스템 상태 정리 진행.
+        # paper 모드에서 호가창 가용 시 VWAP 침투 가격 사용 (silent fallback)
+        # broker.close_position이 exception 발생해도 시스템 상태 정리 진행.
         # 거래소 SL/TP 자동 청산 후 redundant close 시도 같은 case에서 ExchangeError가 발생해도
         # self._position 정리 + DB close + event publish가 안 되는 mismatch 방지.
         # 거래소 상태 검증 후: 거래소 ∅ → 이미 청산된 상태로 정상 진행 / 거래소 O → propagate.
-        # BLE-6-1: close order id 추출 — paper/normal close 시 order dict 의 'id'. SL/TP 자동
+        # close order id 추출 — paper/normal close 시 order dict 의 'id'. SL/TP 자동
         # 청산은 거래소 ∅ 검증 path 라 order id 없음 (sync 시 fetch_my_trades 로 매칭)
         exit_order_id: str | None = None
         try:
@@ -600,7 +531,7 @@ class AbstractEngine(ABC):
                 orderbook=getattr(self, "_latest_orderbook", None),
             )
             if isinstance(close_order, dict):
-                # I-BL010 skip path 는 {'info': {'already_closed': True}, ...} 반환 → id 없음
+                # skip path 는 {'info': {'already_closed': True}, ...} 반환 → id 없음
                 if not close_order.get("info", {}).get("already_closed"):
                     exit_order_id = close_order.get("id")
         except Exception as e:
@@ -656,11 +587,11 @@ class AbstractEngine(ABC):
                 exit_order_id=exit_order_id,
             )
 
-        # 위험 매니저 갱신
-        self.risk_manager.add_pnl(net_pnl)
+        # 계좌 추적 갱신 (계측)
+        self.account_tracker.add_pnl(net_pnl)
         try:
             balance = await self.broker.get_balance()
-            self.risk_manager.update_equity(balance)
+            self.account_tracker.update_equity(balance)
         except Exception as e:
             logger.warning("get_balance failed during close: %s", e)
 
@@ -684,7 +615,7 @@ class AbstractEngine(ABC):
 
         await self.event_bus.publish(
             EventType.POSITION_CLOSED.value,
-            # BLE-7-2: 텔레그램 EXIT 알림 보강용 키 추가 (exit_price/pnl_pct/closed_at).
+            # 텔레그램 EXIT 알림 보강용 키 (exit_price/pnl_pct/closed_at).
             # 키 추가만이라 기존 구독자 영향 0, 백테/페이퍼 무영향.
             {
                 "position": pos,
@@ -714,7 +645,11 @@ class AbstractEngine(ABC):
         candle_high: float,
         candle_low: float,
     ) -> tuple[float, ExitReason] | None:
-        """한 캔들 내 SL/TP 도달 판정. 동시 도달 시 SL 우선 (정책 (a))."""
+        """한 캔들 내 SL/TP 도달 판정 (백테/페이퍼 체결 시뮬 — 거래소 흉내).
+
+        동시 도달 시 보유 전략의 sl_tp_fill_priority 로 결정 (정책=모델 소유).
+        SL/TP 값은 모델이 설정한 것이며, 이 메서드는 가격 교차 *감지*만 한다.
+        """
         if position is None:
             return None
         sl = position.stop_loss
@@ -725,18 +660,26 @@ class AbstractEngine(ABC):
         if position.side == PositionSide.LONG:
             sl_hit = sl is not None and candle_low <= sl
             tp_hit = tp is not None and candle_high >= tp
-            if sl_hit:
-                return sl, ExitReason.SL_HIT
-            if tp_hit:
-                return tp, ExitReason.TP_HIT
         elif position.side == PositionSide.SHORT:
             sl_hit = sl is not None and candle_high >= sl
             tp_hit = tp is not None and candle_low <= tp
-            if sl_hit:
-                return sl, ExitReason.SL_HIT
-            if tp_hit:
+        else:
+            return None
+
+        if sl_hit and tp_hit:
+            if self._fill_priority(position) == "tp_first":
                 return tp, ExitReason.TP_HIT
+            return sl, ExitReason.SL_HIT
+        if sl_hit:
+            return sl, ExitReason.SL_HIT
+        if tp_hit:
+            return tp, ExitReason.TP_HIT
         return None
+
+    def _fill_priority(self, position: Position) -> str:
+        """동시 도달 시 체결 우선순위 (보유 전략 소유). orphan 이면 보수적 sl_first."""
+        strat = self.strategy_by_name.get(position.strategy_name)
+        return getattr(strat, "sl_tp_fill_priority", "sl_first") if strat else "sl_first"
 
     # ---- 전략 훅: update_stop_loss / should_force_exit ----
 

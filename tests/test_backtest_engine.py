@@ -1,7 +1,7 @@
 """BacktestEngine end-to-end 테스트.
 
 더미 전략을 등록하고 합성 캔들 데이터로 진입·청산 흐름이 라이브와 동일한
-FeeModel/RiskManager를 통해 정상 작동하는지 검증.
+FeeModel/AccountTracker를 통해 정상 작동하는지 검증.
 """
 
 from __future__ import annotations
@@ -16,7 +16,8 @@ import pytest
 from src.backtest.engine import BacktestEngine, BacktestResult
 from src.core.enums import SignalSide
 from src.core.types import Signal
-from src.strategy.base import StrategyModule
+from src.strategy.base import StrategyModule  # noqa: F401
+from tests.strategy_stub import StubStrategy
 from src.strategy.registry import (
     register_strategy,
     reset_registry_for_testing,
@@ -69,12 +70,6 @@ def _make_config(
         "database": {"path": db_path},
         "paper": {"initial_balance": initial_balance},
         "accounting": {"taker_fee_pct": 0.0005, "slippage_pct": 0.0},
-        "risk": {
-            "max_daily_loss_pct": 0.5,
-            "max_drawdown_pct": 0.5,
-            "max_position_size_btc": 1.0,
-            "max_concurrent_positions": 1,
-        },
         "strategies": {"active": ["sl_taker"]},
         "sl_taker": {
             "risk_per_trade_pct": risk_pct,
@@ -86,7 +81,7 @@ def _make_config(
 # ---- 테스트 전략: 첫 봉에 LONG 진입, SL=-0.5%, TP=+10% (절대 안 닿음) ----
 
 
-class _SLTakerStrategy(StrategyModule):
+class _SLTakerStrategy(StubStrategy):
     """첫 호출에 LONG 시그널, SL은 진입가 -0.5%, TP는 +10%.
     drift=-100인 합성 캔들에서 SL이 빠르게 hit되어 청산 예상.
     """
@@ -115,7 +110,7 @@ class _SLTakerStrategy(StrategyModule):
 # ---- 테스트 전략: TP를 빠르게 hit (drift=+positive에서) ----
 
 
-class _TPTakerStrategy(StrategyModule):
+class _TPTakerStrategy(StubStrategy):
     name = "tp_taker"
     entry_timeframe = "1m"
     required_timeframes = ["1m"]
@@ -156,7 +151,7 @@ async def test_sl_hit_closes_with_loss(tmp_path):
     # broker/data_store 초기화 + 잔액 세팅 (initialize의 _load_candles만 우회)
     await eng.broker.initialize()
     balance0 = await eng.broker.get_balance()
-    eng.risk_manager.set_initial_balance(balance0)
+    eng.account_tracker.set_initial_balance(balance0)
 
     await eng.run()
     result = await eng.get_result()
@@ -189,7 +184,7 @@ async def test_tp_hit_closes_with_profit(tmp_path):
 
     await eng.broker.initialize()
     balance0 = await eng.broker.get_balance()
-    eng.risk_manager.set_initial_balance(balance0)
+    eng.account_tracker.set_initial_balance(balance0)
 
     await eng.run()
     result = await eng.get_result()
@@ -205,7 +200,7 @@ async def test_tp_hit_closes_with_profit(tmp_path):
 @pytest.mark.asyncio
 async def test_engine_shutdown_closes_open_position(tmp_path):
     """청산 신호 없이 백테 종료 시 마지막 캔들로 강제 청산되는지."""
-    class _NeverExitStrategy(StrategyModule):
+    class _NeverExitStrategy(StubStrategy):
         name = "never_exit"
         entry_timeframe = "1m"
         required_timeframes = ["1m"]
@@ -233,7 +228,7 @@ async def test_engine_shutdown_closes_open_position(tmp_path):
     eng.inject_candles({"1m": _make_synthetic_candles(n=10, drift=+10)})
     await eng.broker.initialize()
     bal = await eng.broker.get_balance()
-    eng.risk_manager.set_initial_balance(bal)
+    eng.account_tracker.set_initial_balance(bal)
 
     await eng.run()
     result = await eng.get_result()
@@ -245,7 +240,7 @@ async def test_engine_shutdown_closes_open_position(tmp_path):
 
 @pytest.mark.asyncio
 async def test_no_active_strategies_returns_initial_balance(tmp_path):
-    """I-010: 활성 전략 0개일 때 final_balance = initial_balance fallback."""
+    """활성 전략 0개일 때 final_balance = initial_balance fallback."""
     config = _make_config(db_path=str(tmp_path / "bt.db"), initial_balance=10000)
     config["strategies"] = {"active": []}
     config.pop("sl_taker", None)
@@ -254,7 +249,7 @@ async def test_no_active_strategies_returns_initial_balance(tmp_path):
     eng.inject_candles({"1m": _make_synthetic_candles(n=10)})
     await eng.broker.initialize()
     bal = await eng.broker.get_balance()
-    eng.risk_manager.set_initial_balance(bal)
+    eng.account_tracker.set_initial_balance(bal)
 
     await eng.run()
     result = await eng.get_result()
@@ -269,7 +264,7 @@ async def test_no_active_strategies_returns_initial_balance(tmp_path):
 
 @pytest.mark.asyncio
 async def test_write_reports_creates_all_files(tmp_path, monkeypatch):
-    """I-011: write_reports가 5종 파일을 디스크에 생성."""
+    """write_reports가 5종 파일을 디스크에 생성."""
     register_strategy(_TPTakerStrategy)
     config = _make_config(db_path=str(tmp_path / "bt.db"), initial_balance=10000)
     config["strategies"]["active"] = ["tp_taker"]
@@ -287,7 +282,7 @@ async def test_write_reports_creates_all_files(tmp_path, monkeypatch):
     )
     await eng.broker.initialize()
     bal = await eng.broker.get_balance()
-    eng.risk_manager.set_initial_balance(bal)
+    eng.account_tracker.set_initial_balance(bal)
 
     await eng.run()
     out_dir = eng.write_reports(config_path="config/test_config.yaml")
@@ -338,7 +333,7 @@ async def test_write_reports_empty_trades(tmp_path, monkeypatch):
     eng.inject_candles({"1m": _make_synthetic_candles(n=5)})
     await eng.broker.initialize()
     bal = await eng.broker.get_balance()
-    eng.risk_manager.set_initial_balance(bal)
+    eng.account_tracker.set_initial_balance(bal)
 
     await eng.run()
     out_dir = eng.write_reports(config_path="config/empty.yaml")
@@ -354,10 +349,10 @@ async def test_write_reports_empty_trades(tmp_path, monkeypatch):
     assert "id,strategy_name" in trades_content
 
 
-# ---- 다중 전략 (C) 배타 경합 정책 검증 ----
+# ---- 다중 전략 배타 슬롯 경합 정책 검증 ----
 
 
-class _FirstLongStrategy(StrategyModule):
+class _FirstLongStrategy(StubStrategy):
     """첫 호출에만 LONG, 이후 HOLD. 한 번 발사하면 끝."""
 
     name = "first_long"
@@ -380,7 +375,7 @@ class _FirstLongStrategy(StrategyModule):
     def compute_take_profit(self, ctx, s, sl): return ctx.current_price * 1.10
 
 
-class _AlwaysLongStrategy(StrategyModule):
+class _AlwaysLongStrategy(StubStrategy):
     """슬롯이 비기만 하면 매번 LONG."""
 
     name = "always_long"
@@ -405,12 +400,6 @@ def _multi_strategy_config(db_path: str, *, active: list[str]) -> dict:
         "database": {"path": db_path},
         "paper": {"initial_balance": 10000},
         "accounting": {"taker_fee_pct": 0.0005, "slippage_pct": 0.0},
-        "risk": {
-            "max_daily_loss_pct": 0.5,
-            "max_drawdown_pct": 0.5,
-            "max_position_size_btc": 1.0,
-            "max_concurrent_positions": 1,
-        },
         "strategies": {"active": active},
         "first_long": {"risk_per_trade_pct": 0.01, "max_leverage": 5},
         "always_long": {"risk_per_trade_pct": 0.01, "max_leverage": 5},
@@ -436,7 +425,7 @@ async def test_multi_strategy_priority_first_wins(tmp_path):
     eng.inject_candles({"1m": candles})
     await eng.broker.initialize()
     bal = await eng.broker.get_balance()
-    eng.risk_manager.set_initial_balance(bal)
+    eng.account_tracker.set_initial_balance(bal)
 
     await eng.run()
     result = await eng.get_result()
@@ -464,7 +453,7 @@ async def test_multi_strategy_priority_first_wins(tmp_path):
 
 @pytest.mark.asyncio
 async def test_multi_strategy_lower_priority_skipped_when_slot_full(tmp_path):
-    """(C) Ignore 정책: 슬롯 차있을 때 낮은 우선순위 전략의 generate_signal 호출 안 됨."""
+    """슬롯 차있을 때 낮은 우선순위 전략의 generate_signal 호출 안 됨 (무시 정책)."""
     register_strategy(_FirstLongStrategy)
     register_strategy(_AlwaysLongStrategy)
 
@@ -481,7 +470,7 @@ async def test_multi_strategy_lower_priority_skipped_when_slot_full(tmp_path):
     eng.inject_candles({"1m": candles})
     await eng.broker.initialize()
     bal = await eng.broker.get_balance()
-    eng.risk_manager.set_initial_balance(bal)
+    eng.account_tracker.set_initial_balance(bal)
 
     await eng.run()
     await eng.shutdown()
@@ -518,7 +507,7 @@ async def test_multi_strategy_swapped_priority(tmp_path):
     eng.inject_candles({"1m": candles})
     await eng.broker.initialize()
     bal = await eng.broker.get_balance()
-    eng.risk_manager.set_initial_balance(bal)
+    eng.account_tracker.set_initial_balance(bal)
 
     await eng.run()
     result = await eng.get_result()
@@ -534,7 +523,7 @@ async def test_multi_strategy_swapped_priority(tmp_path):
     assert len(by_strategy["always_long"]) >= 2
 
 
-# ---- I-BP002: warmup 캔들 자동 로드 ----
+# ---- warmup 캔들 자동 로드 ----
 
 
 @pytest.mark.asyncio
@@ -644,7 +633,7 @@ async def test_run_loop_slices_to_original_range_after_warmup(tmp_path):
     eng.inject_candles({"1m": candles})  # warmup 포함된 전체 200봉
     await eng.broker.initialize()
     bal = await eng.broker.get_balance()
-    eng.risk_manager.set_initial_balance(bal)
+    eng.account_tracker.set_initial_balance(bal)
 
     await eng.run()
     result = await eng.get_result()

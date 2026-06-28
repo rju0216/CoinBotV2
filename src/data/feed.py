@@ -1,8 +1,7 @@
 """실시간 캔들 피드 — WebSocket 구독 + 캐시 백필.
 
 엔진이 활성 전략들의 entry_timeframe + required_timeframes 합집합을
-주입하면 DataFeed는 그 TF 리스트만 백필·구독한다. 특정 전략(매크로/스캘핑)
-하드코딩 분기는 제거.
+주입하면 DataFeed는 그 TF 리스트만 백필·구독한다.
 """
 
 from __future__ import annotations
@@ -21,7 +20,7 @@ from src.core.event_bus import EventBus
 
 logger = logging.getLogger(__name__)
 
-# I-BL006 fix: ccxt.pro watch_ohlcv가 disconnect 후 reconnect는 성공하지만 일정 시간
+# ccxt.pro watch_ohlcv가 disconnect 후 reconnect는 성공하지만 일정 시간
 # 후 새 봉 수신 stuck 발생. 봉 진행 중 close 변동마다 update가 들어오는 정상 시
 # 봉 마감 간격(15m=900s)보다 훨씬 짧은 빈도. 120초 update 없으면 hang 판정 → cancel
 # + 5초 sleep 후 watch_ohlcv 재호출 (ccxt 내부에서 새 connection 시도).
@@ -192,7 +191,7 @@ class DataFeed:
         async def watch_tf(timeframe: str) -> None:
             while self._running:
                 try:
-                    # I-BL006 fix: watchdog timeout — watch_ohlcv가 hang하면 ccxt
+                    # watchdog timeout — watch_ohlcv가 hang하면 ccxt
                     # 내부에서 except 진입 못 함 → 봉 마감 미수신 stuck. wait_for로
                     # 강제 cancel 후 재시도 루프 진입.
                     ohlcv = await asyncio.wait_for(

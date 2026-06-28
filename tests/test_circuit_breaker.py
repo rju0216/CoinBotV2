@@ -1,4 +1,4 @@
-"""LiveExecutor CircuitBreaker 단위 테스트 (BL-2-1 Step 2)."""
+"""LiveExecutor CircuitBreaker 단위 테스트."""
 
 from __future__ import annotations
 
@@ -110,11 +110,11 @@ class TestRetryApiWithCircuitBreaker:
         assert cb.consecutive_failures == 0
 
 
-# ─── I-BL008: LiveExecutor._call이 _retry_api를 호출하는지 검증 ───
+# ─── LiveExecutor._call이 _retry_api를 호출하는지 검증 ───
 
 
 class TestLiveExecutorCallDelegation:
-    """I-BL008 fix 검증: _call → _retry_api (자기 재귀 아님)."""
+    """_call → _retry_api 위임 검증 (자기 재귀 아님)."""
 
     @pytest.mark.asyncio
     async def test_call_delegates_to_retry_api(self, monkeypatch):
@@ -163,7 +163,7 @@ class TestLiveExecutorCallDelegation:
 
     @pytest.mark.asyncio
     async def test_close_position_skipped_when_exchange_already_closed(self, monkeypatch):
-        """I-BL010: 거래소가 이미 청산했으면 redundant 주문 skip."""
+        """거래소가 이미 청산했으면 redundant 주문 skip."""
         from src.core.enums import OrderType, PositionSide
         from src.execution.live_executor import LiveExecutor
 
@@ -197,7 +197,7 @@ class TestLiveExecutorCallDelegation:
 
     @pytest.mark.asyncio
     async def test_close_position_proceeds_when_position_exists(self, monkeypatch):
-        """I-BL010: 거래소 포지션 있으면 정상 close 흐름 진행."""
+        """거래소 포지션 있으면 정상 close 흐름 진행."""
         from src.core.enums import OrderType, PositionSide
         from src.execution import live_executor as live_module
         from src.execution.live_executor import LiveExecutor

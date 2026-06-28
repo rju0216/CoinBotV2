@@ -1,4 +1,4 @@
-"""src/data/orderbook.py 단위 테스트 (BL-2-2 Step 1)."""
+"""src/data/orderbook.py 단위 테스트."""
 
 from __future__ import annotations
 

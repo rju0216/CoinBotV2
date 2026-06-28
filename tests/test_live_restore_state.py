@@ -1,6 +1,6 @@
-"""CoreEngine._restore_state 5개 시나리오 테스트 (잠재 이슈 I-001/I-002).
+"""CoreEngine._restore_state 시나리오 테스트.
 
-거래소 포지션과 DB open trades의 매칭·자동 입양(7-1)·뼈대 에러 중단(7 (a))을
+거래소 포지션과 DB open trades의 매칭·자동 입양·뼈대 에러 중단을
 mock을 통해 검증한다.
 """
 
@@ -14,7 +14,8 @@ import pytest
 from src.core.enums import PositionSide, PositionStatus, SignalSide
 from src.core.types import Signal
 from src.live.engine import CoreEngine
-from src.strategy.base import StrategyModule
+from src.strategy.base import StrategyModule  # noqa: F401
+from tests.strategy_stub import StubStrategy
 from src.strategy.registry import (
     register_strategy,
     reset_registry_for_testing,
@@ -28,7 +29,7 @@ def _isolated_registry():
     reset_registry_for_testing()
 
 
-class _PassthroughStrategy(StrategyModule):
+class _PassthroughStrategy(StubStrategy):
     name = "macross"
     entry_timeframe = "15m"
     required_timeframes = ["15m"]
@@ -56,7 +57,7 @@ def _build_engine(active: list[str] | None = None) -> CoreEngine:
 
     # broker/data_store mock
     eng.broker = MagicMock()
-    eng.broker.is_live = False  # paper mode (I-BL013 fetch_actual_exit이 None 반환 → fallback)
+    eng.broker.is_live = False  # paper mode (fetch_actual_exit이 None 반환 → fallback)
     eng.broker.get_balance = AsyncMock(return_value=10000.0)
     eng.broker.get_position = AsyncMock(return_value=None)
 
@@ -66,7 +67,7 @@ def _build_engine(active: list[str] | None = None) -> CoreEngine:
     eng.data_store.get_peak_equity = AsyncMock(return_value=10000.0)
     eng.data_store.get_open_trades = AsyncMock(return_value=[])
     eng.data_store.close_trade = AsyncMock()
-    # I-BLE001: _restore_daily_pnl 가 호출하는 get_daily_pnl mock (각 테스트가 override 가능)
+    # _restore_daily_pnl 가 호출하는 get_daily_pnl mock (각 테스트가 override 가능)
     eng.data_store.get_daily_pnl = AsyncMock(return_value=0.0)
     return eng
 
@@ -107,11 +108,11 @@ async def test_clean_startup_no_position(_isolated_registry):
 async def test_db_open_but_exchange_empty_closes_stale(_isolated_registry):
     """시나리오 2: 거래소 ∅ + DB O → DB trades 사후 closed 처리.
 
-    I-BL013 fix 후: paper 모드(is_live=False)이므로 fetch_actual_exit None 반환 →
+    paper 모드(is_live=False)이므로 fetch_actual_exit None 반환 →
     fallback 동작 (SL 가격 추정 + WARNING). entry=67000, SL=66500, size=0.1, long.
     pnl = (66500 - 67000) × 0.1 = -50.
 
-    I-BLE001: close_trade 호출 시 closed_at 인자 전달 (fetch fallback 은 now_utc.isoformat()).
+    close_trade 호출 시 closed_at 인자 전달 (fetch fallback 은 now_utc.isoformat()).
     daily_pnl 은 _restore_daily_pnl 의 get_daily_pnl mock 반환값으로 설정.
     """
     eng = _build_engine(active=["macross"])
@@ -122,23 +123,23 @@ async def test_db_open_but_exchange_empty_closes_stale(_isolated_registry):
     eng.data_store.close_trade.assert_called_once()
     call_kwargs = eng.data_store.close_trade.call_args.kwargs
     assert call_kwargs["trade_id"] == 42
-    # I-BL013 fallback: SL 가격 추정 + 단순 PnL (수수료/슬리피지 누락)
+    # fallback: SL 가격 추정 + 단순 PnL (수수료/슬리피지 누락)
     assert call_kwargs["exit_price"] == 66500
     assert call_kwargs["pnl"] == pytest.approx(-50.0)
     assert call_kwargs["exit_reason"] == "engine_shutdown"
-    # I-BLE001: closed_at 인자 전달 검증 (fallback path 는 now_utc ISO)
+    # closed_at 인자 전달 검증 (fallback path 는 now_utc ISO)
     assert "closed_at" in call_kwargs and call_kwargs["closed_at"] is not None
     assert eng.position is None
-    # I-BLE001: _restore_daily_pnl 호출 → mock get_daily_pnl 반환값 (default 0.0)
+    # _restore_daily_pnl 호출 → mock get_daily_pnl 반환값 (default 0.0)
     eng.data_store.get_daily_pnl.assert_called()
-    assert eng.risk_manager.daily_pnl == 0.0
+    assert eng.account_tracker.daily_pnl == 0.0
 
 
 @pytest.mark.asyncio
 async def test_case2_same_day_exit_uses_get_daily_pnl(_isolated_registry):
-    """I-BLE001 ⑥ (기존 I-BL016 갱신): case 2 의 same-day add_pnl 분기 제거 후,
-    close_trade 가 closed_at=exit_ts 로 호출되고 _restore_daily_pnl 이
-    get_daily_pnl 의 반환값 (DB COALESCE 쿼리 결과) 으로 메모리 daily_pnl 설정.
+    """case 2 의 same-day add_pnl 분기 제거 후, close_trade 가 closed_at=exit_ts 로
+    호출되고 _restore_daily_pnl 이 get_daily_pnl 의 반환값 (DB COALESCE 쿼리 결과)
+    으로 메모리 daily_pnl 설정.
     """
     eng = _build_engine(active=["macross"])
     eng.data_store.get_open_trades = AsyncMock(
@@ -162,13 +163,13 @@ async def test_case2_same_day_exit_uses_get_daily_pnl(_isolated_registry):
     assert call_kwargs["closed_at"] == expected_iso
     # _restore_daily_pnl 호출 → mock 반환값으로 메모리 daily_pnl 설정
     eng.data_store.get_daily_pnl.assert_called()
-    assert eng.risk_manager.daily_pnl == pytest.approx(-20.0)
+    assert eng.account_tracker.daily_pnl == pytest.approx(-20.0)
 
 
 @pytest.mark.asyncio
 async def test_case2_different_day_exit_closed_at_is_yesterday(_isolated_registry):
-    """I-BLE001: case 2 different-day 청산 시 closed_at 인자가 어제 ISO 로 전달.
-    daily_pnl 은 get_daily_pnl mock 반환값 (DB 쿼리상 어제 영역 제외 → 0.0).
+    """case 2 different-day 청산 시 closed_at 인자가 어제 ISO 로 전달.
+    daily_pnl 은 get_daily_pnl mock 반환값 (DB 쿼리상 어제 청산분 제외 → 0.0).
     """
     eng = _build_engine(active=["macross"])
     eng.data_store.get_open_trades = AsyncMock(
@@ -189,12 +190,12 @@ async def test_case2_different_day_exit_closed_at_is_yesterday(_isolated_registr
     ).isoformat()
     assert call_kwargs["closed_at"] == expected_iso
     # daily_pnl 은 get_daily_pnl 결과 (0.0)
-    assert eng.risk_manager.daily_pnl == 0.0
+    assert eng.account_tracker.daily_pnl == 0.0
 
 
 @pytest.mark.asyncio
 async def test_case2_mixed_close_trade_called_per_trade(_isolated_registry):
-    """I-BLE001: case 2 다중 trade — 각 trade 별 close_trade 호출 + 각자 closed_at 정확."""
+    """case 2 다중 trade — 각 trade 별 close_trade 호출 + 각자 closed_at 정확."""
     eng = _build_engine(active=["macross"])
     eng.data_store.get_open_trades = AsyncMock(
         return_value=[
@@ -226,12 +227,12 @@ async def test_case2_mixed_close_trade_called_per_trade(_isolated_registry):
         diff_ts / 1000, tz=timezone.utc,
     ).isoformat()
     # daily_pnl = mock get_daily_pnl 반환값 (DB 쿼리상 same-day 만 +30)
-    assert eng.risk_manager.daily_pnl == pytest.approx(30.0)
+    assert eng.account_tracker.daily_pnl == pytest.approx(30.0)
 
 
 @pytest.mark.asyncio
 async def test_close_with_funding_recalibrates_daily_pnl_after_sync(_isolated_registry):
-    """I-BLE001 ④ 신규: _close_with_funding 안에서 sync 후 synced_count > 0 시
+    """_close_with_funding 안에서 sync 후 synced_count > 0 시
     daily_pnl 이 get_daily_pnl 결과로 재정렬.
     """
     from src.core.enums import ExitReason
@@ -255,7 +256,7 @@ async def test_close_with_funding_recalibrates_daily_pnl_after_sync(_isolated_re
         return_value={"synced_count": 3, "failed_count": 0, "errors": []}
     )
     # 메모리 daily_pnl 사전 설정 (엔진 추정값, 예: +50.0)
-    eng.risk_manager.daily_pnl = 50.0
+    eng.account_tracker.daily_pnl = 50.0
     # sync 후 DB 의 OKX 실값 합산 결과 — get_daily_pnl mock
     eng.data_store.get_daily_pnl = AsyncMock(return_value=48.5)
 
@@ -267,15 +268,15 @@ async def test_close_with_funding_recalibrates_daily_pnl_after_sync(_isolated_re
             now=datetime.now(timezone.utc),
         )
         # daily_pnl 재정렬 검증 — get_daily_pnl 결과로 갱신
-        assert eng.risk_manager.daily_pnl == pytest.approx(48.5)
+        assert eng.account_tracker.daily_pnl == pytest.approx(48.5)
     finally:
         trade_sync_mod.sync_all_unsynced = original_sync
 
 
 @pytest.mark.asyncio
 async def test_clean_startup_recovers_daily_pnl(_isolated_registry):
-    """I-BLE001 ③ 신규: case 1 (clean startup) 종료 시점에 _restore_daily_pnl 호출.
-    DB 의 오늘 누적 daily_pnl 이 메모리에 복원되는 영역 검증.
+    """case 1 (clean startup) 종료 시점에 _restore_daily_pnl 호출.
+    DB 의 오늘 누적 daily_pnl 이 메모리에 복원되는지 검증.
     """
     eng = _build_engine(active=["macross"])
     # 오늘 누적 +$42.50 (예: 어제 close 안 했지만 오늘 다른 close 영역)
@@ -285,12 +286,12 @@ async def test_clean_startup_recovers_daily_pnl(_isolated_registry):
     assert eng.position is None
     # _restore_daily_pnl 호출 → daily_pnl 복원
     eng.data_store.get_daily_pnl.assert_called()
-    assert eng.risk_manager.daily_pnl == pytest.approx(42.50)
+    assert eng.account_tracker.daily_pnl == pytest.approx(42.50)
 
 
 @pytest.mark.asyncio
 async def test_skeleton_with_exchange_position_raises(_isolated_registry):
-    """시나리오 3: 거래소 O + 전략 0개 → RuntimeError (정책 7 (a))."""
+    """시나리오 3: 거래소 O + 전략 0개 → RuntimeError."""
     eng = _build_engine(active=[])
     eng.broker.get_position = AsyncMock(
         return_value={
@@ -408,7 +409,7 @@ class TestMatcher:
         assert CoreEngine._match_trade_to_exchange([], pos) is None
 
     def test_match_contract_truncation(self):
-        """I-BLE008: DB full-precision vs 거래소 contract 절삭 (Trade 25 재현).
+        """DB full-precision vs 거래소 contract 절삭.
 
         DB 0.06907371 (6.9074 contracts) vs 거래소 0.069 (6.9 contracts),
         차이 7.37e-5 < tolerance 0.005 → 매칭 성공 (기존 1e-6 으론 orphan 오복원).
@@ -431,7 +432,7 @@ class TestMatcher:
 
 
 class TestBarDeduplication:
-    """I-005: watch_ohlcv 진행 중 봉 재발행에 대한 중복 처리 차단."""
+    """watch_ohlcv 진행 중 봉 재발행에 대한 중복 처리 차단."""
 
     def setup_method(self):
         self.eng = _build_engine(active=["macross"])

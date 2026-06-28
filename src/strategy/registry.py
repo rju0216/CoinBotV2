@@ -19,12 +19,7 @@ logger = logging.getLogger(__name__)
 _REGISTRY: dict[str, type[StrategyModule]] = {}
 _PLUGINS_DISCOVERED = False
 
-# 엔진 try_enter가 strategy.params에서 직접 참조하는 필수 키 (§3.2.1).
-# 시작 시점에 검증하여 운영 중 첫 진입 시도에서야 발견되는 지연을 방지한다.
-REQUIRED_STRATEGY_PARAMS: tuple[str, ...] = (
-    "risk_per_trade_pct",
-    "max_leverage",
-)
+_VALID_FILL_PRIORITY = ("sl_first", "tp_first")
 
 T = TypeVar("T", bound=type[StrategyModule])
 
@@ -32,7 +27,8 @@ T = TypeVar("T", bound=type[StrategyModule])
 def register_strategy(cls: T) -> T:
     """전략 클래스 등록 데코레이터.
 
-    필수 클래스 속성: name, entry_timeframe, required_timeframes.
+    필수 클래스 속성: name, entry_timeframe, required_timeframes, sl_tp_fill_priority.
+    사이징·리스크 정책은 모델이 메서드로 소유하므로 엔진이 강제하는 필수 param 은 없다.
     """
     name = getattr(cls, "name", "")
     if not name:
@@ -46,6 +42,11 @@ def register_strategy(cls: T) -> T:
     if not getattr(cls, "required_timeframes", None):
         raise TypeError(
             f"Strategy '{name}' must define non-empty 'required_timeframes'"
+        )
+    if getattr(cls, "sl_tp_fill_priority", None) not in _VALID_FILL_PRIORITY:
+        raise TypeError(
+            f"Strategy '{name}' must define sl_tp_fill_priority as one of "
+            f"{_VALID_FILL_PRIORITY}"
         )
     if name in _REGISTRY and _REGISTRY[name] is not cls:
         raise ValueError(
@@ -94,7 +95,7 @@ def discover_plugins(force: bool = False) -> None:
 def load_active_strategies(config: dict[str, Any]) -> list[StrategyModule]:
     """config['strategies']['active'] 리스트 순서대로 전략 인스턴스 생성.
 
-    순서 = (C) 배타적 경합 정책의 우선순위.
+    순서 = 배타적 슬롯 경합 시의 우선순위.
     """
     discover_plugins()
     active_names = (config.get("strategies", {}) or {}).get("active", []) or []
@@ -111,12 +112,6 @@ def load_active_strategies(config: dict[str, Any]) -> list[StrategyModule]:
         seen.add(name)
         cls = get_strategy_class(name)
         params = config.get(name, {}) or {}
-        missing = [k for k in REQUIRED_STRATEGY_PARAMS if k not in params]
-        if missing:
-            raise ValueError(
-                f"Strategy '{name}' config is missing required params: "
-                f"{missing}. Required keys: {list(REQUIRED_STRATEGY_PARAMS)}"
-            )
         instances.append(cls(params))
         logger.info("Loaded strategy: %s", name)
     return instances

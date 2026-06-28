@@ -1,14 +1,14 @@
-"""TradeSyncer 단위 테스트 (BLE-6-1 + I-BLE002 + I-BLE004 + I-BLE007).
+"""TradeSyncer 단위 테스트.
 
-I-BLE007 영역: OKX positions-history 영역 직접 사용 영역. pnl, funding_fee, entry/exit_price,
-size, trading_fee, closed_at 영역 영역 모두 OKX positions-history 영역 영역. fetch_my_trades
-영역 영역 entry/exit_order_id 영역 매칭용.
+OKX positions-history 를 직접 사용한다. pnl, funding_fee, entry/exit_price,
+size, trading_fee, closed_at 은 모두 OKX positions-history 에서 가져오고,
+fetch_my_trades 는 entry/exit_order_id 매칭용이다.
 
 핵심 검증:
 - paper 가드
-- positions-history 영역 직접 사용 (pnl, funding_fee 등)
-- 매칭 영역 (closed_at vs uTime ±15분 + side + size)
-- 매칭 실패 영역 진단 로그 (I-BLE004)
+- positions-history 직접 사용 (pnl, funding_fee 등)
+- 매칭 (closed_at vs uTime ±15분 + side + size)
+- 매칭 실패 진단 로그
 - pagination 정상 (fills)
 - order_id 매칭 (DB 기존 값 우선 + fills fallback)
 """
@@ -73,7 +73,7 @@ def _make_position(
     realized_pnl: float,
     close_ts_ms: int,
 ):
-    """OKX positions-history 영역 응답 형식 mock (ccxt 영역 영역에서 info 영역 추출)."""
+    """OKX positions-history 응답 형식 mock (ccxt 응답의 info 에서 추출)."""
     return {
         "info": {
             "direction": side,                             # 'long' or 'short'
@@ -102,7 +102,7 @@ async def test_paper_mode_guard():
 
 @pytest.mark.asyncio
 async def test_sync_uses_okx_realized_pnl_directly():
-    """I-BLE007: pnl, funding_fee, entry/exit_price, size 등 OKX positions-history 영역 직접 사용."""
+    """pnl, funding_fee, entry/exit_price, size 등 OKX positions-history 직접 사용."""
     db_trade = {
         "id": 18,
         "timestamp": "2026-05-28T07:45:01+00:00",
@@ -112,7 +112,7 @@ async def test_sync_uses_okx_realized_pnl_directly():
         "entry_order_id": "preset_entry",
         "exit_order_id": "preset_exit",
     }
-    # Trade 18 영역 OKX positions-history mock — 사용자 OKX $94.32 영역 재현
+    # Trade 18 의 OKX positions-history mock — OKX $94.32 케이스 재현
     okx_position = _make_position(
         side="short",
         size_btc=0.127,
@@ -142,14 +142,14 @@ async def test_sync_uses_okx_realized_pnl_directly():
     # pnl_pct = 94.32 / (73446.6 × 0.127) × 100 ≈ 1.011%
     expected_pct = 94.3203 / (73446.6 * 0.127) * 100
     assert call["pnl_pct"] == pytest.approx(expected_pct, abs=0.01)
-    # entry/exit_order_id 영역 DB 기존 값 보존
+    # entry/exit_order_id 는 DB 기존 값 보존
     assert call["entry_order_id"] == "preset_entry"
     assert call["exit_order_id"] == "preset_exit"
 
 
 @pytest.mark.asyncio
 async def test_funding_negative_sign_preserved():
-    """I-BLE007: funding 음수 (비용) 영역 부호 그대로 저장."""
+    """funding 음수 (비용) 의 부호 그대로 저장."""
     db_trade = {
         "id": 6,
         "timestamp": "2026-05-11T03:15:05+00:00",
@@ -184,17 +184,17 @@ async def test_funding_negative_sign_preserved():
 
 @pytest.mark.asyncio
 async def test_match_uses_closed_at_within_15min_window():
-    """I-BLE007: 매칭 영역 ±15분 영역 — 외부 청산 시점 vs 라이브 인지 시점 차이 흡수."""
+    """매칭 ±15분 윈도 — 외부 청산 시점 vs 라이브 인지 시점 차이 흡수."""
     db_trade = {
         "id": 19,
         "timestamp": "2026-05-28T18:00:00+00:00",
-        "closed_at": "2026-05-28T21:45:00+00:00",   # 라이브 영역 인지 시점
+        "closed_at": "2026-05-28T21:45:00+00:00",   # 라이브 인지 시점
         "side": "short",
         "size": 0.0988,
         "entry_order_id": None,
         "exit_order_id": None,
     }
-    # OKX 영역 영역 영역 7분 차이 (SL trigger 시점)
+    # OKX uTime 은 7분 차이 (SL trigger 시점)
     okx_uTime = _iso_to_ms("2026-05-28T21:37:39+00:00")
     okx_position = _make_position(
         side="short",
@@ -220,18 +220,18 @@ async def test_match_uses_closed_at_within_15min_window():
 
 @pytest.mark.asyncio
 async def test_match_failure_side_mismatch(caplog):
-    """매칭 실패 — side 영역 불일치 영역 → WARNING + 진단 로그 (I-BLE004 영역)."""
+    """매칭 실패 — side 불일치 → WARNING + 진단 로그."""
     db_trade = {
         "id": 99,
         "timestamp": "2026-05-28T07:00:00+00:00",
         "closed_at": "2026-05-28T08:00:00+00:00",
-        "side": "long",   # DB 영역 long
+        "side": "long",   # DB 는 long
         "size": 0.1,
         "entry_order_id": None,
         "exit_order_id": None,
     }
     okx_position = _make_position(
-        side="short",   # OKX 영역 short — 불일치
+        side="short",   # OKX 는 short — 불일치
         size_btc=0.1,
         open_price=73000,
         close_price=72000,
@@ -251,13 +251,13 @@ async def test_match_failure_side_mismatch(caplog):
     assert result["failed_count"] == 1
     log_text = "\n".join(r.message for r in caplog.records)
     assert "매칭 실패" in log_text
-    # 진단 영역 — side 무관 후보 1건, side 일치 0건
+    # 진단 로그 — side 무관 후보 1건, side 일치 0건
     assert "position 후보" in log_text
 
 
 @pytest.mark.asyncio
 async def test_match_failure_size_mismatch():
-    """매칭 실패 — size 영역 불일치 영역."""
+    """매칭 실패 — size 불일치."""
     db_trade = {
         "id": 5,
         "timestamp": "2026-05-11T01:45:02+00:00",
@@ -289,14 +289,14 @@ async def test_match_failure_size_mismatch():
 
 @pytest.mark.asyncio
 async def test_order_id_fallback_from_fills():
-    """I-BLE007: DB entry/exit_order_id None 영역 영역 — fills 영역 영역 추출."""
+    """DB entry/exit_order_id 가 None 일 때 — fills 에서 추출."""
     db_trade = {
         "id": 10,
         "timestamp": "2026-05-14T14:45:02+00:00",
         "closed_at": "2026-05-14T14:50:15+00:00",
         "side": "short",
         "size": 0.075,
-        "entry_order_id": None,   # DB 영역 None
+        "entry_order_id": None,   # DB 는 None
         "exit_order_id": None,
     }
     db_ts_ms = _iso_to_ms(db_trade["timestamp"])
@@ -311,7 +311,7 @@ async def test_order_id_fallback_from_fills():
         realized_pnl=-38.50,
         close_ts_ms=exit_ts_ms,
     )
-    # fills 영역 — entry order (fillPnl=0) + exit order (fillPnl≠0)
+    # fills — entry order (fillPnl=0) + exit order (fillPnl≠0)
     okx_fills = [
         {
             "order": "entry_order_x", "id": "fe1",
@@ -339,14 +339,14 @@ async def test_order_id_fallback_from_fills():
     result = await sync_all_unsynced(broker, ds, "BTC/USDT:USDT")
     assert result["synced_count"] == 1
     call = ds.update_synced_trade.call_args.kwargs
-    # fills 영역 영역 추출
+    # fills 에서 추출
     assert call["entry_order_id"] == "entry_order_x"
     assert call["exit_order_id"] == "exit_order_y"
 
 
 @pytest.mark.asyncio
 async def test_pagination_basic():
-    """fetch_my_trades pagination — fills 영역 영역."""
+    """fetch_my_trades pagination — fills 다중 페이지 수집."""
     db_trade = {
         "id": 500,
         "timestamp": "2026-05-01T00:00:00+00:00",
@@ -373,7 +373,7 @@ async def test_pagination_basic():
          "fee": {"cost": 0.1, "currency": "USDT"}}
         for i in range(100, 150)
     ]
-    # positions-history 영역 — 매칭 영역 영역 (그래야 sync 완료)
+    # positions-history — 매칭 성공해야 sync 완료
     okx_position = _make_position(
         side="long", size_btc=0.05, open_price=80000, close_price=80100,
         fee=4.0, funding=0.0, realized_pnl=1.0,

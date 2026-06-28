@@ -53,7 +53,7 @@ def test_load_config_injects_env_credentials(tmp_path, monkeypatch):
 
 
 def test_load_config_injects_telegram_credentials(tmp_path, monkeypatch):
-    """BL-2-1: TELEGRAM_BOT_TOKEN/CHAT_ID env → live.notifications.telegram에 주입."""
+    """TELEGRAM_BOT_TOKEN/CHAT_ID env → live.notifications.telegram에 주입."""
     cfg_path = tmp_path / "cfg.yaml"
     cfg_path.write_text(
         "exchange:\n  symbol: BTC/USDT:USDT\n"
@@ -70,7 +70,7 @@ def test_load_config_injects_telegram_credentials(tmp_path, monkeypatch):
 
 
 def test_load_config_creates_telegram_section_if_absent(tmp_path, monkeypatch):
-    """BL-2-1: notifications.telegram 섹션이 없어도 env가 있으면 자동 생성."""
+    """notifications.telegram 섹션이 없어도 env가 있으면 자동 생성."""
     cfg_path = tmp_path / "cfg.yaml"
     cfg_path.write_text("exchange:\n  symbol: BTC/USDT:USDT\n", encoding="utf-8")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "abc")
@@ -97,7 +97,7 @@ def test_load_config_no_telegram_env_keeps_yaml_default(tmp_path, monkeypatch):
 
 
 def test_load_config_injects_email_credentials(tmp_path, monkeypatch):
-    """BL-2-1: EMAIL_SMTP_USERNAME/PASSWORD env → live.notifications.email에 주입."""
+    """EMAIL_SMTP_USERNAME/PASSWORD env → live.notifications.email에 주입."""
     cfg_path = tmp_path / "cfg.yaml"
     cfg_path.write_text(
         "exchange:\n  symbol: BTC/USDT:USDT\n",
@@ -178,24 +178,19 @@ def test_cli_unknown_subcommand_rejected():
 
 
 def test_default_yaml_has_required_keys(monkeypatch):
-    """default.yaml이 단계 2~10에서 신설된 config 키를 모두 포함하는지."""
+    """default.yaml이 필수 config 키를 모두 포함하는지."""
     monkeypatch.delenv("OKX_API_KEY", raising=False)
     monkeypatch.delenv("OKX_SECRET", raising=False)
     monkeypatch.delenv("OKX_PASSPHRASE", raising=False)
     cfg = load_config("config/default.yaml")
-    # I-003: paper.initial_balance
+    # paper.initial_balance
     assert "paper" in cfg
     assert "initial_balance" in cfg["paper"]
-    # I-004: exchange.leverage
+    # exchange.leverage
     assert "leverage" in cfg["exchange"]
-    # 기타 필수 섹션
-    assert cfg["engine"]["reverse_signal_policy"] in (
-        "ignore", "reverse", "same_strategy_only"
-    )
-    assert "max_concurrent_positions" in cfg["risk"]
+    # 거래소 연결 안전장치(circuit breaker)는 엔진 메커니즘으로 유지
+    assert "circuit_breaker" in cfg["risk"]
     assert "taker_fee_pct" in cfg["accounting"]
     assert "active" in cfg["strategies"]
-    # 활성 전략은 필수 키 보유
-    for name in cfg["strategies"]["active"]:
-        assert "risk_per_trade_pct" in cfg[name]
-        assert "max_leverage" in cfg[name]
+    # 뼈대 상태 — active 는 비어 있음 (거래 정책은 전략 메서드 소유)
+    assert cfg["strategies"]["active"] == []

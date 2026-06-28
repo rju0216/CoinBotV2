@@ -1,6 +1,6 @@
 """OKX 실거래 executor.
 
-partial TP, exit_plan, owner 분기 제거. 거래소 SL/TP pending 주문(엔진 정책 (a))
+partial TP, exit_plan, owner 분기 제거. 거래소 SL/TP pending 주문
 지원은 그대로 유지하여 라이브 안전장치 제공.
 """
 
@@ -22,10 +22,10 @@ RETRY_DELAY = 1.0
 
 
 class CircuitBreakerOpen(Exception):
-    """Circuit breaker가 열린 상태에서 API 호출 시 raise (BL-2-1, 사안 G=나 5회).
+    """Circuit breaker가 열린 상태에서 API 호출 시 raise.
 
     CoreEngine이 catch → event_bus.publish CIRCUIT_BREAKER_OPEN → notifier + 새 진입 차단
-    (사안 U''=나 trade 일시 중단). 기존 포지션 SL/TP는 거래소가 처리하므로 별도 차단 X.
+    (신규 진입 일시 중단). 기존 포지션 SL/TP는 거래소가 처리하므로 별도 차단 X.
     """
 
 
@@ -35,7 +35,7 @@ class CircuitBreaker:
     - _retry_api 후에도 실패 → consecutive_failures += 1
     - 임계 도달 → _open = True. 이후 모든 호출 시 CircuitBreakerOpen raise
     - 성공 → consecutive_failures = 0
-    - 해제는 사용자 manual (auto_resume=False default)
+    - 해제는 사용자 manual 전용 (자동 재개 없음 — reset() 호출 필요)
     """
 
     def __init__(self, failure_threshold: int = 5) -> None:
@@ -154,7 +154,7 @@ class LiveExecutor:
         self.contract_size = 1.0
         if config["exchange"].get("sandbox"):
             self.exchange.set_sandbox_mode(True)
-        # BL-2-1: Circuit breaker (사안 G=나 5회 default)
+        # Circuit breaker (연속 실패 5회 default)
         cb_cfg = (config.get("risk", {}) or {}).get("circuit_breaker", {}) or {}
         cb_enabled = bool(cb_cfg.get("enabled", True))
         cb_threshold = int(cb_cfg.get("failure_threshold", 5))
@@ -165,7 +165,7 @@ class LiveExecutor:
     async def _call(self, func, *args, **kwargs):
         """모든 ccxt API 호출의 단일 진입점. _retry_api + circuit breaker 통합.
 
-        I-BL008 fix: 자기 자신 재귀 호출 → 모듈 함수 _retry_api 호출로 정정.
+        모듈 함수 _retry_api 에 위임한다 (메서드 자기 재귀 아님 — 주의).
         """
         return await _retry_api(
             func, *args, circuit_breaker=self.circuit_breaker, **kwargs,
@@ -177,7 +177,7 @@ class LiveExecutor:
         self.contract_size = float(market.get("contractSize", 1.0) or 1.0)
         await self._call(self.exchange.set_leverage, self.leverage, self.symbol)
         try:
-            # I-BL009 fix: OKX setMarginMode가 lever 파라미터 요구 (1-125 범위)
+            # OKX setMarginMode가 lever 파라미터 요구 (1-125 범위)
             await self._call(
                 self.exchange.set_margin_mode, "cross", self.symbol,
                 params={"lever": str(self.leverage)},
@@ -271,7 +271,7 @@ class LiveExecutor:
         fill_price: float | None = None,
         order_type: OrderType = OrderType.MARKET,
     ) -> dict:
-        # I-BL010 fix: 거래소가 이미 청산했는지 사전 확인 (SL/TP 자동 청산 등).
+        # 거래소가 이미 청산했는지 사전 확인 (SL/TP 자동 청산 등).
         # 거래소 포지션 ∅이면 redundant 주문 skip — OKX의 reduceOnly reject(51169)로 인한
         # ExchangeError 회피 + 불필요한 API call 차단.
         try:
@@ -343,7 +343,7 @@ class LiveExecutor:
         return order
 
     async def fetch_open_algo_orders(self) -> list[dict]:
-        """OKX conditional algo order(SL/TP) 조회 (I-BLE009).
+        """OKX conditional algo order(SL/TP) 조회.
 
         SL/TP 는 create_order(stopLossPrice/takeProfitPrice) 로 등록되어 OKX 에서
         ordType='conditional' algo order(orders-algo-pending)로 생성된다. 일반

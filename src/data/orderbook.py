@@ -1,4 +1,4 @@
-"""호가창 인프라 (BL-2-2).
+"""호가창 인프라.
 
 OKX 호가창 snapshot 수집 (BAR_CLOSED 시점, depth=20) + parquet 저장.
 PaperExecutor가 사이즈 침투 VWAP 계산에 사용.
@@ -9,7 +9,7 @@ PaperExecutor가 사이즈 침투 VWAP 계산에 사용.
 - 일별 파일 분리 (`data/orderbook/<symbol>_<YYYY-MM-DD>.parquet`)
 - 매 fetch 시 즉시 read+concat+write (15m 주기 + ~100 row/일이라 부담 작음)
 - 라이브 거래소(OKX)는 자동 호가창 침투 → LiveExecutor는 호가창 사용 안 함
-- Fallback (사안 CC''' 가): orderbook None / depth 부족 → fill_price 그대로 (silent)
+- Fallback: orderbook None / depth 부족 → fill_price 그대로 (silent)
 """
 
 from __future__ import annotations

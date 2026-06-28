@@ -1,6 +1,6 @@
-"""scripts/merge_yearly_reports.py 갱신 검증 (단계 15).
+"""scripts/merge_yearly_reports.py 집계 검증.
 
-신규 BacktestEngine.write_reports 가 생성한 trades.csv 의
+BacktestEngine.write_reports 가 생성한 trades.csv 의
 `strategy_name` 컬럼이 정상 집계되는지, 그리고 옛 `owner` 컬럼이 있는
 구식 리포트도 fallback으로 처리되는지 확인.
 """

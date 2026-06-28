@@ -1,8 +1,8 @@
-"""라이브 모드 recovery 영역 단위 테스트 (I-BL011/I-BL012/I-BL013).
+"""라이브 모드 recovery 단위 테스트.
 
-- I-BL012: engine_base.close_position의 broker.close_position 실패 시 강건성
-- I-BL013: _restore_state case 2의 fetch_actual_exit 정확성
-- I-BL011: SL/TP conditional order 검증 + 재등록
+- engine_base.close_position의 broker.close_position 실패 시 강건성
+- _restore_state case 2의 fetch_actual_exit 정확성
+- SL/TP conditional order 검증 + 재등록
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from src.core.enums import ExitReason, PositionSide, PositionStatus
 from src.core.types import Position
 
 
-# ─── I-BL012: close_position 강건성 ───
+# ─── close_position 강건성 ───
 
 
 class TestEngineCloseRobustness:
@@ -36,7 +36,7 @@ class TestEngineCloseRobustness:
                 self._position = Position(
                     side=PositionSide.LONG, size=0.075, entry_price=82000.0,
                     entry_time=datetime(2026, 5, 6, 21, 15, tzinfo=timezone.utc),
-                    strategy_name="ensemble", stop_loss=81700.0, take_profit=83000.0,
+                    strategy_name="my_strategy", stop_loss=81700.0, take_profit=83000.0,
                     trade_id=1, status=PositionStatus.OPEN,
                 )
                 self.broker = MagicMock()
@@ -49,9 +49,9 @@ class TestEngineCloseRobustness:
                 self.broker.get_position = AsyncMock(return_value=None)
                 self.broker.get_balance = AsyncMock(return_value=3370.0)
                 self.fee_model = FeeModel(taker_fee_pct=0.0005, slippage_pct=0.0)
-                self.risk_manager = MagicMock()
-                self.risk_manager.add_pnl = MagicMock()
-                self.risk_manager.update_equity = MagicMock()
+                self.account_tracker = MagicMock()
+                self.account_tracker.add_pnl = MagicMock()
+                self.account_tracker.update_equity = MagicMock()
                 self.strategy_by_name = {}
                 self.event_bus = MagicMock()
                 self.event_bus.publish = AsyncMock()
@@ -68,7 +68,7 @@ class TestEngineCloseRobustness:
         assert engine._position is None  # 정리 완료
         assert engine._record_trade_close.called  # DB close 호출
         assert engine.event_bus.publish.called  # 이벤트 publish 호출
-        assert engine.risk_manager.add_pnl.called  # PnL 누적
+        assert engine.account_tracker.add_pnl.called  # PnL 누적
 
     @pytest.mark.asyncio
     async def test_close_propagates_when_exchange_still_has_position(self):
@@ -83,7 +83,7 @@ class TestEngineCloseRobustness:
                 self._position = Position(
                     side=PositionSide.LONG, size=0.075, entry_price=82000.0,
                     entry_time=datetime(2026, 5, 6, tzinfo=timezone.utc),
-                    strategy_name="ensemble", stop_loss=81700.0, take_profit=83000.0,
+                    strategy_name="my_strategy", stop_loss=81700.0, take_profit=83000.0,
                     trade_id=1, status=PositionStatus.OPEN,
                 )
                 self.broker = MagicMock()
@@ -97,7 +97,7 @@ class TestEngineCloseRobustness:
                 })
                 self.broker.get_balance = AsyncMock(return_value=3370.0)
                 self.fee_model = FeeModel(taker_fee_pct=0.0005, slippage_pct=0.0)
-                self.risk_manager = MagicMock()
+                self.account_tracker = MagicMock()
                 self.strategy_by_name = {}
                 self.event_bus = MagicMock()
                 self.event_bus.publish = AsyncMock()
@@ -115,7 +115,7 @@ class TestEngineCloseRobustness:
         assert not engine._record_trade_close.called
 
 
-# ─── I-BL013: _restore_state case 2 fetch_actual_exit ───
+# ─── _restore_state case 2 fetch_actual_exit ───
 
 
 class TestFetchActualExit:
@@ -157,7 +157,7 @@ class TestFetchActualExit:
         }
         result = await engine._fetch_actual_exit(trade)
         assert result is not None
-        # I-BL016: 4-튜플로 확장 (exit_price, pnl, reason, exit_ts_ms)
+        # 4-튜플 (exit_price, pnl, reason, exit_ts_ms)
         exit_price, pnl, reason, _ = result
         assert exit_price == pytest.approx(81707.297)
         # gross = (81707.297 - 82159.5) × 0.075 = -33.915
@@ -319,11 +319,11 @@ class TestFetchActualExit:
         assert pnl > 0  # short + 가격 하락 → 수익
 
 
-# ─── I-BL011: _verify_and_restore_sl_tp ───
+# ─── _verify_and_restore_sl_tp ───
 
 
 class TestSyncUnexpectedClose:
-    """I-BL015: 거래소가 모르게 청산한 포지션 동기화 (LONG/SHORT 모두)."""
+    """거래소가 모르게 청산한 포지션 동기화 (LONG/SHORT 모두)."""
 
     def _make_engine(self, side: PositionSide):
         """공통 mock engine 빌더."""
@@ -339,7 +339,7 @@ class TestSyncUnexpectedClose:
                     size=0.075,
                     entry_price=82000.0,
                     entry_time=datetime(2026, 5, 8, 12, 0, tzinfo=timezone.utc),
-                    strategy_name="ensemble",
+                    strategy_name="my_strategy",
                     stop_loss=82500.0 if side == PositionSide.SHORT else 81500.0,
                     take_profit=81000.0 if side == PositionSide.SHORT else 83000.0,
                     trade_id=1,
@@ -355,7 +355,7 @@ class TestSyncUnexpectedClose:
     async def test_short_tp_spike_sync_long_path(self):
         """SHORT TP spike 청산 — fetch 성공 시 정확한 exit/reason 사용."""
         engine = self._make_engine(PositionSide.SHORT)
-        # I-BL016: 4-튜플 (exit_price, pnl, reason, exit_ts_ms). 운영 중 _sync_unexpected_close
+        # 4-튜플 (exit_price, pnl, reason, exit_ts_ms). 운영 중 _sync_unexpected_close
         # 는 timestamp 미사용이라 None 으로 mock
         engine._fetch_actual_exit.return_value = (
             81000.0, 60.39, ExitReason.TP_HIT.value, None,
@@ -433,13 +433,13 @@ class TestVerifyAndRestoreSLTP:
                 self._position = Position(
                     side=PositionSide.LONG, size=0.075, entry_price=82000.0,
                     entry_time=datetime(2026, 5, 6, tzinfo=timezone.utc),
-                    strategy_name="ensemble", stop_loss=81700.0, take_profit=83000.0,
+                    strategy_name="my_strategy", stop_loss=81700.0, take_profit=83000.0,
                 )
                 self.broker = MagicMock()
                 self.broker.is_live = True
                 self.broker.place_stop_loss = AsyncMock()
                 self.broker.place_take_profit = AsyncMock()
-                # I-BLE009: algo order 조회 — 거래소에 SL/TP 둘 다 살아있음
+                # algo order 조회 — 거래소에 SL/TP 둘 다 살아있음
                 self.broker.fetch_open_algo_orders = AsyncMock(return_value=[
                     {"info": {"slTriggerPx": "81700.0"}},
                     {"info": {"tpTriggerPx": "83000.0"}},
@@ -464,13 +464,13 @@ class TestVerifyAndRestoreSLTP:
                 self._position = Position(
                     side=PositionSide.LONG, size=0.075, entry_price=82000.0,
                     entry_time=datetime(2026, 5, 6, tzinfo=timezone.utc),
-                    strategy_name="ensemble", stop_loss=81700.0, take_profit=83000.0,
+                    strategy_name="my_strategy", stop_loss=81700.0, take_profit=83000.0,
                 )
                 self.broker = MagicMock()
                 self.broker.is_live = True
                 self.broker.place_stop_loss = AsyncMock()
                 self.broker.place_take_profit = AsyncMock()
-                # I-BLE009: algo order 조회 — SL 누락 (TP만 있음)
+                # algo order 조회 — SL 누락 (TP만 있음)
                 self.broker.fetch_open_algo_orders = AsyncMock(return_value=[
                     {"info": {"tpTriggerPx": "83000.0"}},
                 ])
@@ -493,13 +493,13 @@ class TestVerifyAndRestoreSLTP:
                 self._position = Position(
                     side=PositionSide.LONG, size=0.075, entry_price=82000.0,
                     entry_time=datetime(2026, 5, 6, tzinfo=timezone.utc),
-                    strategy_name="ensemble", stop_loss=81700.0, take_profit=83000.0,
+                    strategy_name="my_strategy", stop_loss=81700.0, take_profit=83000.0,
                 )
                 self.broker = MagicMock()
                 self.broker.is_live = True
                 self.broker.place_stop_loss = AsyncMock()
                 self.broker.place_take_profit = AsyncMock()
-                # I-BLE009: algo order 조회 실패 → 재등록 시도 안 함
+                # algo order 조회 실패 → 재등록 시도 안 함
                 self.broker.fetch_open_algo_orders = AsyncMock(
                     side_effect=Exception("API error")
                 )
@@ -513,7 +513,7 @@ class TestVerifyAndRestoreSLTP:
 
 
 class TestIBLE009AlgoOrderFetch:
-    """I-BLE009: fetch_open_algo_orders — conditional algo endpoint 조회 보장."""
+    """fetch_open_algo_orders — conditional algo endpoint 조회 보장."""
 
     @pytest.mark.asyncio
     async def test_live_executor_uses_conditional_params(self):

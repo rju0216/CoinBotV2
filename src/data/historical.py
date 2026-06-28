@@ -154,7 +154,7 @@ class HistoricalDataLoader:
                 timeframe, len(merged), merged.index.min(), merged.index.max(),
             )
 
-        # 캐시 CSV는 전체 보존하되, 반환값은 호출자가 요청한 [start_ms, end_ms]로 슬라이스 (I-B006)
+        # 캐시 CSV는 전체 보존하되, 반환값은 호출자가 요청한 [start_ms, end_ms]로 슬라이스
         start_ts = pd.Timestamp(start_ms, unit="ms", tz="UTC")
         end_ts = pd.Timestamp(end_ms, unit="ms", tz="UTC")
         merged = merged[(merged.index >= start_ts) & (merged.index <= end_ts)]

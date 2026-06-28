@@ -6,7 +6,7 @@
   python -m src.main backtest --config config/default.yaml
                               --start 2024-01-01 --end 2024-12-31
 
-mode 필드는 config에 두지 않고 subcommand로 결정 (정책 6 (c)).
+mode 필드는 config에 두지 않고 subcommand로 결정.
 """
 
 from __future__ import annotations

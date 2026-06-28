@@ -1,20 +1,20 @@
-"""TradeSyncer — DB trades 영역 OKX 실값 sync (BLE-6-1 + I-BLE007).
+"""TradeSyncer — DB trades 를 OKX 실값으로 sync.
 
-I-BLE007: OKX positions-history 영역 영역 직접 사용 영역 — pnl, funding_fee, entry/exit_price,
-size, trading_fee, closed_at, pnl_pct 영역 모두 OKX 영역 영역. fetch_my_trades 영역
-영역 entry/exit_order_id 영역 영역 영역 매칭 영역.
+OKX positions-history 를 직접 사용한다 — pnl, funding_fee, entry/exit_price,
+size, trading_fee, closed_at, pnl_pct 모두 OKX 실값. fetch_my_trades 로
+entry/exit_order_id 를 추가 매칭한다.
 
 알고리즘:
 1. paper 가드 (broker.is_live=False → skip)
 2. data_store.get_unsynced_trades() — closed AND synced_at IS NULL
-3. earliest_ts - 60s 기준 두 API 영역 호출:
-   - _fetch_all_positions: positions-history 영역 (entry/exit/pnl/funding/closed_at)
-   - _fetch_all_fills: fetch_my_trades 영역 (entry/exit_order_id 영역 매칭용)
-4. 각 미sync trade 영역 매칭:
-   - position 매칭: trade.closed_at vs uTime ±60s + side
-   - order_id 매칭: fills 영역에서 ts ±60s + size + side 영역
-5. DB UPDATE — OKX positions-history 영역 직접 사용 (pnl_pct 영역 net 기준 수식 영역)
-6. 매칭 실패 영역 진단 로그 (I-BLE004 영역 영역 유지)
+3. earliest_ts - 60s 기준 두 API 호출:
+   - _fetch_all_positions: positions-history (entry/exit/pnl/funding/closed_at)
+   - _fetch_all_fills: fetch_my_trades (entry/exit_order_id 매칭용)
+4. 각 미sync trade 매칭:
+   - position 매칭: trade.closed_at vs uTime ±15분 + side
+   - order_id 매칭: fills 에서 ts ±60s + size + side
+5. DB UPDATE — OKX positions-history 직접 사용 (pnl_pct 는 net 기준 수식)
+6. 매칭 실패 시 진단 로그 출력
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ async def sync_all_unsynced(
     if not unsynced:
         return {"synced_count": 0, "failed_count": 0, "errors": []}
 
-    # 2. earliest_ts 기준 OKX API 영역 호출
+    # 2. earliest_ts 기준 OKX API 호출
     earliest_ts_ms = min(_parse_iso_ms(t["timestamp"]) for t in unsynced)
     since_ms = earliest_ts_ms - TIME_MARGIN_MS
 
@@ -86,7 +86,7 @@ async def sync_all_unsynced(
         logger.warning("fetch_my_trades 실패 — sync 영역 fills 매칭 제한: %s", e)
         okx_fills = []
 
-    # order_id 별 fills 영역 그룹화 (entry/exit_order_id 영역 매칭용, 단순화)
+    # order_id 별 fills 그룹화 (entry/exit_order_id 매칭용)
     by_order = _group_fills_by_order(okx_fills, contract_size)
 
     # 3. 각 미sync trade 매칭 + DB UPDATE
@@ -95,7 +95,7 @@ async def sync_all_unsynced(
         try:
             position = _match_trade_to_position(db_trade, okx_positions)
             if position is None:
-                # 매칭 실패 진단 로그 (I-BLE004 영역 영역 유지)
+                # 매칭 실패 진단 로그
                 diag = _diagnose_position_match_failure(db_trade, okx_positions, by_order)
                 msg = (
                     f"trade {db_trade['id']} 매칭 실패 "
@@ -107,10 +107,10 @@ async def sync_all_unsynced(
                 results["errors"].append(msg)
                 continue
 
-            # order_id 매칭 (DB 기존 값 유지 또는 fills 영역에서 추출)
+            # order_id 매칭 (DB 기존 값 유지 또는 fills 에서 추출)
             entry_oid, exit_oid = _resolve_order_ids(db_trade, position, by_order)
 
-            # OKX positions-history 영역 직접 사용
+            # OKX positions-history 직접 사용
             openAvgPx = float(position["openAvgPx"])
             closeAvgPx = float(position["closeAvgPx"])
             size_btc = float(position["closeTotalPos"]) * contract_size
@@ -143,7 +143,7 @@ async def sync_all_unsynced(
     return results
 
 
-# ---------- helper 영역 ----------
+# ---------- helper ----------
 
 def _parse_iso_ms(iso_str: str) -> int:
     """ISO timestamp → UTC ms."""
@@ -161,10 +161,10 @@ def _ms_to_iso(ms: int) -> str:
 async def _fetch_all_positions(
     exchange: Any, symbol: str, since_ms: int,
 ) -> list[dict]:
-    """I-BLE007: ccxt fetch_positions_history 영역 영역 호출 + info 영역 추출.
+    """ccxt fetch_positions_history 호출 + 각 항목의 raw info 추출.
 
-    OKX positions-history 영역 영역 영역 한 호출 영역 영역 영역 모든 영역 반환 영역
-    (현재 영역 ~37 영역). pagination 영역 영역 영역 안전망 영역.
+    OKX positions-history 는 한 호출로 충분한 범위를 반환하므로
+    pagination 은 안전망 수준(PAGE_LIMIT)만 둔다.
     """
     try:
         positions = await exchange.fetch_positions_history(
@@ -173,14 +173,14 @@ async def _fetch_all_positions(
     except Exception as e:
         logger.warning("fetch_positions_history exception: %s", e)
         raise
-    # ccxt 영역 영역의 info 영역 영역 raw OKX 영역 (필요 필드 영역 영역)
+    # ccxt 항목의 info 는 raw OKX 응답 (필요 필드 포함)
     return [p.get("info", {}) for p in positions if p.get("info")]
 
 
 async def _fetch_all_fills(
     exchange: Any, symbol: str, since_ms: int,
 ) -> list[dict]:
-    """fetch_my_trades pagination — entry/exit_order_id 영역 매칭용 영역."""
+    """fetch_my_trades pagination — entry/exit_order_id 매칭용 fills 수집."""
     all_fills: list[dict] = []
     seen_ids: set[str] = set()
     current_since = since_ms
@@ -214,10 +214,10 @@ async def _fetch_all_fills(
 def _group_fills_by_order(
     okx_fills: list[dict], contract_size: float,
 ) -> dict[str, dict]:
-    """order_id 별 fills 그룹화 — entry/exit_order_id 매칭 영역 영역.
+    """order_id 별 fills 그룹화 — entry/exit_order_id 매칭에 사용.
 
-    I-BLE007: fillPnl 영역 기반 reduce_only 판별 (entry order: fillPnl=0,
-    exit order: fillPnl≠0). amount 영역 contracts → BTC 변환.
+    fillPnl 기반으로 reduce_only 판별 (entry order: fillPnl=0,
+    exit order: fillPnl≠0). amount 는 contracts → BTC 로 변환한다.
     """
     by_order_raw: dict[str, list[dict]] = defaultdict(list)
     for fill in okx_fills:
@@ -251,11 +251,11 @@ def _group_fills_by_order(
 def _match_trade_to_position(
     db_trade: dict, okx_positions: list[dict],
 ) -> dict | None:
-    """I-BLE007: trade.closed_at vs position.uTime ±15분 + side 영역 매칭.
+    """trade.closed_at vs position.uTime ±15분 + side 로 매칭.
 
-    ±15분: 외부 청산 (SL/TP trigger) 영역 시점과 라이브 영역 인지 시점 (봉 마감) 영역
-    차이 영역 흡수. 사용자 외 거래 영역은 side 영역 일치 제한 영역 + size 영역 검증 영역
-    추가 영역 자연 skip.
+    ±15분: 외부 청산 (SL/TP trigger) 시점과 라이브 인지 시점 (봉 마감) 의
+    차이를 흡수한다. 사용자 외 거래는 side 일치 제한 + size 검증으로
+    자연스럽게 skip 된다.
     """
     closed_at_iso = db_trade.get("closed_at") or db_trade["timestamp"]
     db_closed_ms = _parse_iso_ms(closed_at_iso)
@@ -269,7 +269,7 @@ def _match_trade_to_position(
     ]
     if not candidates:
         return None
-    # size 영역 일치 영역 (사용자 외 거래 영역 차단)
+    # size 일치 검증 (사용자 외 거래 차단)
     contract_size_btc = 0.01  # OKX BTC-USDT-SWAP contract size
     size_filtered = []
     for p in candidates:
@@ -287,9 +287,9 @@ def _match_trade_to_position(
 def _resolve_order_ids(
     db_trade: dict, position: dict, by_order: dict[str, dict],
 ) -> tuple[str | None, str | None]:
-    """entry/exit_order_id 영역 결정 — DB 기존 값 영역 우선, 없으면 fills 영역에서 추출.
+    """entry/exit_order_id 결정 — DB 기존 값 우선, 없으면 fills 에서 추출.
 
-    fills 영역에서 추출: 시간/방향/size + reduce_only 영역 — entry order (reduce_only=False),
+    fills 추출 기준: 시간/방향/size + reduce_only — entry order (reduce_only=False),
     exit order (reduce_only=True).
     """
     entry_oid = db_trade.get("entry_order_id")
@@ -303,7 +303,7 @@ def _resolve_order_ids(
     db_size = float(db_trade["size"])
     db_ts_ms = _parse_iso_ms(db_trade["timestamp"])
 
-    # entry 영역 매칭
+    # entry 매칭
     if entry_oid is None:
         cands = [
             v for v in by_order.values()
@@ -315,7 +315,7 @@ def _resolve_order_ids(
         if cands:
             entry_oid = min(cands, key=lambda v: abs(v["ts_ms"] - db_ts_ms))["order_id"]
 
-    # exit 영역 매칭
+    # exit 매칭
     if exit_oid is None:
         # closed_at 기반 매칭
         closed_at_iso = db_trade.get("closed_at") or db_trade["timestamp"]
@@ -336,7 +336,7 @@ def _resolve_order_ids(
 def _diagnose_position_match_failure(
     db_trade: dict, okx_positions: list[dict], by_order: dict[str, dict],
 ) -> str:
-    """I-BLE004 영역 영역 — 매칭 실패 영역 진단 영역."""
+    """매칭 실패 시 진단 정보 문자열 생성."""
     db_side = db_trade["side"]
     closed_at_iso = db_trade.get("closed_at") or db_trade["timestamp"]
     db_closed_ms = _parse_iso_ms(closed_at_iso)
