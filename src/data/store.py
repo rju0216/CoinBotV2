@@ -212,6 +212,18 @@ class DataStore:
         )
         await self._db.commit()
 
+    async def update_trade_sl(self, trade_id: int, stop_loss: float) -> None:
+        """I-PE007: trailing SL 갱신을 trades.stop_loss 에 반영.
+
+        update_stop_loss 훅이 position.stop_loss(메모리)만 갱신해 DB 는 초기 SL 로
+        남던 문제 해결 → 재기동 복원·라이브-백테 정합성(A2)·사후 분석에서 정확.
+        """
+        await self._db.execute(
+            "UPDATE trades SET stop_loss=? WHERE id=?",
+            (stop_loss, trade_id),
+        )
+        await self._db.commit()
+
     # ---- BLE-6-1: OKX sync 메서드 ----
 
     async def get_unsynced_trades(self) -> list[dict[str, Any]]:
@@ -312,6 +324,18 @@ class DataStore:
         )
         row = await cursor.fetchone()
         return row[0] if row else None
+
+    async def get_closed_pnl_sum(self) -> float:
+        """청산된 trade pnl 합 (실현 손익). I-PE008: paper balance 복원 소스.
+
+        equity 마지막 balance 는 리셋된 세션이 기록해 오염될 수 있어(순환),
+        거래 기록 기반(initial + 이 합)이 robust. live 는 거래소 잔고라 무관.
+        """
+        cursor = await self._db.execute(
+            "SELECT COALESCE(SUM(pnl), 0) FROM trades WHERE status='closed'"
+        )
+        row = await cursor.fetchone()
+        return float(row[0]) if row and row[0] is not None else 0.0
 
     async def get_peak_equity(self) -> float:
         cursor = await self._db.execute("SELECT MAX(total_equity) FROM equity")

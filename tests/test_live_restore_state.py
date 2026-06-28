@@ -59,12 +59,15 @@ def _build_engine(active: list[str] | None = None) -> CoreEngine:
     eng.broker.is_live = False  # paper mode (I-BL013 fetch_actual_exit이 None 반환 → fallback)
     eng.broker.get_balance = AsyncMock(return_value=10000.0)
     eng.broker.get_position = AsyncMock(return_value=None)
+    eng.broker.executor = MagicMock()
+    eng.broker.executor.restore_state = AsyncMock()  # I-PE008
 
     eng.data_store = MagicMock()
     eng.data_store.get_initial_balance = AsyncMock(return_value=10000.0)
     eng.data_store.set_initial_balance = AsyncMock()
     eng.data_store.get_peak_equity = AsyncMock(return_value=10000.0)
     eng.data_store.get_open_trades = AsyncMock(return_value=[])
+    eng.data_store.get_closed_pnl_sum = AsyncMock(return_value=0.0)  # I-PE008: 기본 청산 손익 0
     eng.data_store.close_trade = AsyncMock()
     # I-BLE001: _restore_daily_pnl 가 호출하는 get_daily_pnl mock (각 테스트가 override 가능)
     eng.data_store.get_daily_pnl = AsyncMock(return_value=0.0)
@@ -458,3 +461,25 @@ class TestBarDeduplication:
         # 다른 TF는 각자의 시퀀스
         assert self.eng._should_process_bar("4h", 1000) is True
         assert self.eng._should_process_bar("1d", 999) is True
+
+
+@pytest.mark.asyncio
+async def test_paper_restore_balance_from_db(_isolated_registry):
+    """I-PE008: paper 재기동 시 initial+청산pnl 로 balance 복원 (리셋·equity 오염 무관)."""
+    eng = _build_engine()
+    eng.data_store.get_closed_pnl_sum = AsyncMock(return_value=105.29)
+    # initial 10000(_build_engine) + closed 105.29 = 10105.29, open 없음
+    await eng._restore_state()
+    eng.broker.executor.restore_state.assert_awaited_once()
+    args = eng.broker.executor.restore_state.call_args.args
+    assert args[0] == pytest.approx(10105.29)
+    assert args[1] is None
+
+
+@pytest.mark.asyncio
+async def test_paper_restore_skipped_on_first_run(_isolated_registry):
+    """I-PE008: initial=None(첫 기동, set 전) → 복원 skip(executor initial 유지)."""
+    eng = _build_engine()
+    eng.data_store.get_initial_balance = AsyncMock(return_value=None)
+    await eng._restore_state()
+    eng.broker.executor.restore_state.assert_not_awaited()

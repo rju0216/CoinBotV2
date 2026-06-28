@@ -27,6 +27,10 @@ logger = logging.getLogger(__name__)
 # + 5초 sleep 후 watch_ohlcv 재호출 (ccxt 내부에서 새 connection 시도).
 WEBSOCKET_WATCHDOG_TIMEOUT_SEC = 120.0
 
+# I-PE006: heartbeat 로그 주기. WebSocket tick 수신마다 throttle → 봉 마감(4h) 사이
+# feed 생존 확인. tick 이 끊기면(연결 죽음) heartbeat 도 멈춰 이상 신호가 된다.
+HEARTBEAT_INTERVAL_SEC = 600.0  # 10분
+
 TF_MS = {
     "1m": 60_000,
     "5m": 300_000,
@@ -52,6 +56,7 @@ class DataFeed:
         self.event_bus = event_bus
         self.symbol = config["exchange"]["symbol"]
         self.timeframes = list(dict.fromkeys(timeframes))  # 순서 유지·중복 제거
+        self._last_heartbeat = 0.0  # I-PE006: heartbeat throttle (time.monotonic 기준)
 
         data_cfg = config.get("data", {}) or {}
         self.history_bars = int(data_cfg.get("history_bars", 300))
@@ -213,6 +218,14 @@ class DataFeed:
                             EventType.BAR_CLOSED.value,
                             {"timeframe": timeframe, "candle": candle},
                         )
+                        # I-PE006: heartbeat (10분 throttle) — 봉 마감 사이 feed 생존 확인
+                        mono = time.monotonic()
+                        if mono - self._last_heartbeat >= HEARTBEAT_INTERVAL_SEC:
+                            logger.info(
+                                "[HEARTBEAT] %s feed alive, last_price=%.2f",
+                                timeframe, latest[4],
+                            )
+                            self._last_heartbeat = mono
                 except asyncio.TimeoutError:
                     if not self._running:
                         break

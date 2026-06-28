@@ -171,3 +171,29 @@ async def test_get_daily_pnl_coalesce_fallback_to_timestamp(tmp_path):
         assert daily_pnl == pytest.approx(5.0)
     finally:
         await store.close()
+
+
+@pytest.mark.asyncio
+async def test_update_trade_sl_persists(tmp_path):
+    """I-PE007: update_trade_sl 호출 후 trades.stop_loss 가 갱신값으로 반영."""
+    db_path = os.path.join(tmp_path, "test_coinbot.db")
+    store = DataStore(_make_config(db_path), mode="paper")
+    await store.initialize()
+    try:
+        trade_id = await store.log_trade(
+            strategy_name="trend_donchian",
+            side="short",
+            size=0.0638,
+            entry_price=62471.3,
+            stop_loss=64038.14,  # 초기 SL
+            take_profit=None,
+        )
+        # trailing 갱신 (SHORT: 하향)
+        await store.update_trade_sl(trade_id, 60759.90)
+        cursor = await store._db.execute(
+            "SELECT stop_loss FROM trades WHERE id=?", (trade_id,)
+        )
+        row = await cursor.fetchone()
+        assert row[0] == pytest.approx(60759.90)  # 초기 64038 아닌 갱신값
+    finally:
+        await store.close()

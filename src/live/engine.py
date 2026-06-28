@@ -504,6 +504,21 @@ class CoreEngine(AbstractEngine):
           - 거래소 ∅ + DB O: DB의 open trades 사후 closed 처리
           - 거래소 ∅ + DB ∅: 정상 빈 슬롯
         """
+        # I-PE008: paper 는 거래소가 없어 재기동 시 PaperExecutor 가 balance/포지션을
+        # initial 로 리셋(restore_state 가 dead code 였음) → 누적 손익 유실·dd 왜곡 +
+        # "거래소 없음+DB open" 분기로 보유 포지션 오청산. DB 에서 복원해 라이브(거래소
+        # 복원)와 동작 일치. last_balance=None(첫 기동, equity 비어있음)이면 initial 유지.
+        if not self.broker.is_live:
+            initial_db = await self.data_store.get_initial_balance()
+            if initial_db is not None:
+                # 실현 balance = initial + 청산 pnl 합 (equity 마지막은 리셋 세션에
+                # 오염될 수 있어 거래 기록 기반이 robust). open 포지션은 미실현이라 제외.
+                closed_pnl = await self.data_store.get_closed_pnl_sum()
+                pre_open = await self.data_store.get_open_trades()
+                await self.broker.executor.restore_state(
+                    initial_db + closed_pnl, pre_open[0] if pre_open else None
+                )
+
         # 잔액/peak 복원
         balance = await self.broker.get_balance()
         initial = await self.data_store.get_initial_balance()
@@ -1064,9 +1079,24 @@ class CoreEngine(AbstractEngine):
             # 2) 전략 강제 청산 훅 (보유 중 & orphan 아님일 때만)
             if self._position is not None:
                 balance = await self.broker.get_balance()
+                prev_sl = self._position.stop_loss
                 decision = self.check_strategy_exits(
                     candles_slice, close, balance, now
                 )
+                # I-PE007: trailing SL 갱신 시 DB 반영 (재기동 복원·A2 정합성·분석).
+                # check_strategy_exits 가 position.stop_loss(메모리)만 갱신하므로
+                # 변화 감지 시 trades.stop_loss UPDATE. 라이브 전용(백테는 무관).
+                if (
+                    self._position is not None
+                    and self._position.trade_id is not None
+                    and self._position.stop_loss != prev_sl
+                ):
+                    try:
+                        await self.data_store.update_trade_sl(
+                            self._position.trade_id, self._position.stop_loss
+                        )
+                    except Exception as e:
+                        logger.warning("update_trade_sl failed: %s", e)
                 if decision is not None:
                     await self._close_with_funding(close, decision.reason, now)
 
