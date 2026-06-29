@@ -6,7 +6,7 @@
 
 > **현재 상태**: 새 퀀트 모델 구현을 위해 **인프라 뼈대만 남긴 상태**
 > (`InitialInfraSetup` 브랜치). 과거 구현했던 특정 모델·학습/평가 파이프라인은
-> 모두 제거됨. 인프라 구조와 주의점은 `docs/INFRA_GUIDE.md` 단일 문서 참조.
+> 모두 제거됨. 인프라 구조와 주의점은 `docs/01_Guide_Docs/INFRA_GUIDE.md` 단일 문서 참조.
 
 ---
 
@@ -37,7 +37,7 @@
 다음 패턴은 이 프로젝트의 작업 흐름 표준이다. 새 세션에서도 동일하게 적용한다.
 
 1. **Phase 분할 + 커밋 승인**: 비자명한 작업은 Phase 단위로 분할하고, 각 Phase 종착 시 사용자 승인 후에만 한 묶음 커밋한다. Phase 내부 Step 단위로는 커밋하지 않는다 (Step 결과 임시 보존은 9번 참조). **모든 git commit·push 는 작업 종류·규모와 무관하게 사용자 명시 승인 후에만 수행한다 — 단발 문서·메모리·설정 갱신도 포함**. 사용자가 명시 요청하지 않은 한 자동 커밋 금지.
-2. **작업 보고서 즉시 갱신**: Phase 종착 시 작업 보고서(`docs/00_Work_Report/<해당 문서>.md`, 없으면 신규 생성)의 진행 기록표·잠재 이슈 트래커·커밋 ID를 일괄 갱신한다. Phase 내부 Step 진행 중에는 9번에 따라 메모리 파일에 임시 기록.
+2. **작업 보고서 즉시 갱신**: Phase 종착 시 작업 보고서(`docs/00_Work_Reports/<해당 문서>.md`, 없으면 신규 생성)의 진행 기록표·잠재 이슈 트래커·커밋 ID를 일괄 갱신한다. Phase 내부 Step 진행 중에는 9번에 따라 메모리 파일에 임시 기록.
 3. **잠재 이슈 트래커**: 점검 중 발견된 이슈는 ID(I-NNN)로 등록하고 발생 단계·해결 단계·상태를 추적한다.
 4. **검증 흐름**: 코드 변경 시 단위 테스트 → 전체 회귀 → 필요시 end-to-end 시연 후 보고.
 5. **솔직한 검증 분류**: 코드 변경 결과를 보고할 때, 단위 테스트로만 검증된 항목과 실 시연으로 검증된 항목을 구분하고 미검증 영역은 명시한다.
@@ -62,9 +62,9 @@
 새 세션 또는 **compact 직후** 다음 순서로 컨텍스트를 파악한다.
 (이 문서가 시스템 프롬프트로 자동 주입되지 않은 경우, 사용자에게 명시 요청)
 
-1. **인프라 구조 파악**: `docs/INFRA_GUIDE.md` — 아키텍처·모듈 구조·신규 전략
+1. **인프라 구조 파악**: `docs/01_Guide_Docs/INFRA_GUIDE.md` — 아키텍처·모듈 구조·신규 전략
    추가법·**인프라 구조상 주의점**·명령어. 새 모델 구현의 출발점.
-2. **작업 보고서 확인 (있으면)**: `docs/00_Work_Report/` 하위 최근 문서의 진행
+2. **작업 보고서 확인 (있으면)**: `docs/00_Work_Reports/` 하위 최근 문서의 진행
    기록·미해결 잠재 이슈. (뼈대 직후에는 없을 수 있음 — 새 작업 시작 시 생성.)
 3. **git 상태**:
    ```bash
@@ -126,7 +126,7 @@ python -m pytest tests/ -q
 
 ## 신규 전략 추가 워크플로 (요약)
 
-상세·주의점은 `docs/INFRA_GUIDE.md`.
+상세·주의점은 `docs/01_Guide_Docs/INFRA_GUIDE.md`.
 
 1. `src/strategy/plugins/my_strategy.py` 작성
    - `@register_strategy` + `StrategyModule` 상속
@@ -140,7 +140,7 @@ python -m pytest tests/ -q
 
 엔진 코드 수정은 0이어야 한다 — 그렇지 않으면 추상화가 잘못된 것.
 **거래 정책(사이징·SL/TP·reverse·진입 게이트)·모델 학습·피처 엔지니어링은 전부 전략 소유**
-(엔진은 메커니즘만; 인프라는 피처/학습 파이프라인을 제공하지 않음). 상세는 `docs/INFRA_GUIDE.md`.
+(엔진은 메커니즘만; 인프라는 피처/학습 파이프라인을 제공하지 않음). 상세는 `docs/01_Guide_Docs/INFRA_GUIDE.md`.
 
 ---
 
@@ -161,7 +161,10 @@ src/
 └── utils/       # logger / config_loader / notifier / path_utils
 
 config/default.yaml
-docs/INFRA_GUIDE.md   # 인프라 구조·주의점 단일 문서
+docs/
+├── 00_Work_Reports/        # 작업 보고서 (Phase별 진행·결정·잠재 이슈)
+├── 01_Guide_Docs/          # INFRA_GUIDE.md (인프라 구조·주의점 단일 문서)
+└── 99_Brainstorming_Docs/  # 모델 설계 브레인스토밍 (스펙·세션 전문)
 tests/                # 인프라 회귀 테스트
 scripts/              # download_history / run_full_backtest / merge_(yearly_)reports
 ```
