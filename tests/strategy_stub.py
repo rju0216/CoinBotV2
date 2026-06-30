@@ -32,8 +32,5 @@ class StubStrategy(StrategyModule):
     def compute_position_size(self, ctx, signal, stop_loss):
         return 0.01
 
-    def should_reverse(self, ctx, position, new_signal):
-        return False
-
     def allow_entry(self, ctx):
         return True

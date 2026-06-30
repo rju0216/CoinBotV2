@@ -1,14 +1,10 @@
-"""strategy/helpers/ opt-in 공식 단위 테스트 (sizing / risk_gates / reverse)."""
+"""strategy/helpers/ opt-in 공식 단위 테스트 (sizing / risk_gates)."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 import pytest
 
-from src.core.enums import PositionSide, SignalSide
-from src.core.types import AccountState, Position, Signal
-from src.strategy.helpers.reverse import signal_opposes_position
+from src.core.types import AccountState
 from src.strategy.helpers.risk_gates import (
     daily_loss_exceeded,
     drawdown_exceeded,
@@ -83,22 +79,3 @@ def test_daily_loss_exceeded():
     assert daily_loss_exceeded(_account(balance=1000.0, daily=-40.0), 0.05) is False
     # 잔액 0 이하면 False (분모 보호)
     assert daily_loss_exceeded(_account(balance=0.0, daily=-100.0), 0.05) is False
-
-
-# ---- reverse ----
-
-def _pos(side):
-    return Position(
-        side=side, size=0.1, entry_price=67000.0,
-        entry_time=datetime.now(timezone.utc), strategy_name="x",
-    )
-
-
-def test_signal_opposes_position():
-    long_pos = _pos(PositionSide.LONG)
-    short_pos = _pos(PositionSide.SHORT)
-    assert signal_opposes_position(Signal(side=SignalSide.SHORT), long_pos) is True
-    assert signal_opposes_position(Signal(side=SignalSide.LONG), long_pos) is False
-    assert signal_opposes_position(Signal(side=SignalSide.LONG), short_pos) is True
-    assert signal_opposes_position(Signal(side=SignalSide.HOLD), long_pos) is False
-    assert signal_opposes_position(Signal(side=SignalSide.LONG), None) is False

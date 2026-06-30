@@ -4,7 +4,10 @@ ccxt>=4.4.0
 # Data & Indicators
 pandas>=2.2.0
 numpy>=1.26.0
+scipy>=1.11.0
 pandas-ta-classic>=0.2.0
+# HMM 레짐 모델: Student's-t emission 은 scipy 기반 custom 구현. 검증은 합성데이터
+# 복원 + analytic spot-check (hmmlearn 은 Py3.14 빌드 불가·Gaussian 한정이라 미사용).
 
 # Configuration
 pyyaml>=6.0

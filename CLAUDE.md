@@ -131,15 +131,16 @@ python -m pytest tests/ -q
 1. `src/strategy/plugins/my_strategy.py` 작성
    - `@register_strategy` + `StrategyModule` 상속
    - 클래스 속성: `name`, `entry_timeframe`, `required_timeframes`, `sl_tp_fill_priority`
-   - 필수 메서드 6개(거래 정책=모델 소유): `generate_signal` / `compute_stop_loss`(None 허용) /
-     `compute_take_profit` / `compute_position_size`(사이징) / `should_reverse` / `allow_entry`(진입 게이트)
-   - 선택 훅: `update_stop_loss`(trailing) / `should_force_exit` / `on_bar_close` / `generate_pyramid_signal`(opt-in `supports_pyramiding`, 현재 stub) 등
-   - opt-in 공식: `src/strategy/helpers/`(sizing·risk_gates·reverse) — 엔진 미호출, 모델이 골라 import
+   - 필수 메서드 5개(거래 정책=모델 소유): `generate_signal` / `compute_stop_loss`(None 허용) /
+     `compute_take_profit` / `compute_position_size`(사이징) / `allow_entry`(진입 게이트)
+   - 선택 훅: `update_stop_loss`(trailing) / `update_take_profit`(동적 TP) / `should_force_exit` / `on_bar_close` / `generate_pyramid_signal`(opt-in `supports_pyramiding`, 현재 stub) 등
+   - 레짐 전환 청산은 `should_force_exit` 로 (reverse flow 제거됨)
+   - opt-in 공식: `src/strategy/helpers/`(sizing·risk_gates) — 엔진 미호출, 모델이 골라 import
 2. `config/default.yaml` 에 `my_strategy:` 섹션 추가 — **엔진 강제 필수 키 없음**. 정책 임계값은 모델 params 로.
 3. `strategies.active` 리스트에 `"my_strategy"` 추가
 
 엔진 코드 수정은 0이어야 한다 — 그렇지 않으면 추상화가 잘못된 것.
-**거래 정책(사이징·SL/TP·reverse·진입 게이트)·모델 학습·피처 엔지니어링은 전부 전략 소유**
+**거래 정책(사이징·SL/TP·진입 게이트)·모델 학습·피처 엔지니어링은 전부 전략 소유**
 (엔진은 메커니즘만; 인프라는 피처/학습 파이프라인을 제공하지 않음). 상세는 `docs/01_Guide_Docs/INFRA_GUIDE.md`.
 
 ---
@@ -153,7 +154,7 @@ src/
 ├── backtest/    # BacktestEngine
 ├── strategy/
 │   ├── base.py / registry.py / indicators.py
-│   ├── helpers/   # opt-in 정책 공식 (sizing·risk_gates·reverse) — 엔진 미호출
+│   ├── helpers/   # opt-in 정책 공식 (sizing·risk_gates) — 엔진 미호출
 │   └── plugins/   # ★ 신규 전략 (현재 비어 있음)
 ├── execution/   # Broker + OKX/Paper executor
 ├── accounting/  # FeeModel(PnL 공식) + AccountTracker(equity 계측)

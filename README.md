@@ -105,7 +105,7 @@ src/
 │   ├── base.py       # StrategyModule 추상
 │   ├── registry.py   # 자동 등록 + 검색
 │   ├── indicators.py # 공통 지표
-│   ├── helpers/      # opt-in 정책 공식 (sizing·risk_gates·reverse)
+│   ├── helpers/      # opt-in 정책 공식 (sizing·risk_gates)
 │   └── plugins/      # ★ 신규 전략 위치
 ├── execution/    # Broker / OKX 주문 / 시뮬레이션
 ├── accounting/   # FeeModel(수수료·PnL) + AccountTracker(equity 계측)

@@ -95,3 +95,24 @@ def compute_donchian(df: pd.DataFrame, period: int = 20) -> pd.DataFrame:
     upper = df["high"].rolling(period).max().shift(1)
     lower = df["low"].rolling(period).min().shift(1)
     return pd.DataFrame({"upper": upper, "lower": lower}, index=df.index)
+
+
+def compute_log_returns(df: pd.DataFrame, col: str = "close") -> pd.Series:
+    """로그수익률 r_t = ln(P_t / P_{t-1}). 현재 마감 봉 포함(causal), 첫 봉 NaN.
+
+    HMM observation 의 방향(부호)+모멘텀(크기) feature. Donchian 과 달리 shift 미적용
+    — 현재 봉의 close 는 이미 마감값이므로 그 봉의 수익률에 쓰는 것이 causal.
+    """
+    return np.log(df[col] / df[col].shift(1))
+
+
+def compute_realized_vol(
+    df: pd.DataFrame, period: int = 24, col: str = "close"
+) -> pd.Series:
+    """실현변동성: 로그수익률의 rolling 표준편차 (period 봉). 앞 period 봉 NaN.
+
+    HMM observation 의 변동성 feature (정규화 형태, 가격 무관). contract.volatility
+    (ATR, 가격 단위)와는 별개 — 이건 레짐 분류 입력, ATR 은 SL/TP 거리용.
+    """
+    log_ret = np.log(df[col] / df[col].shift(1))
+    return log_ret.rolling(period).std()

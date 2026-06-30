@@ -1,11 +1,11 @@
 """StrategyModule 추상 클래스.
 
 엔진은 이 인터페이스만을 통해 전략(모델)과 상호작용한다. **모든 거래 정책**
-— 진입 신호·포지션 사이징·SL/TP·reverse 여부·진입 게이트(리스크) — 은 전략이
+— 진입 신호·포지션 사이징·SL/TP·진입 게이트(리스크) — 은 전략이
 소유하며, 엔진은 그 결정을 받아 *집행*만 한다. 엔진에는 정책 기본값이 없다.
 
-필수 구현 6개(generate_signal / compute_stop_loss / compute_take_profit /
-compute_position_size / should_reverse / allow_entry)와 선택 훅 6개를 정의.
+필수 구현 5개(generate_signal / compute_stop_loss / compute_take_profit /
+compute_position_size / allow_entry)와 선택 훅 7개를 정의.
 
 재사용 가능한 공식(risk%·SL거리 사이징, DD·일일손실 게이트 등)은
 `src/strategy/helpers/`에 opt-in 라이브러리로 제공된다 — 엔진은 호출하지 않으며,
@@ -78,15 +78,6 @@ class StrategyModule(ABC):
         """
 
     @abstractmethod
-    def should_reverse(
-        self, ctx: StrategyContext, position: Position, new_signal: Signal
-    ) -> bool:
-        """슬롯이 찬 상태에서 actionable 신호가 났을 때, 보유 포지션을 청산하고
-        새 신호로 reverse 진입할지 여부. position 은 현재 보유 포지션,
-        new_signal 은 이번 봉의 신호. True 면 엔진이 청산 후 재진입을 시도한다.
-        """
-
-    @abstractmethod
     def allow_entry(self, ctx: StrategyContext) -> bool:
         """신규 진입 허용 여부(진입 게이트). DD락·일일손실 한도·기타 리스크 정책을
         모델이 여기서 결정한다. ctx.account(잔액·equity·peak·daily_pnl·dd)를 참조.
@@ -103,6 +94,15 @@ class StrategyModule(ABC):
         self, ctx: StrategyContext, position: Position
     ) -> float | None:
         """동적 SL 갱신 (trailing stop 등). None 반환 시 기존 값 유지."""
+        return None
+
+    def update_take_profit(
+        self, ctx: StrategyContext, position: Position
+    ) -> float | None:
+        """동적 TP 갱신 (이동 중심선 등). None 반환 시 기존 값 유지.
+
+        update_stop_loss 와 대칭. 평균회귀의 이동 볼린저 중심선 TP 추적용.
+        """
         return None
 
     def should_force_exit(

@@ -43,7 +43,7 @@ class ExitReason(Enum):
     FORCE_EXIT = "force_exit"
     DRAWDOWN_LOCK = "drawdown_lock"
     DAILY_LOSS_CAP = "daily_loss_cap"
-    REVERSE_SIGNAL = "reverse_signal"
+    REGIME_EXIT = "regime_exit"
     MANUAL = "manual"
     ENGINE_SHUTDOWN = "engine_shutdown"
 

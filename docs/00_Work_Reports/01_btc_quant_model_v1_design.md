@@ -30,9 +30,9 @@ Phase 단위로 진행 기록·결정·잠재 이슈를 누적한다.
 |---|---|---|---|---|
 | D1 | 메커니즘 A 독립 검증 + 스펙↔인프라 갭 분석 | ✅ 완료 | 2026-06-29 | d76d3cc |
 | D2 | 정책 계약 표면 B 재설계 + O-2·O-4·O-5 결정 | ✅ 완료 | 2026-06-30 | (미커밋) |
-| D3 | 학습 파이프라인 설계 (데이터분할·feature·t-HMM·K선택/매핑·walk-forward) + O-1·O-3·O-6 결정 | ✅ 완료 | 2026-07-01 | (미커밋) |
-| D3.5 | 구현 전 점검 (코드검증·환경·DD-1) — GO | ✅ 완료 | 2026-07-01 | (미커밋) |
-| D4 | 구현 + 백테 검증 + 회귀 테스트 추가 | | | |
+| D3 | 학습 파이프라인 설계 (데이터분할·feature·t-HMM·K선택/매핑·walk-forward) + O-1·O-3·O-6 결정 | ✅ 완료 | 2026-07-01 | 5f8a288 |
+| D3.5 | 구현 전 점검 (코드검증·환경·DD-1) — GO | ✅ 완료 | 2026-07-01 | 5f8a288 |
+| D4 | 구현 (D4-1 인프라prep ✅ / D4-2~5 예정) | 진행중 | 2026-07-01~ | (D4-1 미커밋) |
 
 ---
 
@@ -149,7 +149,7 @@ RegimeQuantStrategy (plugin 1개, entry_tf=1h)
 ### Step 2 — t-HMM 모델 + 구현경로
 - 다변량 **Student's-t emission**(μ_k,Σ_k,ν_k) + transition A + π. EM(Baum-Welch, t=scale-mixture, ν=digamma root-find). 추론=**forward-only filtering**, incremental, log-space.
 - 명확화: **EM은 forward-backward OK(학습)**, **추론만 forward-only(신호)**. D4 과잉적용 금지.
-- **O-6=(나) 단계 구현**: Gaussian 스캐폴드(plumbing 검증·hmmlearn 교차검증) → emission만 t 교체. **gen1 최종=t(필수 교체)**, K·임계 최종값은 t-모델. ※ hmmlearn은 t 미지원 → **t-emission은 합성데이터 복원 테스트로 검증**(Gaussian만 hmmlearn 교차검증).
+- **O-6=(나) 단계 구현**: Gaussian 스캐폴드(plumbing 검증) → emission만 t 교체. **gen1 최종=t(필수 교체)**, K·임계 최종값은 t-모델. **검증=Gaussian·t 모두 합성데이터 복원 + analytic spot-check** (hmmlearn 은 Py3.14 빌드 불가·Gaussian 한정이라 미사용 — D4-1 결정).
 
 ### Step 3 — K 선택 + 매핑
 - K=2~6, **3렌즈**: holdout LL(elbow) + BIC(ν 포함) + **커버리지 진단표**(trend/long·short·range/none). 값은 D4.
@@ -176,14 +176,14 @@ S1-1(가 실현변동성) · O-1(가 손고정 τ+스윕) · O-3(가 오프라�
 ### 검증 결과
 - **엔진 수정 4건 전부 가능·저위험·테스트 무파손**: should_reverse 제거(base:81-87 + stub:35 + helpers/reverse.py + test_helpers reverse 섹션) / reverse flow 제거(engine_base:308-335 + 338 held 재취득 정리, 엔진 reverse 회귀 테스트 부재) / `update_take_profit`(check_candle_sl_tp가 매 봉 `position.take_profit` 직독:656 → **이동 TP 성립 확인**) / `REGIME_EXIT`(by_exit_reason 동적 집계라 무문제).
 - **재사용 확정**: 6 메서드·`Signal.confidence`+`.meta`·`Position.meta`·AccountState 5필드·`risk_based_size×confidence`·지표 ATR/BB/RSI/ER. → **엔진 수정 0으로 모델 구현 가능**.
-- **환경**: scipy 1.17·pandas_ta·sklearn·matplotlib ✅. ⚠️ hmmlearn 미설치 / 2018 데이터 없음(2019-12부터) / scipy requirements 미기재.
+- **환경**: scipy 1.17·pandas_ta·sklearn·matplotlib ✅(Py3.14). ⚠️ hmmlearn 빌드 불가(MS C++ 빌드툴 필요) → 드롭(합성복원+analytic 대체) / 2018 데이터 없음(2019-12부터).
 
 ### DD-1 — 추세 진입 정책 (결정)
 **관대 진입**: `flat ∧ 레짐=trend ∧ direction ∧ conf≥θ_trend → 진입`. 전환 봉 한정 X, 에피소드당 횟수 제한 X(전환 시 conf<θ여도 이후 conf≥θ면 진입). 구현 단순(에피소드 상태 불필요).
 - 리스크: 트레일링 손절 직후 재진입 churn(휩쏘) → gen1 무가드, **D4 측정(I-006)**, 2세대 가드 판단(스펙 "측정 후 방어" 철학).
 
-### t-HMM 검증 보강
-hmmlearn은 **Student's-t 미지원** → Gaussian 스캐폴드만 교차검증. **t-emission은 합성데이터 복원 테스트로 검증**(알려진 t-HMM 생성→적합→파라미터·posterior 복원). 둘 다 D4 테스트.
+### t-HMM 검증 (hmmlearn 드롭 — D4-1)
+hmmlearn 은 Py3.14 빌드 불가 + Student's-t 미지원(Gaussian 한정) → **드롭**. 대신 **Gaussian·t 모두 합성데이터 복원 테스트**(알려진 HMM 생성→적합→파라미터·posterior 복원) + **analytic spot-check**(소형 예제 forward 확률 손계산)로 검증. self-contained(numpy/scipy), ground-truth 대조 → t까지 커버.
 
 ### D4 변경 표면 (확정)
 1. **indicators 신규 2건**: `compute_log_returns`, `compute_realized_vol`.
@@ -191,9 +191,33 @@ hmmlearn은 **Student's-t 미지원** → Gaussian 스캐폴드만 교차검증.
 3. **정리 동반**: helpers/reverse.py, test_helpers.py reverse 섹션, strategy_stub.py:35.
 4. **신규 모델**: RegimeService·feature·filtering·Contract·디스패처·Trend/Range 로직·학습 파이프라인·artifact.
 5. **contract→position.meta**: on_position_opened 수동 기입(signal.meta 자동복사 없음).
-6. **requirements**: scipy 추가(설치됐으나 미기재) + hmmlearn 추가+설치.
-7. **회귀 테스트**: I-002(4종)·I-005(경계 H1~H6)·합성복원(Gaussian+t)·I-006(churn 측정).
+6. **requirements**: scipy 추가(HMM 핵심). hmmlearn 미사용(빌드 불가·드롭).
+7. **회귀 테스트**: I-002(4종)·I-005(경계 H1~H6)·합성복원(Gaussian+t)+analytic spot-check·I-006(churn 측정).
 8. **2018 스트레스 데이터**: 스트레스 테스트 단계에 다운로드.
+
+---
+
+## Phase D4 — 구현 (진행중)
+
+> 백테 실행·스윕은 사용자 직접 수행(백테 정책) — 커맨드 가이드 제공. 각 단계 Phase 단위 커밋.
+
+### 단계 구성
+| 단계 | 내용 | 게이트 |
+|---|---|---|
+| **D4-1** ✅ | 인프라 prep: 엔진 4수정·indicators 2·정리·requirements | 회귀 258 + update_take_profit·트레일링 e2e |
+| D4-2 | 발견층(Gaussian): feature·EM·filtering·K선택(커버리지)·매핑·artifact·RegimeService(None·burn-in) | 합성복원+analytic + I-005(H1~H6) |
+| D4-3 | 매매층: 디스패처+Trend/Range(DD-1·None) + Dev 백테(Gaussian) | E2E + I-002④ + churn(I-006) + 정합성 |
+| D4-4 | Gaussian→t emission 교체 | 합성복원(t) + Dev 재백테 |
+| D4-5 | walk-forward OOS + 계수 스윕 + 커버리지 최종 + 2018 스트레스 + 낙관편향/funding 해석 | OOS 정직 평가 |
+| (범위 밖) | 라이브 통합(C): RegimeService 상태 복원·OKX 배선 | 라이브 단계 |
+
+### D4-1 — 인프라 prep (완료)
+- **엔진 수정 4건**: reverse flow·should_reverse·REVERSE_SIGNAL 제거 / update_take_profit·REGIME_EXIT 추가.
+- **indicators 2건**: compute_log_returns·compute_realized_vol.
+- **정리**: reverse.py 삭제 + reverse 전수 스윕 9곳(src·docs) + stub·test_helpers + CLAUDE/INFRA_GUIDE/README 인터페이스(필수 6→5, update_take_profit 추가).
+- **requirements**: scipy 추가, hmmlearn 드롭(Py3.14 빌드 불가).
+- **회귀 258 통과** (253 + 동적 SL/TP 신규 5: update_take_profit 갱신·None유지·update_stop_loss 갱신·트레일링 SL e2e=I-002③·이동 TP e2e).
+- **잔여**: I-002 ①②(lookahead 절단·진입가)는 D4-2/D4-3 실데이터 통합 시 작성(기존 메커니즘, 258에 간접 포함).
 
 ---
 
@@ -219,7 +243,7 @@ hmmlearn은 **Student's-t 미지원** → Gaussian 스캐폴드만 교차검증.
 | O-3 | walk-forward 재추정 방식 | **(가) 오프라인 사전학습** (N=3~6개월 D4 스윕) | ✅ D3 |
 | O-4 | 적대청산 매핑 | **force_exit + 빈슬롯**(should_reverse 미사용) | ✅ D2 |
 | O-5 | gen1 펀딩 처리 | **(가) 백테 funding=0 수용 + 측정 후 결정** | ✅ D2 |
-| O-6 | t-HMM 구현 경로 | **(나) Gaussian 스캐폴드 → t 교체** (gen1 최종=t) | ✅ D3 |
+| O-6 | t-HMM 구현 경로 | **(나) Gaussian 스캐폴드 → t 교체** (gen1=t). 검증=합성복원+analytic, hmmlearn 드롭(D4-1) | ✅ D3 |
 | S1-1 | 변동성 feature 정의 | **(가) 실현변동성** std(24봉 로그수익률) | ✅ D3 |
 | DD-1 | 추세 진입 정책 | **관대 진입** (flat∧trend∧conf≥θ, 횟수 무제한) | ✅ D3.5 |
 
@@ -240,3 +264,7 @@ hmmlearn은 **Student's-t 미지원** → Gaussian 스캐폴드만 교차검증.
 - **2026-07-01**: 구현 전 점검(D3.5, fresh-eyes 2 + 환경/데이터). **GO** — 엔진 수정 4건·재사용
   검증 완료. 결정 DD-1(관대진입)·hmmlearn 추가·2018 스트레스단계 다운로드·REVERSE_SIGNAL 제거.
   신규 I-006. **src/ 무변경 유지(코드는 D4)**.
+- **2026-07-01**: **D4-1 인프라 prep 구현** — 엔진 4수정(reverse flow·should_reverse·
+  REVERSE_SIGNAL 제거 / update_take_profit·REGIME_EXIT 추가) + indicators 2 + reverse 전수 정리
+  (src·tests·CLAUDE/INFRA_GUIDE/README) + requirements(scipy 추가, **hmmlearn 드롭**: Py3.14
+  빌드 불가 → 합성복원+analytic 검증으로 대체). **회귀 258 통과**.

@@ -44,7 +44,7 @@ src/
 │   ├── base.py          # StrategyModule 추상 (필수 6 = 거래 정책 + 선택 훅)
 │   ├── registry.py      # @register_strategy + auto-discovery + 활성화
 │   ├── indicators.py    # 공통 TA 라이브러리 (pandas_ta_classic 래핑)
-│   ├── helpers/         # opt-in 정책 공식(sizing/risk_gates/reverse) — 엔진 미호출
+│   ├── helpers/         # opt-in 정책 공식(sizing/risk_gates) — 엔진 미호출
 │   └── plugins/         # ★ 신규 전략 파일을 여기에 추가 (현재 비어 있음)
 ├── execution/        # Broker(facade) + LiveExecutor(OKX) + PaperExecutor(시뮬)
 ├── accounting/       # fee_model(수수료·PnL 단일 공식) + account_tracker(equity 계측)
@@ -92,12 +92,11 @@ tests/                # 인프라 회귀 테스트 (전략 픽스처는 tests/st
        required_timeframes = ["15m"]
        sl_tp_fill_priority = "sl_first"   # 동시도달 처리 (필수 선언)
 
-       # 필수 6 = 거래 정책 전부 모델 소유
+       # 필수 5 = 거래 정책 전부 모델 소유
        def generate_signal(self, ctx) -> Signal: ...
        def compute_stop_loss(self, ctx, signal) -> float | None: ...   # None=standing SL 없음
        def compute_take_profit(self, ctx, signal, sl) -> float | None: ...
        def compute_position_size(self, ctx, signal, sl) -> float: ...  # 사이징 공식
-       def should_reverse(self, ctx, position, new_signal) -> bool: ... # reverse 여부
        def allow_entry(self, ctx) -> bool: ...                          # 진입 게이트(리스크)
    ```
 2. `config/default.yaml` 에 `my_strategy:` 섹션 추가 — **엔진이 강제하는 필수 키는
@@ -106,15 +105,16 @@ tests/                # 인프라 회귀 테스트 (전략 픽스처는 tests/st
 3. `strategies.active` 리스트에 `"my_strategy"` 추가 (리스트 순서 = 우선순위).
 
 ### StrategyModule 인터페이스 — 거래 정책은 전부 모델 소유
-- **필수 6 (abstract — 엔진에 기본값 없음)**: `generate_signal`(진입 신호) /
+- **필수 5 (abstract — 엔진에 기본값 없음)**: `generate_signal`(진입 신호) /
   `compute_stop_loss`(None=standing SL 없음) / `compute_take_profit` /
-  `compute_position_size`(사이징 공식·레버리지·변동성) / `should_reverse`(반대신호 시 청산·재진입) /
+  `compute_position_size`(사이징 공식·레버리지·변동성) /
   `allow_entry`(DD/일일손실 등 진입 게이트) + 클래스 속성 `sl_tp_fill_priority`.
+  (레짐 전환 청산은 `should_force_exit` 로 — reverse flow 는 제거됨.)
 - **선택 훅 (기본 no-op)**: `on_bar_close` · `update_stop_loss`(trailing) ·
-  `should_force_exit`(regime/timeout 청산) · `on_position_opened` ·
-  `on_position_closed` · `generate_pyramid_signal`(클래스속성 `supports_pyramiding=True`
-  일 때만 호출 — 현재 엔진 dispatch 는 stub 으로 실 추가진입 미구현).
-- **opt-in 헬퍼**: 흔한 공식은 `src/strategy/helpers/`(sizing·risk_gates·reverse)에서
+  `update_take_profit`(동적 TP, 이동 중심선 등) · `should_force_exit`(regime/timeout 청산) ·
+  `on_position_opened` · `on_position_closed` · `generate_pyramid_signal`(클래스속성
+  `supports_pyramiding=True` 일 때만 호출 — 현재 엔진 dispatch 는 stub 으로 실 추가진입 미구현).
+- **opt-in 헬퍼**: 흔한 공식은 `src/strategy/helpers/`(sizing·risk_gates)에서
   골라 import. **엔진은 이 헬퍼를 호출하지 않는다** — 모델이 원할 때만 쓴다.
 - 모델 학습/추론·피처 엔지니어링도 **전략이 자체 책임**. 인프라는 피처 파이프라인을
   제공하지 않는다 (§4 주의점 참조).
@@ -122,7 +122,7 @@ tests/                # 인프라 회귀 테스트 (전략 픽스처는 tests/st
 ## 4. 인프라 구조상 주의점 (구현 전 반드시 숙지)
 
 0. **엔진=메커니즘 / 모델=정책 (핵심 원칙)**: 엔진은 거래 *정책*을 결정하지
-   않는다. 진입 게이트·사이징·SL/TP·reverse·동시도달 우선순위는 전부
+   않는다. 진입 게이트·사이징·SL/TP·동시도달 우선순위는 전부
    `StrategyModule` 의 추상 메서드로 모델이 소유한다. 엔진의 `try_enter` 등은
    그 메서드를 호출하고 결과를 집행할 뿐, 정책 기본값을 갖지 않는다. 남는
    조건문은 슬롯 상태·actionable 여부·가격 교차 감지 같은 *메커니즘*뿐이다.

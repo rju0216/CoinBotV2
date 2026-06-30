@@ -827,7 +827,7 @@ class CoreEngine(AbstractEngine):
                 if decision is not None:
                     await self._close_with_funding(close, decision.reason, now)
 
-        # 3) 봉 마감 dispatch (entry/pyramid/reverse 평가)
+        # 3) 봉 마감 dispatch (entry/pyramid 평가)
         # evaluate 용 balance — 청산 후 잔액 변동 반영 위해 직전 fetch (모든 TF)
         balance = await self.broker.get_balance()
         await self.evaluate_strategies_on_bar(

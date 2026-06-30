@@ -260,8 +260,10 @@ class AbstractEngine(ABC):
         1) 모든 전략에 on_bar_close 훅 dispatch (관련 TF에 한해)
         2) 슬롯이 비었으면: bar_close_tf == entry_timeframe 인 전략을 우선순위로
            generate_signal 호출, 첫 actionable 신호로 진입 시도 (C 정책)
-        3) 슬롯이 차있으면 보유 전략의 should_reverse 로 reverse 여부 결정
-        4) 슬롯이 차있고 보유 전략이 supports_pyramiding 이면 generate_pyramid_signal
+        3) 슬롯이 차있고 보유 전략이 supports_pyramiding 이면 generate_pyramid_signal
+
+        레짐 전환 청산(적대적 즉시 종료 등)은 should_force_exit 가
+        check_strategy_exits 에서 처리한다 (reverse flow 제거됨).
         """
         # 자정 경계 인식 시 daily_pnl reset (백테/페이퍼/라이브 일관).
         if self.account_tracker.maybe_reset_for_new_day(now):
@@ -305,36 +307,7 @@ class AbstractEngine(ABC):
                     return  # 첫 진입 성공 시 종료
             return
 
-        # 3) 슬롯 참 → 보유(owner) 전략이 reverse 여부를 결정 (정책=모델 소유).
-        #    후보 전략이 actionable 신호를 내면, 보유 전략의 should_reverse 가
-        #    True 일 때만 청산 후 후보 신호로 재진입. orphan(보유 전략 부재)이면 skip.
-        held_strategy = self.strategy_by_name.get(self._position.strategy_name)
-        if held_strategy is not None:
-            for strategy in self.strategies:
-                if strategy.entry_timeframe != bar_close_tf:
-                    continue
-                ctx = self._build_ctx(
-                    strategy, candles_per_tf, current_price, balance, now
-                )
-                signal = strategy.generate_signal(ctx)
-                self._log_signal_status(strategy, signal, bar_context)
-                if not signal.is_actionable:
-                    continue
-                held_ctx = self._build_ctx(
-                    held_strategy, candles_per_tf, current_price, balance, now
-                )
-                if held_strategy.should_reverse(held_ctx, self._position, signal):
-                    await self.close_position(
-                        current_price, ExitReason.REVERSE_SIGNAL, now=now
-                    )
-                    if await self.try_enter(strategy, signal, ctx, now):
-                        return
-
-        # reverse 가 청산했으나 재진입에 실패한 경우 슬롯이 비어 있을 수 있음 → 종료
-        if self._position is None:
-            return
-
-        # 4) 피라미딩 (보유 전략이 opt-in 인 경우)
+        # 3) 피라미딩 (보유 전략이 opt-in 인 경우)
         held_strategy = self.strategy_by_name.get(self._position.strategy_name)
         if held_strategy is not None and held_strategy.supports_pyramiding:
             if held_strategy.entry_timeframe == bar_close_tf:
@@ -713,6 +686,18 @@ class AbstractEngine(ABC):
         except Exception as e:
             logger.error(
                 "update_stop_loss hook error in %s: %s",
+                strategy.name,
+                e,
+                exc_info=True,
+            )
+
+        try:
+            new_tp = strategy.update_take_profit(ctx, self._position)
+            if new_tp is not None:
+                self._position.take_profit = float(new_tp)
+        except Exception as e:
+            logger.error(
+                "update_take_profit hook error in %s: %s",
                 strategy.name,
                 e,
                 exc_info=True,

@@ -195,3 +195,82 @@ class TestCandleSLTPFill:
         assert self.eng.check_candle_sl_tp(None, 67800, 66600) is None  # type: ignore
 
 
+class _DynamicExitStrategy(StubStrategy):
+    """update_stop_loss/update_take_profit 가 설정된 값을 반환하도록 오버라이드."""
+
+    name = "dyn_strategy"
+    entry_timeframe = "1m"
+    required_timeframes = ["1m"]
+    sl_return: float | None = None
+    tp_return: float | None = None
+
+    def update_stop_loss(self, ctx, position):
+        return self.sl_return
+
+    def update_take_profit(self, ctx, position):
+        return self.tp_return
+
+    def should_force_exit(self, ctx, position):
+        return None
+
+
+class TestDynamicStopTakeUpdate:
+    """check_strategy_exits 가 update_stop_loss/update_take_profit 반환값으로
+    position.stop_loss/take_profit 를 갱신하고, 그 값이 다음 봉 check_candle_sl_tp
+    체결에 반영되는지 검증 (트레일링 SL · 이동 중심선 TP 메커니즘 = D2 update_take_profit).
+    """
+
+    def _engine_with_position(self, side, sl, tp, sl_ret, tp_ret):
+        register_strategy(_DynamicExitStrategy)
+        cfg = _config_with_active(["dyn_strategy"])
+        eng = _ConcreteEngine(cfg, mode="paper")
+        eng.strategies[0].sl_return = sl_ret
+        eng.strategies[0].tp_return = tp_ret
+        pos = _make_position(side, 67000, sl, tp)
+        pos.strategy_name = "dyn_strategy"
+        eng._position = pos
+        return eng
+
+    def _now(self):
+        return datetime.now(timezone.utc)
+
+    def test_update_take_profit_updates_position(self):
+        eng = self._engine_with_position(
+            PositionSide.LONG, sl=66500, tp=68000, sl_ret=None, tp_ret=67500,
+        )
+        eng.check_strategy_exits({}, 67000, 10000.0, self._now())
+        assert eng.position.take_profit == 67500
+
+    def test_update_take_profit_none_keeps_existing(self):
+        eng = self._engine_with_position(
+            PositionSide.LONG, sl=66500, tp=68000, sl_ret=None, tp_ret=None,
+        )
+        eng.check_strategy_exits({}, 67000, 10000.0, self._now())
+        assert eng.position.take_profit == 68000
+
+    def test_update_stop_loss_updates_position(self):
+        eng = self._engine_with_position(
+            PositionSide.LONG, sl=66500, tp=68000, sl_ret=66800, tp_ret=None,
+        )
+        eng.check_strategy_exits({}, 67000, 10000.0, self._now())
+        assert eng.position.stop_loss == 66800
+
+    def test_dynamic_tp_then_fills_at_new_value(self):
+        # 이동 중심선 TP: 68000→67500 으로 당기면 high=67600 봉이 67500 에 체결
+        eng = self._engine_with_position(
+            PositionSide.LONG, sl=66500, tp=68000, sl_ret=None, tp_ret=67500,
+        )
+        eng.check_strategy_exits({}, 67000, 10000.0, self._now())
+        result = eng.check_candle_sl_tp(eng.position, candle_high=67600, candle_low=66900)
+        assert result == (67500, ExitReason.TP_HIT)
+
+    def test_trailing_sl_then_fills_at_new_value(self):
+        # 트레일링 SL: 66500→66800 으로 올리면 low=66700 봉이 66800 에 체결 (I-002 ③)
+        eng = self._engine_with_position(
+            PositionSide.LONG, sl=66500, tp=68000, sl_ret=66800, tp_ret=None,
+        )
+        eng.check_strategy_exits({}, 67000, 10000.0, self._now())
+        result = eng.check_candle_sl_tp(eng.position, candle_high=67200, candle_low=66700)
+        assert result == (66800, ExitReason.SL_HIT)
+
+
