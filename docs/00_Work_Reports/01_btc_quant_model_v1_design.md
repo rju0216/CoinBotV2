@@ -314,4 +314,4 @@ hmmlearn 은 Py3.14 빌드 불가 + Student's-t 미지원(Gaussian 한정) → *
   `_HOLD` 싱글톤 제거·`.get()` 통일) + S3 E2E 7(정합성·I-002④ 스왑·I-006 churn·service통합·트레일익절·range TP)
   + S4 빌드도구(`training.make_anchored_windows`·`scripts/build_regime_artifacts.py`). 독립검증:
   미래참조·누수·tz 전부 정확. **회귀 358** (294 + 64). config `regime_quant` 섹션·`.gitignore`
-  data/regime_models/ 추가. `active: []` 유지(규칙7). 커밋대기.
+  data/regime_models/ 추가. `active: []` 유지(규칙7). 커밋 b14f175.
