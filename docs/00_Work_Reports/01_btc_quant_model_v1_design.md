@@ -253,6 +253,17 @@ hmmlearn 은 Py3.14 빌드 불가 + Student's-t 미지원(Gaussian 한정) → *
 - **게이트 충족**: E2E ✅ · I-002④ ✅ · churn(I-006) 계측 ✅ · 정합성 ✅.
 - **신규 파일**: `regime/{trend,range}_logic.py` · `plugins/regime_quant.py` · `scripts/build_regime_artifacts.py` + 테스트 5(trend·range·plugin·e2e·training=64). **수정**: `regime/training.py`(make_anchored_windows) · `config/default.yaml`(regime_quant) · `.gitignore`(data/regime_models/).
 
+### 백테 전 재검증 (D4-3 후 게이트) — ✅ GO
+
+독립 fresh-eyes 3개(R1 D4-1·R2 D4-2·R3 D4-3, 규칙14) + 통합 검증(V1 파이프라인·V2 회귀·V3 코드↔문서). **3 커밋(b83a9f7·192c2fe·b14f175) 변경 파일 전수 매핑**(추가·수정·삭제 누락 0). **백테 블로커 0.**
+
+- **R1 D4-1**: 엔진 4수정 메커니즘만(정책 누출 0) · reverse 죽은참조 0 · indicators causal · scipy↔import 배선 · test_engine_base tautology 아님.
+- **R2 D4-2**: 추론 `filter`-only(smoothing 누출 0, 추론경로 죽은참조조차 없음) · z-score train-only 누수차단 · service bounded H4 일관 · EM 참조 atol 1e-10 · artifact round-trip 무손실.
+- **R3 D4-3**: 스펙§3/§4 정합 · 디스패치(`logic` 위임) · walk-forward 누수/tz · config 17키 양방향 · S1~S4 누적 보강 전부 반영 · regime 통합 100 테스트.
+- **V1**: 발견→매핑→매매 service 통합 스모크 완주 · Contract 4필드 frozen 고정(HMM 교체 무관). **V2**: 회귀 **358 passed**. **V3**: `INFRA_GUIDE:44` 필수6→5 stale 수정(D4-1 전수스윕 누락분), requirements·config·트래커 일치.
+- **경미(전부 비블로커, 결과영향 0/의도)**: `realized_vol` ddof=1 명시부재 · 진입가 동일성 전용회귀 부재 · M-1 n_init 비교 stale LL(저장값 재계산 정확) · M-2 빈상태 range 매핑(보수) · valid_end 경계봉 1개 HOLD(의도된 무거래).
+- **백테 추적 매트릭스**: **정합성(규칙10) 최우선**(trades pnl합↔metrics↔equity) + I-001(추세 평균보유봉)·I-004(by_direction trend/short 표본)·I-006(진입간격·SL→재진입)·I-007(빌드 wall-clock)·I-005-H3(윈도우 경계봉 contract None).
+
 ---
 
 ## 잠재 이슈 트래커
@@ -314,4 +325,7 @@ hmmlearn 은 Py3.14 빌드 불가 + Student's-t 미지원(Gaussian 한정) → *
   `_HOLD` 싱글톤 제거·`.get()` 통일) + S3 E2E 7(정합성·I-002④ 스왑·I-006 churn·service통합·트레일익절·range TP)
   + S4 빌드도구(`training.make_anchored_windows`·`scripts/build_regime_artifacts.py`). 독립검증:
   미래참조·누수·tz 전부 정확. **회귀 358** (294 + 64). config `regime_quant` 섹션·`.gitignore`
-  data/regime_models/ 추가. `active: []` 유지(규칙7). 커밋 b14f175.
+  data/regime_models/ 추가. `active: []` 유지(규칙7). 커밋 b14f175 (+보고서 ID 26a2482).
+- **2026-07-01**: **백테 전 재검증 (D4-3 후 게이트) — GO**. 독립 fresh-eyes 3(R1·R2·R3) +
+  통합(V1 파이프라인·V2 회귀358·V3 코드↔문서), 3커밋 변경파일 전수 매핑. **백테 블로커 0**.
+  `INFRA_GUIDE.md:44` 필수6→5 stale 수정(D4-1 reverse 전수스윕 누락분). 경미 5건 전부 비블로커.

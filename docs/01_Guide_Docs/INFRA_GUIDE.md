@@ -41,7 +41,7 @@ src/
 ├── live/trade_sync.py# TradeSyncer: 라이브 종료 후 OKX 실값으로 DB 거래 정정
 ├── backtest/engine.py# BacktestEngine: 캔들 순회 + 5종 리포트 출력
 ├── strategy/
-│   ├── base.py          # StrategyModule 추상 (필수 6 = 거래 정책 + 선택 훅)
+│   ├── base.py          # StrategyModule 추상 (필수 5 = 거래 정책 + 선택 훅)
 │   ├── registry.py      # @register_strategy + auto-discovery + 활성화
 │   ├── indicators.py    # 공통 TA 라이브러리 (pandas_ta_classic 래핑)
 │   ├── helpers/         # opt-in 정책 공식(sizing/risk_gates) — 엔진 미호출
