@@ -63,6 +63,37 @@ def build_model(
     )
 
 
+def make_anchored_windows(
+    valid_start, valid_end, retrain_months: int
+) -> list[tuple[str, str, str]]:
+    """anchored 확장 walk-forward 윈도우 생성.
+
+    [valid_start, valid_end) 를 retrain_months 마다 잘라 valid 블록을 만들고, 각 블록의
+    train 은 데이터 시작부터 valid_start 직전(train_end = valid_start − 1h)까지(anchored).
+    train_end 를 valid_start 보다 1봉 앞에 둬 train/valid 경계 누수를 막는다.
+
+    Returns: [(train_end, valid_start, valid_end), ...] (ISO 문자열, walk_forward 입력 형식).
+    """
+    if retrain_months <= 0:
+        raise ValueError("retrain_months 는 양수여야 함")
+
+    def _utc(t) -> pd.Timestamp:
+        # 실데이터 candles 는 tz-aware UTC index → 경계 문자열도 tz-aware 로 맞춰
+        # candles.loc[:train_end] 의 tz-naive/aware 비교 에러를 막는다.
+        ts = pd.Timestamp(t)
+        return ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
+
+    windows: list[tuple[str, str, str]] = []
+    cur = _utc(valid_start)
+    end = _utc(valid_end)
+    while cur < end:
+        nxt = min(cur + pd.DateOffset(months=retrain_months), end)
+        train_end = cur - pd.Timedelta(hours=1)
+        windows.append((str(train_end), str(cur), str(nxt)))
+        cur = nxt
+    return windows
+
+
 def walk_forward(
     candles: pd.DataFrame,
     windows: list[tuple],

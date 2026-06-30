@@ -33,6 +33,9 @@ data/candles/*.csv
 # ML 모델 아티팩트 (학습 산출물, 크기 큼)
 models/
 
+# 레짐 모델 artifact (walk-forward 사전학습 JSON, scripts/build_regime_artifacts.py 산출)
+data/regime_models/
+
 # 피처 캐시 (parquet, ML 학습 시 자동 생성)
 data/features/
 

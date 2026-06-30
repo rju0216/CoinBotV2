@@ -70,9 +70,28 @@ strategies:
 # ---- 전략 섹션 (전략 추가 시 여기에 <strategy.name>: 블록을 둔다) ----
 # 엔진이 강제하는 필수 키는 없다 — 거래 정책(사이징·리스크 등)은 전략 메서드가 소유한다.
 # 정책 임계값은 전략이 자기 params 로 정의하고 compute_position_size / allow_entry 등에서 읽는다.
-# 예:
-# my_strategy:
-#   risk_per_trade_pct: 0.01   # 예) 전략이 compute_position_size 에서 읽는 param
-#   max_leverage: 5            # 예) 전략이 compute_position_size 에서 읽는 param
-#   max_drawdown_pct: 0.35     # 예) 전략이 allow_entry 에서 읽는 param
-#   <전략 고유 파라미터>: ...
+
+# BTC 1h HMM 레짐 퀀트 (발견→매핑→매매 3층). 활성화: 위 active 리스트에 "regime_quant" 추가
+# + data/regime_models/ 에 walk-forward artifact(*.json) 사전학습(training 파이프라인). 계수는
+# 백테 스윕으로 정당화(스펙 §6) — 아래는 시작 기본값.
+regime_quant:
+  model_dir: "data/regime_models"   # walk-forward artifact JSON 디렉토리 (git untracked)
+  filter_window: 100                # RegimeService HMM sliding-window filter 봉 수
+  atr_period: 24                    # contract.volatility = ATR(24봉), 가격 단위 (SL/TP 거리)
+  indicator_window: 100             # RangeLogic BB/RSI bounded 윈도우 (I-008: 백테=라이브 일관)
+  # ---- 추세 매매 (스펙 §3) ----
+  theta_trend: 0.6                  # 진입 confidence 게이트 (0.5~0.9 스윕)
+  k_trend_sl: 2.0                   # 초기 SL = 진입가 ∓ k·ATR
+  k_trend_trail: 2.5                # 트레일링 간격 (k_trend_sl 과 같거나 약간 넓게)
+  # ---- 평균회귀 매매 (스펙 §4) ----
+  theta_range: 0.6                  # 진입 confidence 게이트 (θ_trend 와 별개)
+  k_range_sl: 1.5                   # SL = 진입가 ∓ k·ATR (돌파 확정 거리)
+  rsi_period: 14
+  rsi_oversold: 30                  # 과매도 경계 (30 vs 35~40 스윕)
+  rsi_overbought: 70
+  bb_period: 20                     # 볼린저 이동평균 기간
+  bb_std: 2.0                       # 볼린저 표준편차 배수
+  expiry_atr_mult: 1.0              # armed 거리 만료 폭 (∓expiry·ATR 추가 이탈 시 리셋)
+  # ---- 사이징 (O-2: size = risk_based_size × confidence) ----
+  risk_per_trade_pct: 0.01          # 거래당 리스크 예산 (0.5~3% 스윕, 평가축=수익+max_dd)
+  max_leverage: 5                   # 꼬리위험 가드레일 (≤ exchange.leverage)

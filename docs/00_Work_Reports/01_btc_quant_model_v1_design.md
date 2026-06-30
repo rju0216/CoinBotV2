@@ -32,7 +32,7 @@ Phase 단위로 진행 기록·결정·잠재 이슈를 누적한다.
 | D2 | 정책 계약 표면 B 재설계 + O-2·O-4·O-5 결정 | ✅ 완료 | 2026-06-30 | (미커밋) |
 | D3 | 학습 파이프라인 설계 (데이터분할·feature·t-HMM·K선택/매핑·walk-forward) + O-1·O-3·O-6 결정 | ✅ 완료 | 2026-07-01 | 5f8a288 |
 | D3.5 | 구현 전 점검 (코드검증·환경·DD-1) — GO | ✅ 완료 | 2026-07-01 | 5f8a288 |
-| D4 | 구현 (D4-1·D4-2 ✅ / D4-3~5 예정) | 진행중 | 2026-07-01~ | D4-1 b83a9f7 / D4-2 미커밋 |
+| D4 | 구현 (D4-1·D4-2·D4-3 ✅ / D4-4~5 예정) | 진행중 | 2026-07-01~ | D4-1 b83a9f7 / D4-2 192c2fe / D4-3 커밋대기 |
 
 ---
 
@@ -208,7 +208,7 @@ hmmlearn 은 Py3.14 빌드 불가 + Student's-t 미지원(Gaussian 한정) → *
 |---|---|---|
 | **D4-1** ✅ | 인프라 prep: 엔진 4수정·indicators 2·정리·requirements | 회귀 258 + update_take_profit·트레일링 e2e |
 | **D4-2** ✅ | 발견층(Gaussian): feature·EM·sliding-window filter·K선택·매핑·artifact·RegimeService | 회귀 294 + 합성복원·analytic·causal·M-step 참조대조 |
-| D4-3 | 매매층: 디스패처+Trend/Range(DD-1·None) + Dev 백테(Gaussian) | E2E + I-002④ + churn(I-006) + 정합성 |
+| **D4-3** ✅ | 매매층: 디스패처+Trend/Range(DD-1·None) + 빌드도구·Dev 백테 가이드 | 회귀 358 + E2E·I-002④·churn(I-006)·정합성 |
 | D4-4 | Gaussian→t emission 교체 | 합성복원(t) + Dev 재백테 |
 | D4-5 | walk-forward OOS + 계수 스윕 + 커버리지 최종 + 2018 스트레스 + 낙관편향/funding 해석 | OOS 정직 평가 |
 | (범위 밖) | 라이브 통합(C): RegimeService 상태 복원·OKX 배선 | 라이브 단계 |
@@ -231,6 +231,28 @@ hmmlearn 은 Py3.14 빌드 불가 + Student's-t 미지원(Gaussian 한정) → *
 - **설계 정정 2건(H4)**: ① D-4 incremental→sliding-window(라이브 재시작 일관) ② ATR 전체RMA→bounded 슬라이스.
 - **잔여**: I-007(EM 학습 성능) → D4-5. I-002 ①②는 D4-3 통합 시.
 
+### D4-3 — 매매층 (완료, 커밋대기)
+
+> 4 Step 분할, 각 Step 종착 후 **독립 fresh-eyes 교차검증(규칙14)** + 자체 비판 재점검.
+> 치명 결함 0. **회귀 358** (D4-2 294 + D4-3 64).
+
+- **S1 매매 로직 (34 테스트)** — `regime/trend_logic.py`(TrendLogic) · `regime/range_logic.py`(RangeLogic):
+  - Trend(스펙§3): 관대진입(DD-1) · 초기SL(∓k_trend_sl·ATR) · TP None · 트레일링(동방향 trend만·유리방향만, trend→range·적대는 동결) · force_exit(적대→REGIME_EXIT) · 사이징(risk_based_size×conf, O-2).
+  - Range(스펙§4): 셋업/트리거 상태기계(IDLE/ARMED_LONG/ARMED_SHORT, 만료3종: 레짐이탈·거리만료·RSI해제) · 이동 BB중심선 TP · SL(∓k_range_sl·ATR) · force_exit(적대).
+  - **I-008 신규**: RangeLogic BB/RSI 를 직전 indicator_window 봉(bounded)으로 계산 → 히스토리 길이 무관(백테=라이브, H4). RSI(Wilder RMA)·ATR 의 D4-2 정정② 와 동종 문제를 동일 패턴으로 해소.
+- **S2 디스패처 (13)** — `plugins/regime_quant.py`(RegimeQuantStrategy):
+  - RegimeService+Trend/Range wiring, artifact 로딩(`model_dir`), 필수5+선택훅을 `position.meta["logic"]`/`signal.meta["logic"]` 로 디스패치, contract→position.meta stash(원시 dict, DB직렬화 안전).
+  - config `regime_quant:` 섹션(17키), `active: []` 뼈대 유지(규칙7).
+  - 독립검증 반영: `_HOLD` 싱글톤 제거(mutable meta 공유 함정) · `ctx.candles` 접근 `.get()` 통일.
+- **S3 E2E (7)** — `tests/test_regime_quant_e2e.py`, 실 BacktestEngine + tiny Gaussian artifact:
+  - 정합성(규칙10, trades pnl합↔metrics↔equity 3자일치) · **I-002④ 레짐스왑 같은봉**(청산→같은 ts 재진입) · **I-006 churn 계측** · range 적대청산 · **service 통합 스모크(실 HMM filtering→매매)** · trend 트레일익절 · range TP체결.
+  - §5.2 전환순서(적대먼저→비면 진입) · force_exit vs SL 평가순서 실엔진 확인.
+- **S4 빌드도구 (10)** — `training.make_anchored_windows` + `scripts/build_regime_artifacts.py`:
+  - anchored walk-forward 윈도우(train_end=valid_start−1h 누수차단, tz-aware) · CLI(빌드 시 항상 window_*.json 정리) · Dev 백테 커맨드 가이드.
+  - 독립검증: walk-forward 미래참조·train/valid 누수·tz 경계 **전부 정확** 확인.
+- **게이트 충족**: E2E ✅ · I-002④ ✅ · churn(I-006) 계측 ✅ · 정합성 ✅.
+- **신규 파일**: `regime/{trend,range}_logic.py` · `plugins/regime_quant.py` · `scripts/build_regime_artifacts.py` + 테스트 5(trend·range·plugin·e2e·training=64). **수정**: `regime/training.py`(make_anchored_windows) · `config/default.yaml`(regime_quant) · `.gitignore`(data/regime_models/).
+
 ---
 
 ## 잠재 이슈 트래커
@@ -238,12 +260,13 @@ hmmlearn 은 Py3.14 빌드 불가 + Student's-t 미지원(Gaussian 한정) → *
 | ID | 이슈 | 발생 | 상태 | 해결 경로 |
 |---|---|---|---|---|
 | I-001 | 백테 funding=0 → 추세 장기보유 비용 과소평가 (라이브 갭) | D1 | known limitation | O-5(가): gen1 수용·측정 후 2세대 판단 |
-| I-002 | 회귀 테스트 부재 4건: ①엔진측 lookahead 절단(`_build_ctx`/`_slice_candles`) ②진입가 백테=라이브 동일성 ③트레일링 SL end-to-end ④레짐 스왑 시퀀스 | D1 | OPEN | D4 테스트 추가 |
+| I-002 | 회귀 테스트 부재 4건: ①엔진측 lookahead 절단(`_build_ctx`/`_slice_candles`) ②진입가 백테=라이브 동일성 ③트레일링 SL end-to-end ④레짐 스왑 시퀀스 | D1 | 부분해소 | **③④ D4-3 S3 E2E 해소**(트레일익절·스왑같은봉) / ①② 기존 메커니즘(`test_lookahead` 간접), 실데이터 통합 시 명시 |
 | I-003 | 2-플러그인 시 HMM 레짐 봉당 중복 계산 | D1 | 해소(설계) | D2 (가) 단일 디스패처+RegimeService 캐시로 차단 |
 | I-004 | OOS 하락 = 단일 에피소드(2025-10~2026-02) → trend/short OOS 표본 작음 | D3 | known limitation | 2018 스트레스로 보완·결과 해석 시 감안 |
 | I-005 | 윈도우 경계·인덱싱 정확성 (H1~H6) | D3 | 대부분 해소(D4-2) | features 테스트(H1·H2·H5)·service sliding-window(H4·H6). 잔여 H3 walk-forward warmup 은 D4-3/5 |
-| I-006 | 추세 관대진입의 재진입 churn (트레일링 손절 후 즉시 재진입 휩쏘) | D3.5 | 측정 대상 | D4 백테 측정, 2세대 가드 판단 |
+| I-006 | 추세 관대진입의 재진입 churn (트레일링 손절 후 즉시 재진입 휩쏘) | D3.5 | 측정 대상 | **D4-3 S3 E2E churn 발생 계측 ✅(합성)** / 실데이터 측정·2세대 가드는 D4-5 |
 | I-007 | EM 학습 forward/backward Python 루프 성능 (50k봉×K×init×iter×윈도우 느릴 수 있음) | D4-2 | OPEN | D4-5 실학습 전 최적화(벡터화/numba/init·iter 축소) |
+| I-008 | RangeLogic BB/RSI 히스토리 길이 의존(RSI Wilder RMA) → 백테≠라이브 미세 불일치 | D4-3 | 해소(S1) | bounded 윈도우(`indicator_window`) 계산 — RegimeService H4(ATR bounded) 패턴 차용 |
 
 ---
 
@@ -285,3 +308,10 @@ hmmlearn 은 Py3.14 빌드 불가 + Student's-t 미지원(Gaussian 한정) → *
   features·hmm·mapping·selection·artifact·service·training). 독립 fresh-eyes + 자체 검증:
   실버그·lookahead 0, EM 참조 Baum-Welch atol 1e-10 일치, 추론 causal. **설계 정정 2건(H4)**:
   D-4 incremental→sliding-window, ATR 전체RMA→bounded. 신규 I-007. **회귀 294** (D4-1 258 + D4-2 36).
+  커밋 192c2fe.
+- **2026-07-01**: **D4-3 매매층 구현** (4 Step, 각 Step 독립 fresh-eyes 교차검증) — S1 매매로직
+  (`regime/{trend,range}_logic.py`, **신규 I-008** bounded 지표) + S2 디스패처(`plugins/regime_quant.py`,
+  `_HOLD` 싱글톤 제거·`.get()` 통일) + S3 E2E 7(정합성·I-002④ 스왑·I-006 churn·service통합·트레일익절·range TP)
+  + S4 빌드도구(`training.make_anchored_windows`·`scripts/build_regime_artifacts.py`). 독립검증:
+  미래참조·누수·tz 전부 정확. **회귀 358** (294 + 64). config `regime_quant` 섹션·`.gitignore`
+  data/regime_models/ 추가. `active: []` 유지(규칙7). 커밋대기.
