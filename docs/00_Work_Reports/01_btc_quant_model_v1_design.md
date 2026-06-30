@@ -32,7 +32,7 @@ Phase 단위로 진행 기록·결정·잠재 이슈를 누적한다.
 | D2 | 정책 계약 표면 B 재설계 + O-2·O-4·O-5 결정 | ✅ 완료 | 2026-06-30 | (미커밋) |
 | D3 | 학습 파이프라인 설계 (데이터분할·feature·t-HMM·K선택/매핑·walk-forward) + O-1·O-3·O-6 결정 | ✅ 완료 | 2026-07-01 | 5f8a288 |
 | D3.5 | 구현 전 점검 (코드검증·환경·DD-1) — GO | ✅ 완료 | 2026-07-01 | 5f8a288 |
-| D4 | 구현 (D4-1 인프라prep ✅ / D4-2~5 예정) | 진행중 | 2026-07-01~ | (D4-1 미커밋) |
+| D4 | 구현 (D4-1·D4-2 ✅ / D4-3~5 예정) | 진행중 | 2026-07-01~ | D4-1 b83a9f7 / D4-2 미커밋 |
 
 ---
 
@@ -57,8 +57,10 @@ SL/TP 교차 판정 모두 코드상 정확, 백테/라이브가 동일 helper �
 - **D-3 공유 regime 모듈** — 2-플러그인이 HMM을 봉당 2번 돌리는 중복 차단. 발견→매핑
   (HMM·contract)을 봉당 1회 계산·캐시, 추세/평균회귀 매매 로직이 소비. (스펙 "전략
   완전 분리"는 매매 로직 분리지 레짐 계산 분리가 아님 → 모순 없음.)
-- **D-4 HMM filtering = 전략 incremental 상태로 관리** — 매 봉 전체 재계산은 O(T²)
-  (1h·수년=~5만 봉). filtered α_t를 인스턴스에 보유, 새 봉마다 1스텝 전진. 엔진 수정 불필요.
+- **D-4 HMM filtering** — *(D4-2 정정: incremental → sliding-window)* 매 봉 **직전 W봉(100)
+  sliding-window filter**(forward-only). 원안 incremental(α 상태 carry)은 라이브 재시작 시
+  validity 시작부터 재현 불가 → 백테 불일치(H4 위반). sliding-window 는 백테·라이브가 같은
+  W봉을 filter → 동일 γ. O(W·T)(O(T²) 아님), contract 모델당 1회라 스윕 재사용. 엔진 수정 불필요.
 
 ### 인지사항 (메커니즘 수정 불필요, 해석/구현 시 감안)
 - **백테 낙관 편향**: 백테는 봉 full high/low로 SL/TP 시뮬, 라이브는 시초 한 점 +
@@ -73,7 +75,7 @@ SL/TP 교차 판정 모두 코드상 정확, 백테/라이브가 동일 helper �
 ### Step 1 — 플러그인 구조: (가) 단일 디스패처
 ```
 RegimeQuantStrategy (plugin 1개, entry_tf=1h)
-├── RegimeService   # 발견+매핑: t-HMM 로드·incremental filtering·Contract 산출(봉당 1회 lazy 캐시)
+├── RegimeService   # 발견+매핑: HMM 로드·sliding-window filtering·Contract 산출(봉당 timestamp 캐시)
 │                   #   Contract = {type, direction, confidence(γ), volatility(ATR24)}
 ├── TrendLogic      # 추세 매매 (별도 파일/클래스)
 └── RangeLogic      # 평균회귀 매매 (별도 파일/클래스)
@@ -105,8 +107,8 @@ RegimeQuantStrategy (plugin 1개, entry_tf=1h)
 
 **명확화 5건 (D4 준수)**:
 1. reverse 제거 = 주변 死코드 정리 포함(단순 삭제 아님).
-2. contract는 `RegimeService.get_contract(ctx)`에서 **lazy(봉당 첫 접근 시 1회 전진)** —
-   run 루프상 `check_strategy_exits`가 `evaluate`(on_bar_close)보다 먼저라 특정 훅 의존 시 stale.
+2. contract는 `RegimeService.get_contract(candles)`에서 **봉당 timestamp 캐시**(한 봉에 여러
+   훅이 호출해도 1회 계산). filter 는 직전 W봉 sliding-window (D4-2 정정: incremental carry 아님 — 라이브 재시작 일관성).
 3. 포지션↔로직 소속 + **contract→position.meta**: 엔진이 `signal.meta`를 `position.meta`로 자동복사 안 함 → `on_position_opened`(성공 진입, signal 미수신)에서 인스턴스 stash로 수동 기입, `on_position_closed`에서 해제.
 4. `sl_tp_fill_priority` 단일값 `"sl_first"` — 추세 TP 없음→동시도달 불가, 평균회귀만 의미.
 5. `allow_entry` → True (confidence 게이트는 `generate_signal`에).
@@ -144,10 +146,10 @@ RegimeQuantStrategy (plugin 1개, entry_tf=1h)
 - 3 코어: 로그수익률(1봉) / **실현변동성 std(24봉 로그수익률)** (S1-1=가) / Kaufman ER(48봉, indicators.py:67).
 - z-score: train 윈도우 params만, **artifact 동행**, test/live 적용(재계산 금지=누수차단).
 - 혼동 주의: feature 변동성(정규화·HMM 입력) ≠ contract.volatility(ATR24·가격·SL/TP).
-- **윈도우 경계 체크리스트(I-005, D4 단위테스트)**: H1 first-valid=48·min_periods full / H2 현재봉 close 포함(causal)·shift 미적용 / H3 walk-forward warmup lookback / H4 incremental 인덱스 정합(백테 slice<ts ↔ 라이브 -2 동일 관측열) / H5 rolling std ddof·min_periods 일관 / H6 스왑 α 재init.
+- **윈도우 경계 체크리스트(I-005, D4 단위테스트)**: H1 first-valid=48·min_periods full / H2 현재봉 close 포함(causal)·shift 미적용 / H3 walk-forward warmup lookback / H4 sliding-window 일관(백테·라이브가 직전 W봉 동일 filter → 동일 γ·ATR도 bounded 슬라이스) / H5 rolling std ddof·min_periods 일관 / H6 모델 스왑은 valid_period 선택+sliding-window 로 자동(별도 α 재init 불필요).
 
 ### Step 2 — t-HMM 모델 + 구현경로
-- 다변량 **Student's-t emission**(μ_k,Σ_k,ν_k) + transition A + π. EM(Baum-Welch, t=scale-mixture, ν=digamma root-find). 추론=**forward-only filtering**, incremental, log-space.
+- 다변량 **Student's-t emission**(μ_k,Σ_k,ν_k) + transition A + π. EM(Baum-Welch, t=scale-mixture, ν=digamma root-find). 추론=**forward-only filtering**(sliding-window), log-space.
 - 명확화: **EM은 forward-backward OK(학습)**, **추론만 forward-only(신호)**. D4 과잉적용 금지.
 - **O-6=(나) 단계 구현**: Gaussian 스캐폴드(plumbing 검증) → emission만 t 교체. **gen1 최종=t(필수 교체)**, K·임계 최종값은 t-모델. **검증=Gaussian·t 모두 합성데이터 복원 + analytic spot-check** (hmmlearn 은 Py3.14 빌드 불가·Gaussian 한정이라 미사용 — D4-1 결정).
 
@@ -159,9 +161,9 @@ RegimeQuantStrategy (plugin 1개, entry_tf=1h)
 
 ### Step 4 — walk-forward + artifact + RegimeService
 - **O-3=(가) 오프라인 사전학습**: 윈도우별 artifact 선학습, RegimeService는 로드만. causal·백테빠름·라이브일관. 재추정 N=3~6개월(D4 스윕).
-- **artifact 스키마**(윈도우당): K·emission_type / π·A·{μ_k,Σ_k,ν_k}(z공간) / zscore{μ_f,σ_f}×3 / feature_config / mapping(state→type,dir) / τ·raw_state_stats / valid_period / meta. 직렬화 npz+json(D4).
-- **스왑 경계(H6)**: cold 재init(새 π)+burn-in(직전 48~100봉) → 안정 후 contract, burn-in 중 None.
-- **RegimeService.get_contract(ctx)**: ts 모델로드(스왑시 재init) → feature(causal)+zscore → warmup/burn-in시 None → filtering 1스텝(timestamp 캐시·H4) → γ 집계 contract* + ATR24.
+- **artifact 스키마**(윈도우당): K·emission_kind / π·A·{μ_k,Σ_k,ν_k}(z공간) / zscore{μ_f,σ_f}×3 / feature_config / mapping(state→type,dir) / τ·raw_state_stats / valid_period / meta. 직렬화 **단일 JSON**(모델 작아 npz 불필요·pickle 회피).
+- **스왑·일관 (D4-2 정정)**: sliding-window(직전 W봉 filter)가 burn-in 을 매 봉 내장 → 별도 cold 재init 불필요. 모델 스왑은 valid_period 선택으로 자동. warmup 미충족만 None.
+- **RegimeService.get_contract(candles)**: ts 모델선택 → 직전(W+warmup)봉 feature(causal)+zscore → warmup시 None → **직전 W봉 sliding-window filter** → γ 집계 + **bounded ATR**(직전 W+24봉) → Contract. 봉당 timestamp 캐시(H4). (백테=라이브 동일 입력→동일 출력.)
 - **디렉토리**: training `src/strategy/regime/training/`(또는 scripts) / runtime `src/strategy/regime/` / plugin `plugins/regime_quant.py`+`regime/{trend,range}_logic.py` / artifact `data/regime_models/`(untracked).
 
 ### D3 결정 요약
@@ -205,7 +207,7 @@ hmmlearn 은 Py3.14 빌드 불가 + Student's-t 미지원(Gaussian 한정) → *
 | 단계 | 내용 | 게이트 |
 |---|---|---|
 | **D4-1** ✅ | 인프라 prep: 엔진 4수정·indicators 2·정리·requirements | 회귀 258 + update_take_profit·트레일링 e2e |
-| D4-2 | 발견층(Gaussian): feature·EM·filtering·K선택(커버리지)·매핑·artifact·RegimeService(None·burn-in) | 합성복원+analytic + I-005(H1~H6) |
+| **D4-2** ✅ | 발견층(Gaussian): feature·EM·sliding-window filter·K선택·매핑·artifact·RegimeService | 회귀 294 + 합성복원·analytic·causal·M-step 참조대조 |
 | D4-3 | 매매층: 디스패처+Trend/Range(DD-1·None) + Dev 백테(Gaussian) | E2E + I-002④ + churn(I-006) + 정합성 |
 | D4-4 | Gaussian→t emission 교체 | 합성복원(t) + Dev 재백테 |
 | D4-5 | walk-forward OOS + 계수 스윕 + 커버리지 최종 + 2018 스트레스 + 낙관편향/funding 해석 | OOS 정직 평가 |
@@ -219,6 +221,16 @@ hmmlearn 은 Py3.14 빌드 불가 + Student's-t 미지원(Gaussian 한정) → *
 - **회귀 258 통과** (253 + 동적 SL/TP 신규 5: update_take_profit 갱신·None유지·update_stop_loss 갱신·트레일링 SL e2e=I-002③·이동 TP e2e).
 - **잔여**: I-002 ①②(lookahead 절단·진입가)는 D4-2/D4-3 실데이터 통합 시 작성(기존 메커니즘, 258에 간접 포함).
 
+### D4-2 — 발견층 Gaussian (완료)
+- **신규 모듈** `src/strategy/regime/`: contract·features·hmm·mapping·selection·artifact·service·training.
+- **HMM**: Emission ABC(m_step 자기완결 → t 수용) + GaussianEmission(full cov+reg) + log-space EM(다중 init·best LL) + **forward-only filter**.
+- **추론(RegimeService)**: **sliding-window filter**(직전 W봉) + **bounded ATR**(직전 W+24봉) + feature 도 직전(W+warmup)봉만 계산(O(T²)→O(T)) → **백테=라이브 동일(H4)**. 봉당 timestamp 캐시.
+- **매핑**: raw 로그수익률 per-state 통계 type=|μ|/std vs τ·direction·confidence=γ집계. **K선택**: holdout LL+BIC+커버리지 진단·추천.
+- **artifact**: 단일 JSON (emission type-agnostic, t-swap 대비).
+- **검증 (독립 fresh-eyes + 자체)**: 실버그·lookahead **0**. EM=참조 Baum-Welch atol 1e-10 일치. 추론 causal(smoothed 학습 격리·음성 가드 테스트). **회귀 294** (D4-2 +36: features7·hmm9·mapping6·selection3·artifact2·service9).
+- **설계 정정 2건(H4)**: ① D-4 incremental→sliding-window(라이브 재시작 일관) ② ATR 전체RMA→bounded 슬라이스.
+- **잔여**: I-007(EM 학습 성능) → D4-5. I-002 ①②는 D4-3 통합 시.
+
 ---
 
 ## 잠재 이슈 트래커
@@ -229,8 +241,9 @@ hmmlearn 은 Py3.14 빌드 불가 + Student's-t 미지원(Gaussian 한정) → *
 | I-002 | 회귀 테스트 부재 4건: ①엔진측 lookahead 절단(`_build_ctx`/`_slice_candles`) ②진입가 백테=라이브 동일성 ③트레일링 SL end-to-end ④레짐 스왑 시퀀스 | D1 | OPEN | D4 테스트 추가 |
 | I-003 | 2-플러그인 시 HMM 레짐 봉당 중복 계산 | D1 | 해소(설계) | D2 (가) 단일 디스패처+RegimeService 캐시로 차단 |
 | I-004 | OOS 하락 = 단일 에피소드(2025-10~2026-02) → trend/short OOS 표본 작음 | D3 | known limitation | 2018 스트레스로 보완·결과 해석 시 감안 |
-| I-005 | 윈도우 경계·인덱싱 정확성 (H1~H6: off-by-one·warmup·causal·백테↔라이브 관측열·rolling 일관·스왑 재init) | D3 | OPEN | D4 단위테스트 |
+| I-005 | 윈도우 경계·인덱싱 정확성 (H1~H6) | D3 | 대부분 해소(D4-2) | features 테스트(H1·H2·H5)·service sliding-window(H4·H6). 잔여 H3 walk-forward warmup 은 D4-3/5 |
 | I-006 | 추세 관대진입의 재진입 churn (트레일링 손절 후 즉시 재진입 휩쏘) | D3.5 | 측정 대상 | D4 백테 측정, 2세대 가드 판단 |
+| I-007 | EM 학습 forward/backward Python 루프 성능 (50k봉×K×init×iter×윈도우 느릴 수 있음) | D4-2 | OPEN | D4-5 실학습 전 최적화(벡터화/numba/init·iter 축소) |
 
 ---
 
@@ -267,4 +280,8 @@ hmmlearn 은 Py3.14 빌드 불가 + Student's-t 미지원(Gaussian 한정) → *
 - **2026-07-01**: **D4-1 인프라 prep 구현** — 엔진 4수정(reverse flow·should_reverse·
   REVERSE_SIGNAL 제거 / update_take_profit·REGIME_EXIT 추가) + indicators 2 + reverse 전수 정리
   (src·tests·CLAUDE/INFRA_GUIDE/README) + requirements(scipy 추가, **hmmlearn 드롭**: Py3.14
-  빌드 불가 → 합성복원+analytic 검증으로 대체). **회귀 258 통과**.
+  빌드 불가 → 합성복원+analytic 검증으로 대체). **회귀 258 통과**. 커밋 b83a9f7.
+- **2026-07-01**: **D4-2 발견층 Gaussian 구현** — `src/strategy/regime/` 8개 모듈(contract·
+  features·hmm·mapping·selection·artifact·service·training). 독립 fresh-eyes + 자체 검증:
+  실버그·lookahead 0, EM 참조 Baum-Welch atol 1e-10 일치, 추론 causal. **설계 정정 2건(H4)**:
+  D-4 incremental→sliding-window, ATR 전체RMA→bounded. 신규 I-007. **회귀 294** (D4-1 258 + D4-2 36).
