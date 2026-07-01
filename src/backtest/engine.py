@@ -292,6 +292,9 @@ class BacktestEngine(AbstractEngine):
                 "funding_fee": funding_fee,
                 "exit_reason": exit_reason,
                 "status": "closed",
+                # 전략이 position.meta 에 남긴 소속 로직 라벨(예: regime_quant 의
+                # "trend"/"range"). generic — 없으면 None. trend/range 분리 분석용.
+                "logic": position.meta.get("logic"),
             }
         )
         self.trades.append(rec)
@@ -400,7 +403,7 @@ class BacktestEngine(AbstractEngine):
         if self.trades:
             df = pd.DataFrame(self.trades)
             cols_order = [
-                "id", "strategy_name", "side", "size",
+                "id", "strategy_name", "logic", "side", "size",
                 "entry_time", "entry_price", "exit_time", "exit_price",
                 "stop_loss", "take_profit",
                 "pnl", "pnl_pct", "trading_fee", "funding_fee",
@@ -413,7 +416,7 @@ class BacktestEngine(AbstractEngine):
             df.to_csv(out / "trades.csv", index=False)
         else:
             (out / "trades.csv").write_text(
-                "id,strategy_name,side,size,entry_time,entry_price,"
+                "id,strategy_name,logic,side,size,entry_time,entry_price,"
                 "exit_time,exit_price,stop_loss,take_profit,pnl,pnl_pct,"
                 "trading_fee,funding_fee,exit_reason,status\n",
                 encoding="utf-8",

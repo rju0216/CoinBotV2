@@ -174,6 +174,7 @@ async def test_e2e_regime_swap_same_bar(model_dir, tmp_path):
     assert len(shorts) >= 1
     # 같은 봉 스왑: long 청산 시각 == short 진입 시각
     assert long_exit["exit_time"] == shorts[0]["entry_time"]
+    assert long_exit["logic"] == "trend"  # logic 컬럼 기록 검증(trend 디스패치)
     _assert_consistency(eng, result)
 
 
@@ -254,8 +255,8 @@ async def test_e2e_range_adverse_exit(model_dir, tmp_path):
     regime_exits = [t for t in result.trades if t["exit_reason"] == "regime_exit"]
     assert len(regime_exits) >= 1
     assert regime_exits[0]["side"] == "long"
-    # 'range 로직' 입증: range 만 TP(BB 중심선)를 등록 → take_profit not None.
-    # (trend force_exit 이라면 take_profit None 이라 구분됨)
+    # 'range 로직' 입증: logic 컬럼 == range (+ range 만 TP(BB 중심선) 등록).
+    assert regime_exits[0]["logic"] == "range"
     assert regime_exits[0]["take_profit"] is not None
     _assert_consistency(eng, result)
 

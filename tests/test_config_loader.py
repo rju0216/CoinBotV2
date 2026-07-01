@@ -192,5 +192,6 @@ def test_default_yaml_has_required_keys(monkeypatch):
     assert "circuit_breaker" in cfg["risk"]
     assert "taker_fee_pct" in cfg["accounting"]
     assert "active" in cfg["strategies"]
-    # 뼈대 상태 — active 는 비어 있음 (거래 정책은 전략 메서드 소유)
-    assert cfg["strategies"]["active"] == []
+    # active 는 리스트 — 뼈대([]) 또는 활성 전략 목록. 개발 단계에서 전략 활성 허용
+    # (거래 정책은 전략 메서드 소유). 값 자체는 운영 상태라 강제하지 않는다.
+    assert isinstance(cfg["strategies"]["active"], list)

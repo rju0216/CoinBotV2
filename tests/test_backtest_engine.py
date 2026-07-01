@@ -347,6 +347,7 @@ async def test_write_reports_empty_trades(tmp_path, monkeypatch):
     # equity_curve.png는 빈 데이터일 때 안 만들어질 수 있음 — 강제 검증 X
     trades_content = (out_dir / "trades.csv").read_text(encoding="utf-8")
     assert "id,strategy_name" in trades_content
+    assert "logic" in trades_content  # logic 컬럼 스키마 반영
 
 
 # ---- 다중 전략 배타 슬롯 경합 정책 검증 ----
