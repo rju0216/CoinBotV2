@@ -53,6 +53,18 @@ class RegimeQuantStrategy(StrategyModule):
         self.service = self._build_service(self.params)
         # generate_signal → on_position_opened 사이 contract·logic 전달용 stash.
         self._pending_meta: dict[str, Any] | None = None
+        # ---- 추세 진입 churn 가드 (I-010, DD-1 재검토) ----
+        # cooldown_bars: 청산 후 재진입 금지. 청산봉의 on_bar_close 가 1을 소비하므로
+        #   실효 대기 = N-1봉 (0=관대진입).
+        # entry_on_transition_only: 전환봉(non-trend→trend)만 진입 (True=스펙§3.1 원안).
+        self.cooldown_bars = int(self.params.get("cooldown_bars", 0))
+        self.entry_on_transition_only = bool(
+            self.params.get("entry_on_transition_only", False)
+        )
+        # 가드 상태 (on_bar_close 가 매 봉 갱신). None=아직 청산 이력 없음(쿨다운 비활성).
+        self._bars_since_exit: int | None = None
+        self._prev_trend = False  # 직전 봉이 trend 였나 (전환 판정)
+        self._is_transition = False  # 이번 봉이 non-trend→trend 전환봉인가
 
     # ---- artifact 로딩 ----
 
@@ -87,6 +99,13 @@ class RegimeQuantStrategy(StrategyModule):
     # ---- 진입 (flat 일 때만 엔진이 호출) ----
 
     def generate_signal(self, ctx: StrategyContext) -> Signal:
+        # churn 가드 ①: 청산 후 cooldown_bars 봉 동안 재진입 금지.
+        if (
+            self._bars_since_exit is not None
+            and self._bars_since_exit < self.cooldown_bars
+        ):
+            return Signal(side=SignalSide.HOLD)
+
         contract = self._contract(ctx)
         df = ctx.candles.get(self.entry_timeframe)
         if contract is None or df is None or len(df) == 0:
@@ -96,7 +115,12 @@ class RegimeQuantStrategy(StrategyModule):
         range_sig = self.range.advance(contract, df)
 
         if contract.is_trend:
-            sig = self.trend.entry_signal(contract)
+            # churn 가드 ②: entry_on_transition_only 면 전환봉만 진입
+            # (지속 trend 중 손절 후 재진입 = 휩쏘 차단).
+            if self.entry_on_transition_only and not self._is_transition:
+                sig = None
+            else:
+                sig = self.trend.entry_signal(contract)
             logic_name = "trend"
         elif range_sig is not None:
             sig = range_sig
@@ -151,6 +175,22 @@ class RegimeQuantStrategy(StrategyModule):
     def allow_entry(self, ctx: StrategyContext) -> bool:
         return True  # confidence 게이트는 generate_signal 에 있음
 
+    def on_bar_close(self, ctx: StrategyContext, timeframe: str) -> None:
+        """매 봉(보유 무관) churn 가드 상태 갱신 — 쿨다운 카운트 + 전환 판정.
+
+        generate_signal(flat 일 때만 호출)로는 보유 중 레짐 변화를 못 보므로,
+        직전 봉 trend 여부(_prev_trend)를 여기서 매 봉 추적해 전환(non-trend→trend)을
+        판정한다. entry_tf 봉에서만. (evaluate 흐름상 generate_signal 보다 먼저 호출)
+        """
+        if timeframe != self.entry_timeframe:
+            return
+        if self._bars_since_exit is not None:
+            self._bars_since_exit += 1
+        contract = self._contract(ctx)
+        cur_trend = contract.is_trend if contract is not None else False
+        self._is_transition = (not self._prev_trend) and cur_trend
+        self._prev_trend = cur_trend
+
     # ---- 보유 중 (매 봉) ----
 
     def update_stop_loss(
@@ -197,3 +237,4 @@ class RegimeQuantStrategy(StrategyModule):
 
     def on_position_closed(self, position: Position, pnl: float) -> None:
         self.range.reset()  # 청산 → 다음 flat 에서 fresh 셋업
+        self._bars_since_exit = 0  # churn 쿨다운 시작 (on_bar_close 가 봉마다 +1)

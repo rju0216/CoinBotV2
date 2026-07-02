@@ -80,9 +80,12 @@ regime_quant:
   atr_period: 24                    # contract.volatility = ATR(24봉), 가격 단위 (SL/TP 거리)
   indicator_window: 100             # RangeLogic BB/RSI bounded 윈도우 (I-008: 백테=라이브 일관)
   # ---- 추세 매매 (스펙 §3) ----
-  theta_trend: 0.6                  # 진입 confidence 게이트 (0.5~0.9 스윕)
-  k_trend_sl: 2.0                   # 초기 SL = 진입가 ∓ k·ATR
-  k_trend_trail: 2.5                # 트레일링 간격 (k_trend_sl 과 같거나 약간 넓게)
+  theta_trend: 0.6                  # 진입 confidence 게이트 (conf≈1 median 0.997 → 사실상 무력, I-010)
+  k_trend_sl: 2.0                   # 초기 SL = 진입가 ∓ k·ATR (승률·손익비 노브, 스윕 대상)
+  k_trend_trail: 2.5                # 트레일링 간격 (지그재그 휩쏘 완화 위해 넓히기 스윕)
+  # ---- 추세 진입 churn 가드 (I-010, DD-1 재검토) ----
+  cooldown_bars: 0                  # 청산 후 재진입 금지 (청산봉 포함 카운트 → 실효 대기 N-1봉, 0=관대)
+  entry_on_transition_only: false   # true=전환봉(non-trend→trend)만 진입 (스펙§3.1 원안)
   # ---- 평균회귀 매매 (스펙 §4) ----
   theta_range: 0.6                  # 진입 confidence 게이트 (θ_trend 와 별개)
   k_range_sl: 1.5                   # SL = 진입가 ∓ k·ATR (돌파 확정 거리)

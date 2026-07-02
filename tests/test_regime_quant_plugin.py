@@ -286,6 +286,83 @@ def test_position_size_none_stop_returns_zero(model_dir):
     assert plugin.compute_position_size(_ctx(_synth_candles(300)), sig, None) == 0.0
 
 
+def test_guards_default_off(model_dir):
+    """기본값(cooldown 0 / transition off) = 관대진입 하위호환."""
+    plugin = RegimeQuantStrategy({**PARAMS, "model_dir": model_dir})
+    assert plugin.cooldown_bars == 0
+    assert plugin.entry_on_transition_only is False
+    plugin._contract = lambda c: _contract(RegimeType.TREND, RegimeDirection.LONG, 0.8)
+    ctx = _ctx(_synth_candles(300))
+    plugin.on_position_closed(_pos(PositionSide.LONG, logic="trend"), 0.0)
+    plugin.on_bar_close(ctx, "1h")  # 청산 직후여도 cooldown 0 → 진입 허용
+    assert plugin.generate_signal(ctx).side == SignalSide.LONG
+
+
+def test_cooldown_gate(model_dir):
+    plugin = RegimeQuantStrategy(
+        {**PARAMS, "model_dir": model_dir, "cooldown_bars": 3}
+    )
+    plugin._contract = lambda c: _contract(RegimeType.TREND, RegimeDirection.LONG, 0.8)
+    ctx = _ctx(_synth_candles(300))
+    plugin.on_position_closed(_pos(PositionSide.LONG, logic="trend"), 0.0)
+    assert plugin._bars_since_exit == 0
+    for expect_bar in (1, 2):
+        plugin.on_bar_close(ctx, "1h")
+        assert plugin._bars_since_exit == expect_bar
+        assert plugin.generate_signal(ctx).side == SignalSide.HOLD  # bar < 3
+    plugin.on_bar_close(ctx, "1h")  # bar 3
+    assert plugin.generate_signal(ctx).side == SignalSide.LONG  # 3 >= 3 → 진입
+
+
+def test_transition_only_gate(model_dir):
+    plugin = RegimeQuantStrategy(
+        {**PARAMS, "model_dir": model_dir, "entry_on_transition_only": True}
+    )
+    plugin._contract = lambda c: _contract(RegimeType.TREND, RegimeDirection.LONG, 0.8)
+    ctx = _ctx(_synth_candles(300))
+    # 첫 trend 봉 = 전환(prev_trend False) → 진입
+    plugin.on_bar_close(ctx, "1h")
+    assert plugin._is_transition is True
+    assert plugin.generate_signal(ctx).side == SignalSide.LONG
+    # 다음 봉 지속 trend = 전환 아님 → 재진입 차단
+    plugin.on_bar_close(ctx, "1h")
+    assert plugin._is_transition is False
+    assert plugin.generate_signal(ctx).side == SignalSide.HOLD
+
+
+def test_transition_blocks_reentry_after_hold(model_dir):
+    """보유 중 지속 trend 추적 → 청산 후에도 전환 아님 → 재진입 차단 (churn 핵심)."""
+    plugin = RegimeQuantStrategy(
+        {**PARAMS, "model_dir": model_dir, "entry_on_transition_only": True}
+    )
+    plugin._contract = lambda c: _contract(RegimeType.TREND, RegimeDirection.LONG, 0.8)
+    ctx = _ctx(_synth_candles(300))
+    plugin.on_bar_close(ctx, "1h")  # 첫 전환봉
+    assert plugin.generate_signal(ctx).side == SignalSide.LONG
+    plugin.on_position_opened(_pos(PositionSide.LONG, logic="x"))
+    for _ in range(3):  # 보유 중 지속 trend → _prev_trend True 유지
+        plugin.on_bar_close(ctx, "1h")
+    plugin.on_position_closed(_pos(PositionSide.LONG, logic="trend"), 0.0)
+    plugin.on_bar_close(ctx, "1h")  # 여전히 지속 trend → 전환 아님
+    assert plugin._is_transition is False
+    assert plugin.generate_signal(ctx).side == SignalSide.HOLD  # 재진입 차단
+
+
+def test_cooldown_and_transition_combined(model_dir):
+    """두 가드 동시 활성 = AND 결합 (하나라도 불충족 시 HOLD)."""
+    plugin = RegimeQuantStrategy({
+        **PARAMS, "model_dir": model_dir,
+        "cooldown_bars": 2, "entry_on_transition_only": True,
+    })
+    plugin._contract = lambda c: _contract(RegimeType.TREND, RegimeDirection.LONG, 0.8)
+    ctx = _ctx(_synth_candles(300))
+    plugin.on_position_closed(_pos(PositionSide.LONG, logic="trend"), 0.0)
+    plugin.on_bar_close(ctx, "1h")  # bar1(전환True) 이지만 쿨다운 1<2 → HOLD
+    assert plugin.generate_signal(ctx).side == SignalSide.HOLD
+    plugin.on_bar_close(ctx, "1h")  # bar2(쿨다운 통과) 이지만 지속 trend(전환 아님) → HOLD
+    assert plugin.generate_signal(ctx).side == SignalSide.HOLD
+
+
 def test_hold_signals_are_distinct(model_dir):
     """_HOLD 싱글톤 제거 회귀 가드 — HOLD 마다 별 객체라 meta 오염 격리."""
     plugin = RegimeQuantStrategy({**PARAMS, "model_dir": model_dir})
