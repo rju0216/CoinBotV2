@@ -34,7 +34,8 @@ data/candles/*.csv
 models/
 
 # 레짐 모델 artifact (walk-forward 사전학습 JSON, scripts/build_regime_artifacts.py 산출)
-data/regime_models/
+# regime_models* = 기본/변형(예: _trendonly gen1 추세-단독) 전부 untracked
+data/regime_models*/
 
 # 피처 캐시 (parquet, ML 학습 시 자동 생성)
 data/features/

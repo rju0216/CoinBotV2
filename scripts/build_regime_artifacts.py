@@ -66,6 +66,10 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--n-init", type=int, default=5)
     p.add_argument("--n-iter", type=int, default=100)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument(
+        "--no-range", action="store_true",
+        help="비trend 상태를 RANGE 대신 NONE(무매매)로 매핑 → 추세-단독 gen1 (O-7 (가))",
+    )
     return p.parse_args()
 
 
@@ -94,6 +98,7 @@ async def _main() -> None:
     models = walk_forward(
         candles, windows, args.k, args.tau,
         n_init=args.n_init, n_iter=args.n_iter, seed=args.seed,
+        enable_range=not args.no_range,
     )
 
     out = Path(args.out_dir)

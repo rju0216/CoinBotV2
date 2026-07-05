@@ -32,7 +32,7 @@ Phase 단위로 진행 기록·결정·잠재 이슈를 누적한다.
 | D2 | 정책 계약 표면 B 재설계 + O-2·O-4·O-5 결정 | ✅ 완료 | 2026-06-30 | (미커밋) |
 | D3 | 학습 파이프라인 설계 (데이터분할·feature·t-HMM·K선택/매핑·walk-forward) + O-1·O-3·O-6 결정 | ✅ 완료 | 2026-07-01 | 5f8a288 |
 | D3.5 | 구현 전 점검 (코드검증·환경·DD-1) — GO | ✅ 완료 | 2026-07-01 | 5f8a288 |
-| D4 | 구현 (D4-1·D4-2·D4-3 ✅ / D4-3.5 진행중 / D4-4~5 예정) | 진행중 | 2026-07-01~ | D4-3 b14f175 / 백테분석·τ스윕 f90ae56·5841f6e / logic·churn가드 eb9d8e1·216612f |
+| D4 | 구현 (D4-1·D4-2·D4-3·**D4-3.5 ✅ range 드롭·추세단독** / D4-4~5 예정) | 진행중 | 2026-07-01~ | D4-3 b14f175 / 백테분석·τ스윕 f90ae56·5841f6e / logic·churn가드 eb9d8e1·216612f / **D4-3.5 추세단독 리팩터 (커밋대기)** |
 
 ---
 
@@ -209,9 +209,9 @@ hmmlearn 은 Py3.14 빌드 불가 + Student's-t 미지원(Gaussian 한정) → *
 | **D4-1** ✅ | 인프라 prep: 엔진 4수정·indicators 2·정리·requirements | 회귀 258 + update_take_profit·트레일링 e2e |
 | **D4-2** ✅ | 발견층(Gaussian): feature·EM·sliding-window filter·K선택·매핑·artifact·RegimeService | 회귀 294 + 합성복원·analytic·causal·M-step 참조대조 |
 | **D4-3** ✅ | 매매층: 디스패처+Trend/Range(DD-1·None) + 빌드도구·Dev 백테 가이드 | 회귀 358 + E2E·I-002④·churn(I-006)·정합성 |
-| **D4-3.5** 진행중 | Gaussian 계수 스윕(τ·θ·k·churn가드) + range 원인분석(v2 프로파일링) | trend 수익전환 확정 ✅ + range 유효성 진단 |
-| D4-4 | Gaussian→t emission 교체 | 합성복원(t) + Dev 재백테 |
-| D4-5 | walk-forward OOS + 계수 스윕 + 커버리지 최종 + 2018 스트레스 + 낙관편향/funding 해석 | OOS 정직 평가 |
+| **D4-3.5** ✅ | Gaussian 계수 스윕(τ·θ·k·churn가드) + range 유효성 규명 → **O-7 (가) range 드롭** + 추세-단독 리팩터 | trend 수익전환 ✅ · range 격리백테 손실→드롭 · 회귀 371 · 재백테 +801 |
+| D4-4 | Gaussian→t emission 교체 (**trend-only**) + **I-012 fit 안정성** 점검 | 합성복원(t) + Dev 재백테 + 다중seed 안정 |
+| D4-5 | walk-forward OOS + 계수 스윕 + 커버리지 최종 + 2018 스트레스 + 낙관편향/funding 해석 + **fit 안정성(I-012)** + **gen1 as-built 스펙 작성**(`docs/01_Guide_Docs/`) | OOS 정직 평가 |
 | (범위 밖) | 라이브 통합(C): RegimeService 상태 복원·OKX 배선 | 라이브 단계 |
 
 ### D4-1 — 인프라 prep (완료)
@@ -351,11 +351,34 @@ hmmlearn 은 Py3.14 빌드 불가 + Student's-t 미지원(Gaussian 한정) → *
 - range 분기별 분해: **횡보 분기(2022Q1 -351 wr0% / 2022Q3 -920 wr35%)에서도 손실** → 시장국면 무관.
 - **근본 가설(I-011)**: mapping 이 range 를 "저 \|μ\|/σ(저방향성)"로만 정의하고 **mean-reversion 미검증**. train(2020-2022 추세지배)에 진짜 박스권 없어 HMM range 상태가 "추세 중 되돌림"으로 오염 → 평균회귀 역주행. K=3 은 임의 고정(K 미탐색).
 
-**⑤ range 원인분석 v2 계획 (독립검증 F-1~F-6 반영)**
-- **1단계 프로파일링(계수 무관)**: 전체 Dev 단일 학습 × **K=2~6**, 상태별 \|μ\|/σ + **중심선(BB mid) 대비 편차의 half-life/AR(1)**(로그가격 절대값 아님 = F-1 치명 반영) + 밴드폭 내 복귀비율. **지속구간(run) 내부 측정** + 표본수·신뢰구간(F-2) → 진짜 range 후보 식별.
-- **2단계 진단(대안가설 분기, F-4)**: (A)특정 K에 저\|μ\|/σ+편차 mean-revert 존재 → 오염(해상도) / (B)전 상태 half-life 발산 → BTC 1h 평균회귀 부재 → range 포기 / (C)후보없고 박스권 희소 → 데이터 빈약(§1.7 train 확장) / (D)mean-revert 양호한데 백테 손실 → 계수 미최적.
-- **3단계 매매-특화(A·D 시)**: 후보 상태 range 백테+계수.
-- **4단계 설계**: mapping **3분류 trend/range/none**(none 은 별도임계 아닌 mean-reversion 지표로 결정, F-5) + K 재선택(**LL·BIC·커버리지·mean-reversion 4렌즈**, trend 동시 재평가, F-3).
+**⑤ v2 range 원인분석 — 원안(통계 프로파일) 폐기 → 경량 프로파일 + P&L 백테 심판 (2026-07-03~05)**
+> 원안: 전체 Dev K=2~6 × 중심선편차 half-life/AR(1) 통계 프로파일링 → 진단(A/B/C/D) → 3분류 재설계.
+> **독립검증 2라운드서 원안의 치명 결함 발견 → 폐기**:
+> - **C-1(치명, 실증)**: 중심선편차 `z=log(close/SMA20)`의 AR(1) half-life는 **순수 랜덤워크서도 유한**(φ=0.92·half-life 8.5봉) → 어떤 상태도 range 자동 후보=거짓양성. 이동평균 편차는 추세뺀 고역통과라 RW서 자명히 정상.
+> - **NEW-6(치명, 실증)**: 상태를 `efficiency_ratio48`(추세성)로 정의 → 겹치는 호흡서 저ER↔저VR 항등적. "range 상태의 저VR"이 상태를 정의한 ER의 순환 되읽기(RW서 저ER선택 ρ −0.012<전체 −0.005).
+> - 편차 half-life·ρ/VR 통계 지표가 모두 선택편향·유한표본편향·ER순환에 confound. → **"통계로 range 증명" 포기, 경제적(백테 P&L) 심판으로 전환**(P&L은 상태정의에 조건화된 통계량 아니라 면역). 무거운 재세그먼트 null 대신 백테가 arbiter.
+
+**⑥ 1단계 경량 프로파일 (후보 식별 — 판정 아님, 1회용 `data/range_scan/` untracked)**
+- 전체 Dev(2020-2022, 26304봉) 단일학습 K=2~6(n_init5). 상태별 |μ|/σ·dwell·point-est ρ/VR·연도분포.
+- **발견1(견고): 전 K·전 상태 |μ|/σ ≤ 0.035** → 강한 방향성 상태가 어느 K에도 없음. 고K가 trend 상태 분리 못 함(저방향성 조각화) → **가설 A(해상도 부족) 미지지**.
+- **발견2(주의)**: VR8 전부 <1이나 **전 상태 균일 = ER 순환 아티팩트 색채**. 유한표본 편향보정(ρ_adj=ρ+1/T̄): 짧은 dwell 상태(K6s1 등)는 보정 후 ρ_adj>0(모멘텀=아티팩트). 잔여 회귀 전 상태 약함(ρ_adj ≥ −0.037).
+- **후보(두 국면 클러스터)**: 2020-22 K6s5/K4s1/K5s2(표본 큼·우선) + 2021 K4s0/K5s1/K6s4.
+
+**⑦ 2단계 격리 백테 심판 (O-7 닫음)**
+- 후보 상태만 range 격리: argmax monkey-patch(mass-aggregate로는 소수 격리 불가) + 후보→(RANGE,NONE)·비후보→(TREND,NONE)+θ_trend봉쇄 → 순수 TP/SL 회귀 테스트. 정식 BacktestEngine(default.yaml 무접촉).
+- **6후보 전부 손실 PF 0.49~0.68** (거래 60~87=기아 아님, **정합성 규칙10 전건 OK**). 계수스윕(best 2후보 × k_range_sl 1.0~2.5·θ_range) **PF>1 config 전무** — SL 넓히면 승률 30%→59% 오르나 손익비 상쇄=**엣지 부재 서명**.
+- **정직 고지**: 실제 스윕은 k_range_sl·θ_range만(계획의 RSI/BB/expiry 미실행). 단 손실 원인이 **구조(TP=BB중심선 < SL=1.5ATR·승률 40~47%)**라 진입타이밍 파라미터로 뒤집힐 가능성 낮음.
+- **인샘플 best-shot(가장 회귀같은 상태·계수스윕)도 실패 = 결정적**(비대칭). **스코프: "추세지배 Dev 데이터에 range 엣지 없음"** — "BTC 1h 평균회귀 부재"는 아님.
+
+**⑧ O-7 (가) range 드롭 + A 추세-단독 리팩터 (커밋대기)**
+- **O-7 = (가) gen1 range 드롭** — 단 **gen2 revival 조건부 보류**(RANGE 타입·RangeLogic·range config 파라미터 **코드 보존**, 삭제 아님). **gen2 revival 조건**: (a) train 데이터 확장(진짜 박스권 포함 — Dev는 추세지배·박스권 희소, 가설 C) / (b) t-emission(D4-4) 후 상태 재분해 / (c) 다른 range instrument(프로파일서 회귀=빠른/미시구조 신호라 BB중심선-hold 전략과 구조적 미스매치).
+- **A 리팩터**: `contract.RegimeType.NONE` 도입 + `mapping.StateMapping.fit(enable_range)`(비trend→NONE) + `build_regime_artifacts --no-range`. **plugin·엔진·TrendLogic·RangeLogic 무변경**(NONE은 is_trend/is_range 어디에도 안 걸려 no-op — e2e 실증). **회귀 371 passed**(+8: mapping NONE 5·training 1·e2e NONE 2).
+- **재백테(2021-2022, --no-range τ0.05, k_sl3·k_trail6·cd24)**: total **+801(+8.01%) PF 1.27 max_dd 10.5%, range n=0**(NONE 무매매 실증), 정합성 OK → **combined −6.8%서 순수익 전환 확정**.
+
+**⑨ fit 규명 + I-012 (HMM 적합 불안정)**
+- +801 < 이전 탐사 trend +2,434 규명(규칙11): OLD tau_05 fit을 none변환해 같은 코드·계수 백테 → **+2,419(n63) 재현**. 같은 모든 것, **artifact(fit)만 다름 → 차이 100% HMM 적합**(hmm.py 무변경). 원인=EM 설정(OLD 캐시 n_init2/iter50 vs NEW 빌드기본 n_init5/iter100) → 다봉 윈도우 국소최적 갈림(OLD |μ|/σ 0.087~0.109 강함·2021Q3 trend 有, NEW 0.055~0.058·2021Q3 none).
+- **I-012 신규**: HMM fit 불안정 — 추세 P&L·상태커버리지가 EM 설정(n_init/seed)에 민감(+801~+2,419, 3배 스윙). 역설: n_init↑(LL↑)인데 매매↓("LL 최대 ≠ tradeable trend"). **어느 fit도 정답 아님·둘 다 PF>1이라 O-7 (가) 무관하게 유지.**
+- **gen1 fit 표준 = NEW(n_init5/iter100/seed0) 잠정 채택** (재현성=커밋 빌드도구 결정론 기본값 / LL 안나쁨 n_init5⊇2 / 보수적 +801). **잠정인 이유**: fit "최종"엔 안정성+OOS 필요한데 인샘플 P&L로 고르면 과적합 → OOS 전 최종불가. 참성능·표준 확정은 **D4-5(다중seed 안정성 + OOS)**.
 
 ---
 
@@ -371,9 +394,11 @@ hmmlearn 은 Py3.14 빌드 불가 + Student's-t 미지원(Gaussian 한정) → *
 | I-006 | 추세 관대진입의 재진입 churn (트레일링 손절 후 즉시 재진입 휩쏘) | D3.5 | 해소 | τ 스윕서 실발현(연속<2h 25%) → **churn 가드(cooldown/transition)로 해소**(D4-3.5①, 연속<2h 25%→0%) |
 | I-007 | EM 학습 forward/backward Python 루프 성능 (50k봉×K×init×iter×윈도우 느릴 수 있음) | D4-2 | OPEN | D4-5 실학습 전 최적화(벡터화/numba/init·iter 축소) |
 | I-008 | RangeLogic BB/RSI 히스토리 길이 의존(RSI Wilder RMA) → 백테≠라이브 미세 불일치 | D4-3 | 해소(S1) | bounded 윈도우(`indicator_window`) 계산 — RegimeService H4(ATR bounded) 패턴 차용 |
-| I-009 | 매핑 τ 스케일 미스매치: per-state \|μ\|/σ ~0.01-0.1 vs τ=0.5 → 24상태 전부 range | D4-3 백테 | 스윕완료 | τ 스윕 완료(trend 살림). **range 손실은 τ 아니라 mean-reversion 미검증(I-011)이 근본** → type 최종값은 v2 3분류와 함께. `build_regime_artifacts` 커버리지 경고 잔여 |
+| I-009 | 매핑 τ 스케일 미스매치: per-state \|μ\|/σ ~0.01-0.1 vs τ=0.5 → 24상태 전부 range | D4-3 백테 | **해소** | τ 스윕(→0.05)으로 trend 살림. range 드롭(O-7 가) 후 **τ는 trend/none 게이트로 확정**(3분류 불필요) → 최종 τ 재최적은 D4-5 |
 | I-010 | 추세 진입 승률(19%) < 손익분기(29%) — 관대진입(DD-1) 가짜진입+churn (손익비 2.44·트레일링은 건강) | D4-3 τ스윕 | 해소 | θ_trend 무력(conf≈1) → **k_trail 6.0 + cooldown24 로 trend margin +10.7·pnl +2,434 수익전환**(D4-3.5③) |
-| I-011 | range 손실 근본: mapping 이 "저 \|μ\|/σ=range"로 정의(mean-reversion 미검증) + train 추세지배로 range 상태 오염(미검증 가설). K=3 임의 | D4-3.5 | 분석중 | v2 프로파일링(K=2~6, 중심선편차 half-life)로 진짜 range 유무 진단 → 3분류(trend/range/none) or range 포기 |
+| I-011 | range 손실 근본: mapping 이 "저 \|μ\|/σ=range"로 정의(mean-reversion 미검증) + train 추세지배로 range 상태 오염. K=3 임의 | D4-3.5 | **해소** | v2 경량 프로파일(K=2~6, 후보식별)→**격리 백테 심판**(6후보 전부 손실 PF<0.7) → **range 엣지 없음(Dev) → O-7 (가) range 드롭**. gen2 revival 조건부(데이터확장/t-emission/다른 instrument) |
+| I-012 | **HMM fit 불안정**: 추세 P&L·상태커버리지가 EM 설정(n_init/seed) 국소최적에 민감 (+801~+2,419, 3배 스윙). 역설: n_init↑(LL↑)인데 매매↓ | D4-3.5 | OPEN | gen1 fit=NEW(n_init5) **잠정**(재현성·보수). 확정=**D4-5 다중seed 안정성 선택 + OOS**(인샘플 P&L로 fit 선택 금지=과적합). t-emission(D4-4) 완화 여부도 관측 |
+| I-013 | `selection.py` CORE_COMBOS가 `(RANGE,NONE)` 요구 → enable_range=False(gen1)서 커버리지 경고. gen1 미배선(select_k 빌드 미사용이라 무영향) | D4-3.5 | OPEN(경미) | gen1 K재선택 시 trend/none 커버리지 기준으로 정리 → D4-5 |
 
 ---
 
@@ -389,7 +414,8 @@ hmmlearn 은 Py3.14 빌드 불가 + Student's-t 미지원(Gaussian 한정) → *
 | O-6 | t-HMM 구현 경로 | **(나) Gaussian 스캐폴드 → t 교체** (gen1=t). 검증=합성복원+analytic, hmmlearn 드롭(D4-1) | ✅ D3 |
 | S1-1 | 변동성 feature 정의 | **(가) 실현변동성** std(24봉 로그수익률) | ✅ D3 |
 | DD-1 | 추세 진입 정책 | **관대 진입 → churn 가드 도입** (`cooldown_bars`·`entry_on_transition_only`) | ✅ D4-3.5 (가드로 trend 수익전환 +2,434) |
-| O-7 | range 매핑 정책 | **(보류) 3분류 trend/range/none + mean-reversion 검증** (v2 진단 후 확정) | 진행중 D4-3.5 |
+| O-7 | range 매핑 정책 | **(가) gen1 range 드롭** — 격리백테서 엣지 없음(PF<0.7). 비trend→NONE(무매매). **gen2 revival 조건부 보류**(RANGE/RangeLogic 코드 보존; 조건=데이터확장/t-emission/다른 instrument) | ✅ D4-3.5 |
+| O-8 | gen1 HMM fit 표준 | **NEW(n_init5/iter100/seed0) 잠정** — 재현성·LL·보수. 최종=D4-5 다중seed 안정+OOS (인샘플 P&L 선택=과적합 금지) | 잠정 D4-3.5 (I-012) |
 
 ---
 
@@ -439,3 +465,12 @@ hmmlearn 은 Py3.14 빌드 불가 + Student's-t 미지원(Gaussian 한정) → *
   (+2,434, I-010·I-006 해소, DD-1 확정)**. θ_trend 무력(conf median 0.997). range 는 횡보서도 손실
   → "추세장 탓" 기각(2번째 오판). 근본가설 **I-011**(range 저방향성 정의·mean-reversion 미검증·train 오염).
   **v2 계획**(K=2~6 중심선편차 half-life 프로파일링→진단→3분류, 독립검증 F-1 치명 반영). 신규 결정 **O-7**(range 3분류 보류).
+- **2026-07-03~05**: **D4-3.5 range 유효성 규명 → O-7 (가) range 드롭 + 추세-단독 리팩터** (D4-3.5 §⑤~⑨).
+  - **v2 통계 프로파일 원안 폐기**(독립검증 2라운드): **C-1**(중심선편차 half-life RW서 φ0.92 유한=거짓양성, 실증)·**NEW-6**(상태 정의 ER↔VR 순환, 실증) → 통계지표 confound → **경제적 P&L 백테 심판으로 전환**.
+  - **1단계 경량 프로파일**(K2~6): 전 상태 |μ|/σ≤0.035(강방향 상태 부재·가설A 미지지), ρ/VR 균일<1=ER순환 색채. 후보=두 국면 클러스터.
+  - **2단계 격리 백테**: 6후보 전부 손실 PF 0.49~0.68, 계수스윕도 PF>1 없음(엣지 부재 서명). 인샘플 best-shot 실패=결정적. 스코프=Dev 한정.
+  - **O-7=(가) range 드롭**(gen2 revival 조건부, RANGE/RangeLogic 코드 보존). **I-011 해소**.
+  - **A 리팩터**: RegimeType.NONE·mapping enable_range·build --no-range. plugin·엔진 무변경(NONE no-op, e2e 실증). **회귀 371**. config 주석 갱신(--no-range·τ0.05·range dormant).
+  - **재백테**(2021-2022 --no-range): **+801(+8.01%) PF1.27 range0** → combined −6.8%서 순수익 전환.
+  - **fit 규명**: +801 vs 이전 +2,434 = **HMM 적합 차이 100%**(OLD n_init2 캐시 vs NEW n_init5 재빌드, OLD none변환 백테 +2,419 재현). 신규 **I-012**(fit 불안정 3배 스윙)·**I-013**(selection CORE_COMBOS 경미). 신규 결정 **O-8**(gen1 fit=NEW 잠정).
+  - 미커밋 1회용: scratchpad `range_profile.py`·`range_bt.py`·`trend_only_bt.py`, `data/range_scan/`·`regime_models_trendonly*/`(untracked).

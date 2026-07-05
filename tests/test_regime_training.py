@@ -11,6 +11,7 @@ import sys
 
 import pandas as pd
 
+from src.strategy.regime.contract import RegimeType
 from src.strategy.regime.training import make_anchored_windows, walk_forward
 from tests.test_regime_quant_plugin import _synth_candles
 
@@ -92,6 +93,22 @@ def test_walk_forward_train_excludes_valid_start_bar():
     assert pd.Timestamp(m.meta["train_start"]) == candles.index[0]
 
 
+# ---- enable_range 배선 (gen1 추세-단독, O-7 (가)) ----
+
+def test_walk_forward_enable_range_false_no_range_type():
+    """enable_range=False → 매핑에 RANGE 타입 전무(비trend 전부 NONE). 추세-단독."""
+    candles = _synth_candles(400)
+    windows = make_anchored_windows("2020-01-08", "2020-01-15", 1)
+    models = walk_forward(
+        candles, windows, k=2, tau=0.5, n_init=1, n_iter=5, seed=0,
+        enable_range=False,
+    )
+    for m in models:
+        assert RegimeType.RANGE not in m.mapping.types  # 비trend → NONE
+        assert all(t in (RegimeType.TREND, RegimeType.NONE) for t in m.mapping.types)
+        assert m.meta["enable_range"] is False
+
+
 # ---- 빌드 스크립트 CLI smoke ----
 
 def test_build_script_cli_help():
@@ -102,3 +119,4 @@ def test_build_script_cli_help():
     assert r.returncode == 0
     assert "walk-forward" in r.stdout
     assert "--valid-start" in r.stdout
+    assert "--no-range" in r.stdout  # gen1 추세-단독 플래그

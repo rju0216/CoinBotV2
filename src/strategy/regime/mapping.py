@@ -46,11 +46,17 @@ class StateMapping:
         raw_log_returns: np.ndarray,
         gamma: np.ndarray,
         tau: float,
+        enable_range: bool = True,
     ) -> "StateMapping":
         """train RAW 로그수익률(1D) + 상태 책임도 γ(smoothed, T×K) → 매핑표.
 
         raw_log_returns 와 gamma 는 **같은 행으로 정렬**되어 있어야 한다(호출자 책임).
-        per-state: γ-가중 평균·std → type=|μ|/std vs τ, direction=부호(trend)/none(range).
+        per-state: γ-가중 평균·std → type=|μ|/std vs τ, direction=부호(trend)/none(비trend).
+
+        enable_range: 비trend(|μ|/σ≤τ) 상태를 어떻게 볼지.
+          - True(기본, gen2/기존): RANGE 로 매핑 → RangeLogic 이 평균회귀 매매.
+          - False(gen1, O-7 (가)): NONE(무매매/관망) 으로 매핑 → 추세-단독. 저방향성
+            구간은 매매 안 함. 매핑만 바뀌고 엔진·플러그인은 무변경(NONE 은 no-op).
         """
         r = np.asarray(raw_log_returns, dtype=float)
         g = np.asarray(gamma, dtype=float)
@@ -77,7 +83,7 @@ class StateMapping:
                 t = RegimeType.TREND
                 d = RegimeDirection.LONG if mean_k > 0 else RegimeDirection.SHORT
             else:
-                t = RegimeType.RANGE
+                t = RegimeType.RANGE if enable_range else RegimeType.NONE
                 d = RegimeDirection.NONE
             types.append(t)
             directions.append(d)

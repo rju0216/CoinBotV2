@@ -30,9 +30,13 @@ def build_model(
     n_init: int = 5,
     seed: int = 0,
     meta: dict | None = None,
+    enable_range: bool = True,
     **fit_kw,
 ) -> RegimeModel:
-    """한 train 윈도우 → RegimeModel (feature→zscore→HMM fit→mapping)."""
+    """한 train 윈도우 → RegimeModel (feature→zscore→HMM fit→mapping).
+
+    enable_range: 비trend 상태를 RANGE(True, 기존) / NONE(False, gen1 추세-단독) 로 매핑.
+    """
     raw = compute_raw_features(train_candles, feature_config)
     zscore = ZScoreParams.fit(raw)
     z = zscore.transform(raw)
@@ -44,13 +48,14 @@ def build_model(
         X, n_init=n_init, seed=seed, **fit_kw
     )
     gamma = hmm.smoothed_posterior(X)  # offline 특성화 (smoothed OK)
-    mapping = StateMapping.fit(raw_log, gamma, tau)
+    mapping = StateMapping.fit(raw_log, gamma, tau, enable_range=enable_range)
 
     full_meta = {
         "train_start": str(train_candles.index[0]),
         "train_end": str(train_candles.index[-1]),
         "emission_kind": hmm.emission.kind,
         "k": k,
+        "enable_range": enable_range,
     }
     full_meta.update(meta or {})
     return RegimeModel(

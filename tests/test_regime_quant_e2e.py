@@ -375,3 +375,65 @@ async def test_e2e_range_tp_hit(model_dir, tmp_path):
     assert tp_hits[0]["side"] == "long"
     assert tp_hits[0]["pnl"] > 0
     _assert_consistency(eng, result)
+
+
+# ---- E2E-8: NONE 매핑 = 무매매 (추세-단독 gen1, O-7 (가)) ----
+# "플러그인 무변경" 주장(NONE 은 is_trend/is_range 어디에도 안 걸림)을 실엔진으로 실증.
+
+@pytest.mark.asyncio
+async def test_e2e_none_contract_no_entry(model_dir, tmp_path):
+    """NONE contract 지속 → 진입 0 (NONE = 관망/무매매)."""
+    register_strategy(RegimeQuantStrategy)
+    candles = _candles_1h([67000.0 + (i % 3) * 5 for i in range(30)], hl_pad=2.0)
+    eng = BacktestEngine(
+        _config(model_dir, str(tmp_path / "bt.db")),
+        start=candles.index[0].to_pydatetime(),
+        end=candles.index[-1].to_pydatetime(),
+    )
+    eng.inject_candles({"1h": candles})
+    await _setup(eng)
+    eng.strategies[0]._contract = lambda ctx: _ct(
+        RegimeType.NONE, RegimeDirection.NONE, vol=50.0
+    )
+    await eng.run()
+    result = await eng.get_result()
+    await eng.shutdown()
+
+    assert result.num_trades == 0  # NONE = 무매매 (진입도 range 도 없음)
+    _assert_consistency(eng, result)
+
+
+@pytest.mark.asyncio
+async def test_e2e_none_freezes_held_trend(model_dir, tmp_path):
+    """보유 trend 중 NONE 전환 → 트레일 동결·force_exit 없음 → shutdown 까지 보유(스펙 §3.3)."""
+    register_strategy(RegimeQuantStrategy)
+    candles = _candles_1h([67000.0 + (i % 3) * 5 for i in range(20)], hl_pad=2.0)
+    none_idx = 8  # 직전봉 인덱스 >= 이면 NONE 전환
+
+    eng = BacktestEngine(
+        _config(model_dir, str(tmp_path / "bt.db")),
+        start=candles.index[0].to_pydatetime(),
+        end=candles.index[-1].to_pydatetime(),
+    )
+    eng.inject_candles({"1h": candles})
+    await _setup(eng)
+
+    def stub(ctx):
+        df = ctx.candles.get("1h")
+        if df is None or len(df) == 0:
+            return None
+        i = candles.index.get_loc(df.index[-1])
+        if i < none_idx:
+            return _ct(RegimeType.TREND, RegimeDirection.LONG, vol=50.0)
+        return _ct(RegimeType.NONE, RegimeDirection.NONE, vol=50.0)
+
+    eng.strategies[0]._contract = stub
+    await eng.run()
+    result = await eng.get_result()
+    await eng.shutdown()
+
+    # trend long 진입 후 NONE 전환 → 청산(force_exit) 안 일어나고 shutdown 까지 단일 보유
+    assert result.num_trades == 1
+    assert result.trades[0]["side"] == "long"
+    assert result.trades[0]["exit_reason"] == "engine_shutdown"
+    _assert_consistency(eng, result)

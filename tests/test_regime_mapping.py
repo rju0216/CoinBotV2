@@ -49,6 +49,57 @@ def test_low_ratio_is_range_even_if_directional_noise():
     assert m.directions[0] == RegimeDirection.NONE
 
 
+# ---- enable_range=False → NONE (gen1 추세-단독, O-7 (가)) ----
+
+def test_enable_range_false_maps_low_ratio_to_none():
+    # 저 |μ|/σ 상태: enable_range=False → RANGE 아니라 NONE(무매매)
+    rng = np.random.default_rng(3)
+    r = rng.normal(0.001, 0.02, 500)  # |μ|/std ≈ 0.05 < τ
+    m = StateMapping.fit(r, np.ones((500, 1)), tau=1.0, enable_range=False)
+    assert m.types[0] == RegimeType.NONE
+    assert m.directions[0] == RegimeDirection.NONE
+
+
+def test_enable_range_default_true_preserves_range():
+    rng = np.random.default_rng(3)
+    r = rng.normal(0.001, 0.02, 500)
+    m = StateMapping.fit(r, np.ones((500, 1)), tau=1.0)  # default True
+    assert m.types[0] == RegimeType.RANGE
+
+
+def test_enable_range_false_keeps_trend():
+    # 강한 추세 상태는 enable_range 무관하게 TREND (게이트는 τ)
+    rng = np.random.default_rng(0)
+    r = rng.normal(0.01, 0.002, 300)  # |μ|/std ≈ 5 > τ
+    m = StateMapping.fit(r, np.ones((300, 1)), tau=1.0, enable_range=False)
+    assert m.types[0] == RegimeType.TREND
+    assert m.directions[0] == RegimeDirection.LONG
+
+
+def test_none_mapping_roundtrip():
+    m = StateMapping(
+        types=(RegimeType.TREND, RegimeType.NONE),
+        directions=(RegimeDirection.LONG, RegimeDirection.NONE),
+        tau=0.05,
+        stats=_dummy_stats(2),
+    )
+    m2 = StateMapping.from_dict(m.to_dict())  # "none" 직렬화 round-trip
+    assert m2.types == (RegimeType.TREND, RegimeType.NONE)
+    assert m2.directions == (RegimeDirection.LONG, RegimeDirection.NONE)
+
+
+def test_aggregate_picks_none_contract():
+    m = StateMapping(
+        types=(RegimeType.TREND, RegimeType.NONE),
+        directions=(RegimeDirection.LONG, RegimeDirection.NONE),
+        tau=0.05,
+        stats=_dummy_stats(2),
+    )
+    c = m.aggregate(np.array([0.3, 0.7]), volatility=50.0)  # NONE 질량 큼
+    assert c.type == RegimeType.NONE
+    assert c.is_none and not c.is_trend and not c.is_range
+
+
 # ---- confidence 집계 (추론) ----
 
 def test_aggregate_sums_confidence_over_same_contract():

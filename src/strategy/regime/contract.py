@@ -13,10 +13,15 @@ from enum import Enum
 
 
 class RegimeType(Enum):
-    """추세장 / 횡보장."""
+    """추세장 / 횡보장 / 무매매.
+
+    NONE = 매매하지 않는 레짐(관망). gen1 은 range 를 드롭(O-7 (가))하고 저방향성
+    상태를 NONE 으로 매핑해 추세-단독으로 동작한다. RANGE 는 gen2 revival 대비 보존.
+    """
 
     TREND = "trend"
     RANGE = "range"
+    NONE = "none"
 
 
 class RegimeDirection(Enum):
@@ -52,3 +57,8 @@ class Contract:
     @property
     def is_range(self) -> bool:
         return self.type == RegimeType.RANGE
+
+    @property
+    def is_none(self) -> bool:
+        """무매매 레짐(관망). 매매 로직은 is_trend/is_range 어디에도 안 걸려 no-op."""
+        return self.type == RegimeType.NONE
