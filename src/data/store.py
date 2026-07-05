@@ -28,7 +28,10 @@ class DataStore:
         """
         base_path = config.get("database", {}).get("path", "data/coinbot.db")
         stem, ext = os.path.splitext(base_path)
-        self.db_path = f"{stem}_{mode}{ext}"
+        # 데모(sandbox) live 는 실거래와 별도 DB(coinbot_live_demo.db) → 데이터·잔고 격리.
+        sandbox = config.get("exchange", {}).get("sandbox", False)
+        suffix = f"{mode}_demo" if (mode == "live" and sandbox) else mode
+        self.db_path = f"{stem}_{suffix}{ext}"
         self.mode = mode
         self._dataframes: dict[str, pd.DataFrame] = {}
         self._db: aiosqlite.Connection | None = None

@@ -30,14 +30,16 @@ def load_config(config_path: str | Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as f:
         config: dict[str, Any] = yaml.safe_load(f) or {}
 
-    # OKX 자격증명
+    # OKX 자격증명 — sandbox(데모)면 OKX_DEMO_*, 실거래면 OKX_* 를 읽는다.
+    # 데모/실거래 키를 .env 에 공존시키고 exchange.sandbox flag 로 자동 선택.
     exchange = config.setdefault("exchange", {})
-    if os.getenv("OKX_API_KEY") is not None:
-        exchange["api_key"] = os.getenv("OKX_API_KEY", "")
-    if os.getenv("OKX_SECRET") is not None:
-        exchange["secret"] = os.getenv("OKX_SECRET", "")
-    if os.getenv("OKX_PASSPHRASE") is not None:
-        exchange["passphrase"] = os.getenv("OKX_PASSPHRASE", "")
+    prefix = "OKX_DEMO_" if exchange.get("sandbox") else "OKX_"
+    if os.getenv(f"{prefix}API_KEY") is not None:
+        exchange["api_key"] = os.getenv(f"{prefix}API_KEY", "")
+    if os.getenv(f"{prefix}SECRET") is not None:
+        exchange["secret"] = os.getenv(f"{prefix}SECRET", "")
+    if os.getenv(f"{prefix}PASSPHRASE") is not None:
+        exchange["passphrase"] = os.getenv(f"{prefix}PASSPHRASE", "")
 
     # BL-2-1: Telegram 봇 자격증명 — config의 live.notifications.telegram.bot_token/chat_id에 주입.
     # config에 빈 문자열로 두고 .env에서 실값 주입 (보안)
