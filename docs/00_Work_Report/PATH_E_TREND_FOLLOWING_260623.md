@@ -180,7 +180,8 @@ ZigZag 20% 추세 전환 분할(32 세그먼트, 1d 2026-06-23 갱신) + LO+chop
 | 2026-06-26 | MS-4 종합 — 채택 결정 | ✅ 완료 | `1c979b2` | LO+chop50 vs LO+ma200 정면 비교: **ma 위험조정(MDD 5/5)·연도 일관·효율 우위, BTC 동급**. **결정 (가) LO+ma200 으로 정식화 후보 전환**(§7/§9.7). §8 라이브 로드맵 갱신(정식화·자금관리 ma 기준). 한계(동조성·DOGE 폭등의존·funding=0) 유지. chop50 대안 후보 보존. **MS Phase 종착** |
 | 2026-06-28 | A1 paper 청산 e2e + 개선점 | ✅ 완료 | `8ebf19b` | **청산 e2e 완성**: trailing 단조하향→sl_hit @60759.90→net +$105.29, DB 정합(§8.3). 부수 발견: I-PE006(heartbeat 부재)/007(trailing SL DB 미기록)/008(paper restore dead code)/009(거래소 trailing SL 미갱신). **I-PE006 fix**(feed heartbeat 10분) + **I-PE007 fix**(store.update_trade_sl+live 감지) + **I-PE008 fix**(paper 재기동 balance/포지션 복원). 단위 3 + 회귀 540. I-PE009 등록(라이브 전). 다음=A2 정합성 |
 | 2026-07-05 | A2 라이브-백테 정합성 | ✅ 완료 | `9180712` | paper 3거래 vs 백테(06-01~07-05) 6거래 대조: **신호 완전 일치**(6거래 같은 봉·방향·sl_hit). **정상 진입가 정합** #2 0.019%·#3 0.009%(slippage 수준), 기동직후 #1만 0.60%(현재가 진입 1회성). **I-PE006/007/008 e2e ✅**. I-PE008 복원 소스 교정. 라이브-백테 엔진 일관성 실증. 결과 §8.3 |
-| 2026-07-05 | A3 LO+ma200 정식화 | ✅ 완료 | (미커밋) | (가) 통합: 실험 plugin `trend_donchian_exp`→`trend_donchian` 흡수(단일 plugin, exp 삭제), config LO+ma200 정식값(long_only/regime_filter_type=ma/ma_period=200). 테스트 이전(옵션 필터)·회귀 538. **정합 ✅(A3-4)**: LO+ma200=§9 재현(184/1.82/pos5-7/MDD9.8/ret126.6), 옵션off=baseline 441/1.31 재현. 다음=A3-5 paper 전환(DB 백업 후 새 DB)·A4 백테재검증 |
+| 2026-07-05 | A3 LO+ma200 정식화 | ✅ 완료 | `5ba1b48` | (가) 통합: 실험 plugin `trend_donchian_exp`→`trend_donchian` 흡수(단일 plugin, exp 삭제), config LO+ma200 정식값(long_only/regime_filter_type=ma/ma_period=200). 테스트 이전(옵션 필터)·회귀 538. **정합 ✅(A3-4)**: LO+ma200=§9 재현(184/1.82/pos5-7/MDD9.8/ret126.6), 옵션off=baseline 441/1.31 재현. A3-5 paper 전환(DB 백업→새 DB LO+ma200) ✅ |
+| 2026-07-05 | A4 백테재검증 + 자금관리 ma | ✅ 완료 | (미커밋) | LO+ma200 비용 보수 차감: 최악(funding 0.02%+slip 2bp) **PF 1.60>1**(edge 유지, chop50 §169 1.64 유사, 보유 3.1일). 자금관리: 켈리 f* 13.5%→**1/4 Kelly 3.38%**, MDD 실현9.8/미실현11.5%(chop50↓). risk 스윕 MDD20%→1.88%/MDD30%→3.15%. **라이브 초기 1%→점진 3% 확정**(§8.2). 다음=I-PE009(라이브 전 필수)→A5 라이브. 1회용 `_tmp_a4_sizing.py` |
 
 ---
 
@@ -224,7 +225,10 @@ ZigZag 20% 추세 전환 분할(32 세그먼트, 1d 2026-06-23 갱신) + LO+chop
   - 5종목 위험조정(MDD 5/5 chop50 대비 낮음)·연도 일관·거래효율 우위. ma100~250 robust.
 - **대안 후보 LO+chop50** (PF 1.86): config 옵션(`regime_filter_type: chop`/`regime_threshold: 50`)으로 즉시 전환 가능(동일 plugin).
 - **baseline** (옵션 off, PF 1.31): 별도 plugin 아님 — `long_only:false`/`regime:none` 로 재현.
-- **사이징**: 라이브 초기 `risk_per_trade_pct` **1%** → 검증 후 점진 **3%**(자금관리 1차, §170). `max_leverage 5` cap 유지. ⚠️ 자금관리는 LO+chop50 기준 — LO+ma200(MDD 더 낮음) 기준 재확인 필요(A4). 단일 BTC 라이브엔 I-PE005(수량 cap) 무영향.
+- **사이징 (A4 ma 재확인 완료 2026-07-05)**: 라이브 초기 `risk_per_trade_pct` **1%**(보수) → 검증 후 점진 **3%**. `max_leverage 5` cap 유지.
+  - LO+ma200 자금관리: 켈리 f* 13.5% → **1/4 Kelly 3.38%**, MDD 실현 9.8%/미실현 11.5%(chop50 10.8/12.4보다↓). MDD20%=risk 1.88%, **MDD30%=risk 3.15%**(점진 상한과 정합).
+  - **비용 재검증**: 최악(funding 0.02%+slip 2bp) **PF 1.60>1**(chop50 §169 1.64 유사) — edge 유지. 보유 3.1일.
+  - 단일 BTC 라이브엔 I-PE005(수량 cap) 무영향.
 - **라이브 방향**: (가) 지금 소액 시작 + 국면연동(§7). 현재 BTC **하락 국면**이라 초기 부진 예상(정상).
 
 ### 8.3 paper 운영 현황 — A1 청산 e2e + A2 정합성 완료 (2026-06-28~07-05)
@@ -241,14 +245,15 @@ ZigZag 20% 추세 전환 분할(32 세그먼트, 1d 2026-06-23 갱신) + LO+chop
   - **정상 진입가 정합**: #2(58371 vs BT 58359.9, **0.019%**)·#3(61588.9 vs 61583.4, **0.009%**) = slippage 수준. **기동 직후 #1만 0.60%**(현재가 진입, 1회성 특수).
   - I-PE002(진행중봉)·trailing·사이징·청산 엔진 라이브-백테 일관성 실증.
 - **I-PE006/007/008 fix e2e ✅**: heartbeat 10분 / #2 trailing DB 기록 / 재기동 balance 복원(10105.29·dd 0).
-- config `active: ["trend_donchian"]` (paper용 임시 — 정식화/정리 시 `[]` 복구). paper DB: `data/coinbot_paper.db`.
+- config `active: ["trend_donchian"]` (정식 LO+ma200). paper DB: `data/coinbot_paper.db`.
+- **A3-5 paper 전환 (2026-07-05)**: baseline DB 백업(`coinbot_paper_baseline_backup.db`) 후 **새 DB LO+ma200 재기동** ✅ — Clean startup·balance $10000·통합 plugin 로드·heartbeat 정상. 하락 국면이라 HOLD 지속(정상, 상승 전환 시 첫 거래). 이전 baseline 3거래는 백업 DB 보존.
 
 ### 8.4 남은 작업 로드맵
 ```
 1. [✅ 완료] paper 청산 e2e(A1) — 전 사이클 검증(§8.3). 부수 I-PE006/007/008 fix e2e ✅ / I-PE009 등록(라이브 전)
 2. [✅ 완료] 라이브-백테 정합성(A2) — paper 3거래 vs 백테 6거래: 신호 완전일치 + 정상진입가 0.02% 정합(§8.3). 기동직후(#1)만 0.6% 특수
 3. [✅ 완료] LO+ma200 정식화 (A3, 방법 (가) 통합) — exp를 `trend_donchian`으로 흡수(단일 plugin), config LO+ma200 정식값. 정합 ✅(§9 재현·옵션off 441 재현), 회귀 538. paper 전환(A3-5)=DB 백업 후 새 DB
-4. [★ 다음] LO+ma200 백테 재검증 (slippage/funding 보수 차감 — chop50 기준 §169 완료, ma 기준 재확인) + 자금관리 ma 재확인 (MDD 더 낮아 켈리 재계산)
+4. [✅ 완료] LO+ma200 백테 재검증 + 자금관리 ma (A4): 비용 최악 PF 1.60>1(edge 유지), 켈리 1/4 3.38%, MDD 9.8/11.5%(chop50↓). risk 1%→3% 확정(§8.2)
 5. 소액 라이브 시작 (risk 1%, 하락장 부진 각오, 검증 목적). 서버 운영 시 AWS Lightsail 1GB(~$7/월) or EC2 t4g.small(무료) + systemd + 텔레그램 모니터링
 6. 상승 전환 + 라이브 edge 확인 후 사이징 점진 증액 (→3%)
 
@@ -285,6 +290,7 @@ ZigZag 20% 추세 전환 분할(32 세그먼트, 1d 2026-06-23 갱신) + LO+chop
 - `_tmp_ms3_explore.py` — MS-3a chop 임계 평탄성 + 연도 walkforward
 - `_tmp_ms3b_filter_table.py` — MS-3b chop·ma 임계 PF/ret 테이블(ma_period 스윕)
 - `_tmp_a3_parity.py` — A3-4 정식화 정합(LO+ma200 §9 재현 + 옵션off 441 재현)
+- `_tmp_a4_sizing.py` — A4 자금관리 ma(R·켈리·MDD-risk) + 비용 보수 차감 PF
 - (PATH_D: `_tmp_r1_ic_scan.py`, `_tmp_r2_meanrev_sim.py`)
 - ⚠️ **A3 통합 후**: MS 스크립트의 `STRAT="trend_donchian_exp"` 는 **삭제됨** — 재현 시 `"trend_donchian"`(옵션 override)로 수정 필요.
 - 재현: `config/default.yaml` active/params 오버라이드 + `BacktestEngine` (각 스크립트 상단 주석 참조)
