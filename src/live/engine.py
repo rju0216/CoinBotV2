@@ -1097,6 +1097,17 @@ class CoreEngine(AbstractEngine):
                         )
                     except Exception as e:
                         logger.warning("update_trade_sl failed: %s", e)
+                    # I-PE009: 라이브면 거래소 conditional SL 도 갱신(엔진 다운 안전망).
+                    # paper 는 broker.is_live=False → 호출 안 함(executor no-op 이나 스킵).
+                    if self.broker.is_live:
+                        try:
+                            await self.broker.update_stop_loss(
+                                self._position.side,
+                                self._position.stop_loss,
+                                self._position.size,
+                            )
+                        except Exception as e:
+                            logger.warning("거래소 SL amend 실패(메모리 SL 유효): %s", e)
                 if decision is not None:
                     await self._close_with_funding(close, decision.reason, now)
 

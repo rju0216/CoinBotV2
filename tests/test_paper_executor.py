@@ -133,3 +133,12 @@ class TestBackwardCompat:
             PositionSide.LONG, 0.1, fill_price=67000.0, order_type=OrderType.MARKET,
         )
         assert result["price"] == 67000.0
+
+
+@pytest.mark.asyncio
+async def test_update_stop_loss_noop_paper():
+    """I-PE009: paper 는 거래소 없음 → update_stop_loss no-op (인터페이스 호환)."""
+    ex = PaperExecutor(_config())
+    res = await ex.update_stop_loss(PositionSide.LONG, 61000.0, 0.05)
+    assert res["type"] == "stop_loss_update"
+    assert res["price"] == 61000.0

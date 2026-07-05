@@ -160,6 +160,12 @@ class PaperExecutor:
         # SL/TP 판정은 엔진 책임. paper는 인터페이스 호환만 유지 (no-op).
         return {"type": "stop_loss", "side": side.value, "price": trigger_price}
 
+    async def update_stop_loss(
+        self, side: PositionSide, trigger_price: float, size: float
+    ) -> dict:
+        # I-PE009: paper 는 거래소 없음 → no-op (엔진 메모리 SL 로 청산 판정).
+        return {"type": "stop_loss_update", "side": side.value, "price": trigger_price}
+
     async def place_take_profit(
         self, side: PositionSide, trigger_price: float, size: float
     ) -> dict:

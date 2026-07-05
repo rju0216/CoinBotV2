@@ -322,6 +322,33 @@ class LiveExecutor:
         )
         return order
 
+    async def update_stop_loss(
+        self, side: PositionSide, trigger_price: float, size: float
+    ) -> dict:
+        """I-PE009: trailing SL 갱신 시 거래소 conditional SL order 교체.
+
+        엔진 정상 시엔 메모리 SL 로 봉마감 청산하나, 엔진/서버 다운 시 거래소 안전망이
+        초기 SL 로 남아 trailing 이익을 잃으므로 갱신마다 교체한다. 기존 SL algo
+        cancel(실패는 warning) 후 재등록. ⚠️ OKX algo cancel 방식·중복 동작은 A5
+        라이브 실검증 필요.
+        """
+        try:
+            orders = await self.fetch_open_algo_orders()
+        except Exception as e:
+            logger.warning("SL amend: algo 조회 실패, 재등록만 진행: %s", e)
+            orders = []
+        for o in orders:
+            info = o.get("info") or {}
+            if info.get("slTriggerPx") or o.get("stopLossPrice"):
+                try:
+                    await self._call(
+                        self.exchange.cancel_order, o["id"], self.symbol,
+                        params={"ordType": "conditional"},
+                    )
+                except Exception as e:
+                    logger.warning("기존 SL algo cancel 실패(id=%s): %s", o.get("id"), e)
+        return await self.place_stop_loss(side, trigger_price, size)
+
     async def place_take_profit(
         self, side: PositionSide, trigger_price: float, size: float
     ) -> dict:

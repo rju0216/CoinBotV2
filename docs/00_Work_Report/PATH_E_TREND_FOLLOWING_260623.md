@@ -181,7 +181,8 @@ ZigZag 20% 추세 전환 분할(32 세그먼트, 1d 2026-06-23 갱신) + LO+chop
 | 2026-06-28 | A1 paper 청산 e2e + 개선점 | ✅ 완료 | `8ebf19b` | **청산 e2e 완성**: trailing 단조하향→sl_hit @60759.90→net +$105.29, DB 정합(§8.3). 부수 발견: I-PE006(heartbeat 부재)/007(trailing SL DB 미기록)/008(paper restore dead code)/009(거래소 trailing SL 미갱신). **I-PE006 fix**(feed heartbeat 10분) + **I-PE007 fix**(store.update_trade_sl+live 감지) + **I-PE008 fix**(paper 재기동 balance/포지션 복원). 단위 3 + 회귀 540. I-PE009 등록(라이브 전). 다음=A2 정합성 |
 | 2026-07-05 | A2 라이브-백테 정합성 | ✅ 완료 | `9180712` | paper 3거래 vs 백테(06-01~07-05) 6거래 대조: **신호 완전 일치**(6거래 같은 봉·방향·sl_hit). **정상 진입가 정합** #2 0.019%·#3 0.009%(slippage 수준), 기동직후 #1만 0.60%(현재가 진입 1회성). **I-PE006/007/008 e2e ✅**. I-PE008 복원 소스 교정. 라이브-백테 엔진 일관성 실증. 결과 §8.3 |
 | 2026-07-05 | A3 LO+ma200 정식화 | ✅ 완료 | `5ba1b48` | (가) 통합: 실험 plugin `trend_donchian_exp`→`trend_donchian` 흡수(단일 plugin, exp 삭제), config LO+ma200 정식값(long_only/regime_filter_type=ma/ma_period=200). 테스트 이전(옵션 필터)·회귀 538. **정합 ✅(A3-4)**: LO+ma200=§9 재현(184/1.82/pos5-7/MDD9.8/ret126.6), 옵션off=baseline 441/1.31 재현. A3-5 paper 전환(DB 백업→새 DB LO+ma200) ✅ |
-| 2026-07-05 | A4 백테재검증 + 자금관리 ma | ✅ 완료 | (미커밋) | LO+ma200 비용 보수 차감: 최악(funding 0.02%+slip 2bp) **PF 1.60>1**(edge 유지, chop50 §169 1.64 유사, 보유 3.1일). 자금관리: 켈리 f* 13.5%→**1/4 Kelly 3.38%**, MDD 실현9.8/미실현11.5%(chop50↓). risk 스윕 MDD20%→1.88%/MDD30%→3.15%. **라이브 초기 1%→점진 3% 확정**(§8.2). 다음=I-PE009(라이브 전 필수)→A5 라이브. 1회용 `_tmp_a4_sizing.py` |
+| 2026-07-05 | A4 백테재검증 + 자금관리 ma | ✅ 완료 | (미커밋) | LO+ma200 비용 보수 차감: 최악(funding 0.02%+slip 2bp) **PF 1.60>1**(edge 유지, chop50 §169 1.64 유사, 보유 3.1일). 자금관리: 켈리 f* 13.5%→**1/4 Kelly 3.38%**, MDD 실현9.8/미실현11.5%(chop50↓). risk 스윕 MDD20%→1.88%/MDD30%→3.15%. **라이브 초기 1%→점진 3% 확정**(§8.2). 1회용 `_tmp_a4_sizing.py` |
+| 2026-07-05 | I-PE009 거래소 trailing SL | ✅ 구현 | (미커밋) | `live_executor.update_stop_loss`(SL algo cancel+재등록) + broker/paper(no-op) + engine trailing 지점 `if is_live` amend. 단위 4 + 회귀 542. **라이브 전 필수 관문 완료**(엔진 다운 시 거래소 안전망을 trailing SL 로 유지). ⚠️ OKX algo cancel 실동작은 A5 라이브 실검증. 다음=A5 소액 라이브 |
 
 ---
 
@@ -197,7 +198,7 @@ ZigZag 20% 추세 전환 분할(32 세그먼트, 1d 2026-06-23 갱신) + LO+chop
 | I-PE006 | **paper 운영 점검 중 발견 (2026-06-26)** — `[POSITION]`/`[ACCOUNT]` 로그가 master_tf(4h) 봉 마감마다만 출력(`engine.py:1082`) → 사이 4시간 무로그, **구동 상태(살아있는지) 확인 불가**. WebSocket tick 은 수신하나 추세추종은 마감봉만 써 tick 로그 없음 | **✅ 구현 (2026-06-28)** — feed watch loop heartbeat(`feed.py`, `HEARTBEAT_INTERVAL_SEC=600` 10분 throttle, `time.monotonic`). tick 수신 시 `[HEARTBEAT] {tf} feed alive, last_price=…` 1줄. 연결 끊기면 heartbeat 도 멈춰 이상 신호. live 전용(백테 무관), 회귀 538. **e2e ✅ (~07-05)** — 재기동 후 10분 간격 `[HEARTBEAT]` 정확 출력, 07-05까지 정상 가동 |
 | I-PE007 | **paper 점검 중 발견 (2026-06-26)** — `update_stop_loss` 훅이 `position.stop_loss`(메모리)+거래소(`place_stop_loss`)만 갱신, **`trades.stop_loss` DB UPDATE 없음** → 청산 trade SL=초기값(궤적 유실). 라이브 재기동 시 엔진 SL 이 DB 초기값으로 롤백(거래소 conditional trailing 과 불일치). A2 라이브-백테 정합성·사후분석에서 trailing 추적 불가 | **✅ 구현 (2026-06-28)** — `store.update_trade_sl(trade_id, sl)` + live engine `check_strategy_exits` 전후 `position.stop_loss` 변화 감지 시 DB UPDATE(라이브 전용). 단위 `test_update_trade_sl_persists` + 회귀 538. **e2e ✅** — paper #2(06-30 정상거래) DB `stop_loss`=청산가(trailing 최종 기록됨, #1은 초기값 64038). (b) `sl_history` 이력·백테 trades.csv 최종 SL 은 필요시 보강. **거래소 conditional 미갱신=I-PE009 별도** |
 | I-PE008 | **복원 분석 중 발견 (2026-06-26)** — `PaperExecutor.restore_state`(`paper_executor.py:36`)가 **호출처 0 dead code** → paper 재기동 시 포지션 복원 안 됨. `_restore_state` 가 "거래소 없음+DB open" 분기(`engine.py:538`)로 **DB open trade 를 청산 처리**(fallback SL 추정가). 라이브는 거래소 `get_position` 복원되나 **paper 만 불일치** | **✅ 구현 (2026-06-28)** — `_restore_state` paper 복원 블록: `not broker.is_live` 시 balance(**initial+청산pnl 합**, `get_closed_pnl_sum`)+open 포지션 → `executor.restore_state`(dead code 활성화). ⚠️ 1차는 `get_last_balance`(equity 마지막) 썼으나 **직전 리셋 세션이 10000 기록해 오염**(순환) → 거래기록 기반으로 교정. balance 리셋·dd 왜곡 해소 + 보유 포지션 오청산 방지. first run(initial=None) skip. live 무영향. 단위 2 + 회귀 540. **e2e ✅** (재기동 balance 10105.29 복원·dd 0) |
-| I-PE009 | **I-PE007 구현 중 발견 (2026-06-28)** — trailing SL 갱신 시 거래소 conditional order(`place_stop_loss`)는 **재등록(`engine.py:733`)에만** 호출, **trailing 갱신 후 거래소 SL 미갱신** → 거래소엔 초기 SL 잔존. 엔진 정상 시 메모리 SL 로 봉마감 청산(정상)이나, **엔진 다운 시 거래소 안전망이 초기 SL** → trailing 이익 손실 위험 | 미해결 — **라이브 전 필수**(paper 무관, 거래소 없음). trailing 갱신 시 거래소 SL amend(또는 cancel+재등록) 추가. 라이브 정식화 전 처리 |
+| I-PE009 | **I-PE007 구현 중 발견 (2026-06-28)** — trailing SL 갱신 시 거래소 conditional order(`place_stop_loss`)는 **재등록(`engine.py:733`)에만** 호출, **trailing 갱신 후 거래소 SL 미갱신** → 거래소엔 초기 SL 잔존. 엔진 정상 시 메모리 SL 로 봉마감 청산(정상)이나, **엔진 다운 시 거래소 안전망이 초기 SL** → trailing 이익 손실 위험 | **✅ 구현 (2026-07-05)** — `live_executor.update_stop_loss`(기존 SL algo cancel+`place_stop_loss` 재등록) + broker 래퍼 + paper no-op + engine trailing 지점(I-PE007 직후) `if is_live: broker.update_stop_loss`. 단위 4(cancel+재등록/기존없음/조회실패 폴백/paper no-op) + 회귀 542. ⚠️ **OKX algo cancel 실동작·SL 중복 동작은 A5 라이브 실검증 필수**(paper no-op라 검증 불가) |
 
 신규 이슈는 I-PE001~ 형태로 등록.
 
@@ -266,7 +267,7 @@ ZigZag 20% 추세 전환 분할(32 세그먼트, 1d 2026-06-23 갱신) + LO+chop
 - **TF-5c 고급 요소**(피라미딩/부분청산 등): 선택적, 생략 가능.
 - **BLE-5 funding 백테 정밀 통합**(I-PE001 carry): 라이브 전 권장.
 - **I-PE004 엔진 미실현 equity 추적**: 영향 작아 2차.
-- **I-PE009 거래소 trailing SL 미갱신**: 라이브 전 **필수**(paper 무관). trailing 갱신 시 거래소 conditional order amend.
+- **I-PE009 거래소 trailing SL 미갱신**: ✅ 구현(2026-07-05, §6) — A5 라이브 OKX algo cancel 실검증만 대기.
 - **자금관리 켈리 재계산**: 라이브 R 분포 누적 후.
 
 ### 8.6 커밋 이력 (브랜치 `path-c-lookahead-fix`)

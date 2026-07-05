@@ -86,6 +86,12 @@ class Broker:
     ) -> dict:
         return await self._executor.place_stop_loss(side, trigger_price, size)
 
+    async def update_stop_loss(
+        self, side: PositionSide, trigger_price: float, size: float
+    ) -> dict:
+        # I-PE009: trailing SL 갱신 시 거래소 SL 교체 (paper 는 no-op).
+        return await self._executor.update_stop_loss(side, trigger_price, size)
+
     async def place_take_profit(
         self, side: PositionSide, trigger_price: float, size: float
     ) -> dict:
