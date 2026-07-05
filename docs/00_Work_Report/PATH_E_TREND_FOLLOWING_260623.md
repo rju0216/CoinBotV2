@@ -178,7 +178,8 @@ ZigZag 20% 추세 전환 분할(32 세그먼트, 1d 2026-06-23 갱신) + LO+chop
 | 2026-06-24 | MS-1 데이터+cap / MS-2 검증 | ✅ 완료 | (미커밋) | `download_history.py --symbol` 추가. 5종목 4h 정합 통과(SOL 2021-01-25/DOGE 2020-07-11 상장보정). **검증: cap 무력화 불변(BTC 441/1.31 재현), DOGE 레버리지 실측 0.205x(부풀리기 없음·5x cap 0% 바인딩), funding=0 확인.** MS-2: **LO+chop50 5/5 PF>1·baseline 개선** → 추세추종 보편 입증(동조성 한정). ma200 계열 강함(ret 보존)→MS-3 후보. 결과 §9.5. 1회용 `_tmp_ms_multisymbol.py` |
 | 2026-06-25 | MS-3a/b 필터 robust 탐색 | ✅ 완료 | `f236de9` | chop 임계 평탄성 **5/5 단조**(cherry-pick 아님, c30 표본 과적합·c44~50 균형). 연도 walkforward: 공통 약점 2022/2026, **ma 계열 연도 일관 우수**(ETH/XRP 6/7). `trend_donchian_exp` ma_period 파라미터화(회귀 BTC LO+ma200 1.82 일치). ma 기간 스윕: **ma 가 chop 보다 임계 robust+ret 보존 우수**(chop 강필터 ret 붕괴, ma 평탄). 결과 §9.6. 다음=MS-4 chop50 vs ma 채택 재검토. 1회용 `_tmp_ms3_explore.py`/`_tmp_ms3b_filter_table.py` |
 | 2026-06-26 | MS-4 종합 — 채택 결정 | ✅ 완료 | `1c979b2` | LO+chop50 vs LO+ma200 정면 비교: **ma 위험조정(MDD 5/5)·연도 일관·효율 우위, BTC 동급**. **결정 (가) LO+ma200 으로 정식화 후보 전환**(§7/§9.7). §8 라이브 로드맵 갱신(정식화·자금관리 ma 기준). 한계(동조성·DOGE 폭등의존·funding=0) 유지. chop50 대안 후보 보존. **MS Phase 종착** |
-| 2026-06-28 | A1 paper 청산 e2e + 개선점 | ✅ 완료 | (미커밋) | **청산 e2e 완성**: trailing 단조하향→sl_hit @60759.90→net +$105.29, DB 정합(§8.3). 부수 발견: I-PE006(heartbeat 부재)/007(trailing SL DB 미기록)/008(paper restore dead code)/009(거래소 trailing SL 미갱신). **I-PE006 fix**(feed heartbeat 10분, e2e ✅ 10분 throttle 확인) + **I-PE007 fix**(store.update_trade_sl+live 감지) + **I-PE008 fix**(paper 재기동 balance/포지션 복원 — balance 리셋·dd 왜곡 해소). 단위 3 + 회귀 540. I-PE009(거래소 trailing SL 미갱신) 등록(라이브 전). 다음=paper 재기동 e2e(balance 복원·trailing DB)→A2 정합성 |
+| 2026-06-28 | A1 paper 청산 e2e + 개선점 | ✅ 완료 | `8ebf19b` | **청산 e2e 완성**: trailing 단조하향→sl_hit @60759.90→net +$105.29, DB 정합(§8.3). 부수 발견: I-PE006(heartbeat 부재)/007(trailing SL DB 미기록)/008(paper restore dead code)/009(거래소 trailing SL 미갱신). **I-PE006 fix**(feed heartbeat 10분) + **I-PE007 fix**(store.update_trade_sl+live 감지) + **I-PE008 fix**(paper 재기동 balance/포지션 복원). 단위 3 + 회귀 540. I-PE009 등록(라이브 전). 다음=A2 정합성 |
+| 2026-07-05 | A2 라이브-백테 정합성 | ✅ 완료 | (미커밋) | paper 3거래 vs 백테(06-01~07-05) 6거래 대조: **신호 완전 일치**(6거래 같은 봉·방향·sl_hit). **정상 진입가 정합** #2 0.019%·#3 0.009%(slippage 수준), 기동직후 #1만 0.60%(현재가 진입 1회성). **I-PE006/007/008 e2e ✅**(heartbeat 10분/#2 trailing DB/재기동 balance 복원). I-PE008 복원 소스 교정(equity 마지막 오염→initial+청산pnl). 라이브-백테 엔진 일관성 실증. 결과 §8.3. 다음=LO+ma200 정식화(A3) |
 
 ---
 
@@ -191,9 +192,9 @@ ZigZag 20% 추세 전환 분할(32 세그먼트, 1d 2026-06-23 갱신) + LO+chop
 | I-PE003 | I-PE002 분석 중 발견 — trend_donchian TP=`현재가±risk×RR(100)` 가 SHORT 에서 **음수 가격**(-97946). 라이브는 `place_take_profit`로 거래소(`takeProfitPrice`)에 실제 등록 → 음수 등록 시 거부·진입 실패 위험 | **✅ fix** — `compute_take_profit` 시그니처 `float\|None` 확장 + trend_donchian `→None`. 엔진: TP None 이면 거래소 등록 skip + check_candle_sl_tp skip. ENTRY 로그(`engine_base.py:557`) `TP=%.2f`→None 안전 처리(paper e2e 에서 발견). 추세추종 정석(TP 미설정, trailing SL 청산). 단위 2건 |
 | I-PE004 | 자금관리 1차 중 발견 — 백테 `equity_curve` 가 실현 잔고만 추적(미실현 drawdown 미반영, `engine.py:445` "unrealized 미추적") → 백테 MDD 가 실제 경험 MDD 보다 과소 | 미해결(영향 작음) — **영향 정량(post-hoc 재구성)**: 미실현/실현 MDD 배율 baseline 1.04x·LO+chop50 1.14x. 추세추종 짧은 보유(3.1일)+trailing 으로 차이 작아 기존 MDD 거의 유효. 근본 fix(엔진 매 봉 미실현 equity 추적)는 2차, 현재는 post-hoc 보정으로 충분 |
 | I-PE005 | **MS 계획 중 발견 (2026-06-24)** — `RiskManager.calculate_position_size`(`manager.py:214`)의 `size = min(raw_size, max_size_by_leverage, max_position_size_btc=1.0)` 가 **절대 수량 1.0 cap**. BTC(1.0≈$60k)는 raw_size 가 거의 안 걸려 무영향이나, 알트는 수량 의미가 달라(SOL 1.0≈$150, XRP 1.0≈$2, DOGE 1.0≈$0.2) **알트 백테 전 거래가 1.0 으로 클램프 → 결과 왜곡/무효**. cap 이 *수량* 기준이라 종목 간 비교 자체 불가 | **회피(백테)** — MS 백테 시 config `risk.max_position_size_btc` 무력화(1e12) 오버라이드 + BTC 재현으로 cap 미작동(결과 불변) 정합 확인. **근본(명목가 $ 기준 cap or 종목별 설정)은 멀티 종목 라이브 시 재설계 필요(carry)** — 단일 BTC 라이브엔 무영향 |
-| I-PE006 | **paper 운영 점검 중 발견 (2026-06-26)** — `[POSITION]`/`[ACCOUNT]` 로그가 master_tf(4h) 봉 마감마다만 출력(`engine.py:1082`) → 사이 4시간 무로그, **구동 상태(살아있는지) 확인 불가**. WebSocket tick 은 수신하나 추세추종은 마감봉만 써 tick 로그 없음 | **✅ 구현 (2026-06-28)** — feed watch loop heartbeat(`feed.py`, `HEARTBEAT_INTERVAL_SEC=600` 10분 throttle, `time.monotonic`). tick 수신 시 `[HEARTBEAT] {tf} feed alive, last_price=…` 1줄. 연결 끊기면 heartbeat 도 멈춰 이상 신호. live 전용(백테 무관), 회귀 538. **paper 재기동 e2e 검증 대기** |
-| I-PE007 | **paper 점검 중 발견 (2026-06-26)** — `update_stop_loss` 훅이 `position.stop_loss`(메모리)+거래소(`place_stop_loss`)만 갱신, **`trades.stop_loss` DB UPDATE 없음** → 청산 trade SL=초기값(궤적 유실). 라이브 재기동 시 엔진 SL 이 DB 초기값으로 롤백(거래소 conditional trailing 과 불일치). A2 라이브-백테 정합성·사후분석에서 trailing 추적 불가 | **✅ 구현 (2026-06-28)** — `store.update_trade_sl(trade_id, sl)` + live engine `check_strategy_exits` 전후 `position.stop_loss` 변화 감지 시 DB UPDATE(라이브 전용). 단위 `test_update_trade_sl_persists` + 회귀 538. **paper 재기동 e2e 대기**. (b) `sl_history` 이력·백테 trades.csv 최종 SL 은 A2 시 보강. **거래소 conditional 미갱신=I-PE009 별도** |
-| I-PE008 | **복원 분석 중 발견 (2026-06-26)** — `PaperExecutor.restore_state`(`paper_executor.py:36`)가 **호출처 0 dead code** → paper 재기동 시 포지션 복원 안 됨. `_restore_state` 가 "거래소 없음+DB open" 분기(`engine.py:538`)로 **DB open trade 를 청산 처리**(fallback SL 추정가). 라이브는 거래소 `get_position` 복원되나 **paper 만 불일치** | **✅ 구현 (2026-06-28)** — `_restore_state` 에 paper 복원 블록: `not broker.is_live` 시 `get_last_balance`(equity 마지막)+open 포지션 → `executor.restore_state`(dead code 활성화). balance 리셋·dd 왜곡 해소 + 보유 포지션 오청산 방지. last_balance=None(첫 기동) 시 skip. live 무영향. 단위 2 + 회귀 540. **paper 재기동 e2e(balance 복원) 대기** |
+| I-PE006 | **paper 운영 점검 중 발견 (2026-06-26)** — `[POSITION]`/`[ACCOUNT]` 로그가 master_tf(4h) 봉 마감마다만 출력(`engine.py:1082`) → 사이 4시간 무로그, **구동 상태(살아있는지) 확인 불가**. WebSocket tick 은 수신하나 추세추종은 마감봉만 써 tick 로그 없음 | **✅ 구현 (2026-06-28)** — feed watch loop heartbeat(`feed.py`, `HEARTBEAT_INTERVAL_SEC=600` 10분 throttle, `time.monotonic`). tick 수신 시 `[HEARTBEAT] {tf} feed alive, last_price=…` 1줄. 연결 끊기면 heartbeat 도 멈춰 이상 신호. live 전용(백테 무관), 회귀 538. **e2e ✅ (~07-05)** — 재기동 후 10분 간격 `[HEARTBEAT]` 정확 출력, 07-05까지 정상 가동 |
+| I-PE007 | **paper 점검 중 발견 (2026-06-26)** — `update_stop_loss` 훅이 `position.stop_loss`(메모리)+거래소(`place_stop_loss`)만 갱신, **`trades.stop_loss` DB UPDATE 없음** → 청산 trade SL=초기값(궤적 유실). 라이브 재기동 시 엔진 SL 이 DB 초기값으로 롤백(거래소 conditional trailing 과 불일치). A2 라이브-백테 정합성·사후분석에서 trailing 추적 불가 | **✅ 구현 (2026-06-28)** — `store.update_trade_sl(trade_id, sl)` + live engine `check_strategy_exits` 전후 `position.stop_loss` 변화 감지 시 DB UPDATE(라이브 전용). 단위 `test_update_trade_sl_persists` + 회귀 538. **e2e ✅** — paper #2(06-30 정상거래) DB `stop_loss`=청산가(trailing 최종 기록됨, #1은 초기값 64038). (b) `sl_history` 이력·백테 trades.csv 최종 SL 은 필요시 보강. **거래소 conditional 미갱신=I-PE009 별도** |
+| I-PE008 | **복원 분석 중 발견 (2026-06-26)** — `PaperExecutor.restore_state`(`paper_executor.py:36`)가 **호출처 0 dead code** → paper 재기동 시 포지션 복원 안 됨. `_restore_state` 가 "거래소 없음+DB open" 분기(`engine.py:538`)로 **DB open trade 를 청산 처리**(fallback SL 추정가). 라이브는 거래소 `get_position` 복원되나 **paper 만 불일치** | **✅ 구현 (2026-06-28)** — `_restore_state` paper 복원 블록: `not broker.is_live` 시 balance(**initial+청산pnl 합**, `get_closed_pnl_sum`)+open 포지션 → `executor.restore_state`(dead code 활성화). ⚠️ 1차는 `get_last_balance`(equity 마지막) 썼으나 **직전 리셋 세션이 10000 기록해 오염**(순환) → 거래기록 기반으로 교정. balance 리셋·dd 왜곡 해소 + 보유 포지션 오청산 방지. first run(initial=None) skip. live 무영향. 단위 2 + 회귀 540. **e2e ✅** (재기동 balance 10105.29 복원·dd 0) |
 | I-PE009 | **I-PE007 구현 중 발견 (2026-06-28)** — trailing SL 갱신 시 거래소 conditional order(`place_stop_loss`)는 **재등록(`engine.py:733`)에만** 호출, **trailing 갱신 후 거래소 SL 미갱신** → 거래소엔 초기 SL 잔존. 엔진 정상 시 메모리 SL 로 봉마감 청산(정상)이나, **엔진 다운 시 거래소 안전망이 초기 SL** → trailing 이익 손실 위험 | 미해결 — **라이브 전 필수**(paper 무관, 거래소 없음). trailing 갱신 시 거래소 SL amend(또는 cancel+재등록) 추가. 라이브 정식화 전 처리 |
 
 신규 이슈는 I-PE001~ 형태로 등록.
@@ -214,7 +215,7 @@ ZigZag 20% 추세 전환 분할(32 세그먼트, 1d 2026-06-23 갱신) + LO+chop
 ## 8. 현재 상태 + 남은 작업 (★ 새 세션 진입점)
 
 ### 8.1 한 줄 요약
-**추세추종 룰베이스 전략 라이브 후보 확정. MS 멀티 종목 검증(5종목, §9) 완료 → LO+필터 보편 입증 + MS-4 에서 정식화 후보를 LO+chop50 → `LO+ma200`(long_only+ma200 추세필터)로 전환(위험조정·연도일관·효율 우위, BTC 동급). 현재 baseline `trend_donchian` paper 가동 중(SHORT 보유, 청산 대기). 다음 = paper 청산 → 라이브-백테 정합성 → LO+ma200 정식화·자금관리 ma 재확인 → 소액 라이브(risk 1%).**
+**추세추종 룰베이스 전략 라이브 후보 확정. MS 멀티 종목 검증(5종목, §9) → LO+필터 보편 입증 + 정식화 후보 `LO+ma200` 전환(MS-4). 라이브 인프라 검증 완료: baseline `trend_donchian` paper 3거래(#1 기동/#2 정상/#3 LONG 보유), A1 청산 e2e + A2 라이브-백테 정합성(신호 완전일치·정상진입가 0.02% 정합) + I-PE006/007/008 fix e2e ✅. 다음 = LO+ma200 정식화(방법 (b) 유력)·자금관리 ma 재확인 → 소액 라이브(risk 1%).**
 
 ### 8.2 채택 전략·사이징 (MS-4 갱신 2026-06-26)
 - **전략 = LO+ma200** (MS-4 채택, §9.7): `trend_donchian_exp` + `long_only=True` + `regime_filter_type=ma` + `ma_period=200`.
@@ -226,19 +227,27 @@ ZigZag 20% 추세 전환 분할(32 세그먼트, 1d 2026-06-23 갱신) + LO+chop
 - **사이징**: 라이브 초기 `risk_per_trade_pct` **1%** → 검증 후 점진 **3%**(자금관리 1차, §170). `max_leverage 5` cap 유지. ⚠️ 자금관리는 LO+chop50 기준 — LO+ma200(MDD 더 낮음) 기준 재확인 필요(라이브 정식화 시). 단일 BTC 라이브엔 I-PE005(수량 cap) 무영향.
 - **라이브 방향**: (가) 지금 소액 시작 + 국면연동(§7). 현재 BTC **하락 국면**이라 초기 부진 예상(정상).
 
-### 8.3 paper 운영 현황 — A1 청산 e2e 완성 (2026-06-28)
-- **baseline `trend_donchian`** paper: trade_id 1 SHORT **청산 완료**.
-- **청산 e2e 검증 ✅**: 진입 62471.3 → trailing SL 단조 하향(64038→63221→…→60759.90) → **sl_hit @ 60759.90** (104h 보유), net_pnl **+$105.29**(+2.64%, fee $3.93). DB trade record 정합(규칙 10) + 청산 후 HOLD(재진입 조건 미충족). **진입→trailing→sl_hit 청산→PnL 전 사이클 라이브 경로 검증.**
-- ⚠️ I-PE007 실증: DB `stop_loss`=초기값 64038(청산은 60759.90) → trailing DB 미기록 확인 → **I-PE007 fix 적용**(재기동 e2e 대기).
-- 개선점 적용본(I-PE006 heartbeat / I-PE007 trailing SL DB) 반영 후 **재기동 시 e2e 재검증 예정**(포지션 없어 안전).
-- config `active: ["trend_donchian"]` (paper용 임시 — 뼈대는 `[]`). paper DB: `data/coinbot_paper.db`.
+### 8.3 paper 운영 현황 — A1 청산 e2e + A2 정합성 완료 (2026-06-28~07-05)
+**baseline `trend_donchian`** paper, 3거래 (07-05까지 정상 가동, balance ~$10,000.7):
+| # | 방향 | 진입 | 청산 | pnl | 비고 |
+|---|---|---|---|---|---|
+| 1 | SHORT | 06-23 11:54 @62471.3 | 06-27 sl_hit @60759.9 | +105.29 | **기동 직후**(진입가=현재가) |
+| 2 | SHORT | 06-30 16:00 @58371.0 | 07-01 sl_hit @60067.7 | −104.58 | **정상 봉마감** / I-PE007 trailing DB ✅ |
+| 3 | LONG | 07-02 16:00 @61588.9 | 보유중 (sl 61488) | — | 진행 중 |
+
+- **A1 청산 e2e ✅**: 진입→trailing 단조→sl_hit 청산→PnL 전 사이클 검증(#1: 64038→…→60759.9).
+- **A2 라이브-백테 정합성 ✅** (백테 06-01~07-05 6거래 대조):
+  - **신호 완전 일치**: 6거래 모두 같은 봉·방향·sl_hit.
+  - **정상 진입가 정합**: #2(58371 vs BT 58359.9, **0.019%**)·#3(61588.9 vs 61583.4, **0.009%**) = slippage 수준. **기동 직후 #1만 0.60%**(현재가 진입, 1회성 특수).
+  - I-PE002(진행중봉)·trailing·사이징·청산 엔진 라이브-백테 일관성 실증.
+- **I-PE006/007/008 fix e2e ✅**: heartbeat 10분 / #2 trailing DB 기록 / 재기동 balance 복원(10105.29·dd 0).
+- config `active: ["trend_donchian"]` (paper용 임시 — 정식화/정리 시 `[]` 복구). paper DB: `data/coinbot_paper.db`.
 
 ### 8.4 남은 작업 로드맵
 ```
-1. [✅ 완료] paper 청산 e2e — trailing→sl_hit 청산→PnL 전 사이클 검증(§8.3). 부수 발견 I-PE006/007/008/009, I-PE006/007 fix 적용
-2. [다음] 라이브-백테 정합성(A2) — paper 거래(trade 1) vs 같은 기간 백테 1:1 비교
-     (compare_live_backtest.py 를 paper용 단일구간 변형). trailing 궤적 비교는 I-PE007 적용 후 재기동 e2e 데이터로
-3. ★ LO+ma200 정식화 (MS-4 채택) — 방법 *미결정*:
+1. [✅ 완료] paper 청산 e2e(A1) — 전 사이클 검증(§8.3). 부수 I-PE006/007/008 fix e2e ✅ / I-PE009 등록(라이브 전)
+2. [✅ 완료] 라이브-백테 정합성(A2) — paper 3거래 vs 백테 6거래: 신호 완전일치 + 정상진입가 0.02% 정합(§8.3). 기동직후(#1)만 0.6% 특수
+3. [★ 다음] LO+ma200 정식화 (MS-4 채택) — 방법 *미결정*:
      (a) baseline trend_donchian 에 long_only/regime 옵션 통합 (paper 청산 후, baseline freeze 해제)
      (b) trend_donchian_exp 을 정식 채택 (config LO+ma200 고정값) — exp plugin 이미 ma_period 지원
 4. LO+ma200 백테 재검증 (slippage/funding 보수 차감 — chop50 기준 §169 완료, ma 기준 재확인) + 자금관리 ma 재확인
@@ -254,6 +263,7 @@ ZigZag 20% 추세 전환 분할(32 세그먼트, 1d 2026-06-23 갱신) + LO+chop
 - **TF-5c 고급 요소**(피라미딩/부분청산 등): 선택적, 생략 가능.
 - **BLE-5 funding 백테 정밀 통합**(I-PE001 carry): 라이브 전 권장.
 - **I-PE004 엔진 미실현 equity 추적**: 영향 작아 2차.
+- **I-PE009 거래소 trailing SL 미갱신**: 라이브 전 **필수**(paper 무관). trailing 갱신 시 거래소 conditional order amend.
 - **자금관리 켈리 재계산**: 라이브 R 분포 누적 후.
 
 ### 8.6 커밋 이력 (브랜치 `path-c-lookahead-fix`)
@@ -264,6 +274,9 @@ ZigZag 20% 추세 전환 분할(32 세그먼트, 1d 2026-06-23 갱신) + LO+chop
 | `70a62d7` | TF-5a edge 강화 (trend_donchian_exp + ablation → LO+chop50 채택 PF 1.86) |
 | `57502d1` | LO+chop50 재검증 + 자금관리 1차(MDD 재확인) + cross-TF 보류 |
 | `17d46f6` | BTC 국면 분석 + 라이브 시작 방향 (가) |
+| `f236de9` | MS-1~3 멀티 종목 검증 (download_history --symbol, ma_period 파라미터화, §9 데이터·보편성·필터 robust) |
+| `1c979b2` | MS-4 종합 — LO+chop50 → LO+ma200 전환 (§9.7) |
+| `8ebf19b` | paper e2e 개선 — heartbeat/trailing SL DB/재기동 복원 (I-PE006/007/008) |
 
 ### 8.7 1회용 탐사 스크립트 (commit 제외=`.gitignore`, 결과는 본 문서 보존)
 - `_tmp_tf3_param_sweep.py` — TF-3 파라미터 민감도(14조합)
