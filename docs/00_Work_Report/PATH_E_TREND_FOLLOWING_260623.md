@@ -179,7 +179,8 @@ ZigZag 20% 추세 전환 분할(32 세그먼트, 1d 2026-06-23 갱신) + LO+chop
 | 2026-06-25 | MS-3a/b 필터 robust 탐색 | ✅ 완료 | `f236de9` | chop 임계 평탄성 **5/5 단조**(cherry-pick 아님, c30 표본 과적합·c44~50 균형). 연도 walkforward: 공통 약점 2022/2026, **ma 계열 연도 일관 우수**(ETH/XRP 6/7). `trend_donchian_exp` ma_period 파라미터화(회귀 BTC LO+ma200 1.82 일치). ma 기간 스윕: **ma 가 chop 보다 임계 robust+ret 보존 우수**(chop 강필터 ret 붕괴, ma 평탄). 결과 §9.6. 다음=MS-4 chop50 vs ma 채택 재검토. 1회용 `_tmp_ms3_explore.py`/`_tmp_ms3b_filter_table.py` |
 | 2026-06-26 | MS-4 종합 — 채택 결정 | ✅ 완료 | `1c979b2` | LO+chop50 vs LO+ma200 정면 비교: **ma 위험조정(MDD 5/5)·연도 일관·효율 우위, BTC 동급**. **결정 (가) LO+ma200 으로 정식화 후보 전환**(§7/§9.7). §8 라이브 로드맵 갱신(정식화·자금관리 ma 기준). 한계(동조성·DOGE 폭등의존·funding=0) 유지. chop50 대안 후보 보존. **MS Phase 종착** |
 | 2026-06-28 | A1 paper 청산 e2e + 개선점 | ✅ 완료 | `8ebf19b` | **청산 e2e 완성**: trailing 단조하향→sl_hit @60759.90→net +$105.29, DB 정합(§8.3). 부수 발견: I-PE006(heartbeat 부재)/007(trailing SL DB 미기록)/008(paper restore dead code)/009(거래소 trailing SL 미갱신). **I-PE006 fix**(feed heartbeat 10분) + **I-PE007 fix**(store.update_trade_sl+live 감지) + **I-PE008 fix**(paper 재기동 balance/포지션 복원). 단위 3 + 회귀 540. I-PE009 등록(라이브 전). 다음=A2 정합성 |
-| 2026-07-05 | A2 라이브-백테 정합성 | ✅ 완료 | (미커밋) | paper 3거래 vs 백테(06-01~07-05) 6거래 대조: **신호 완전 일치**(6거래 같은 봉·방향·sl_hit). **정상 진입가 정합** #2 0.019%·#3 0.009%(slippage 수준), 기동직후 #1만 0.60%(현재가 진입 1회성). **I-PE006/007/008 e2e ✅**(heartbeat 10분/#2 trailing DB/재기동 balance 복원). I-PE008 복원 소스 교정(equity 마지막 오염→initial+청산pnl). 라이브-백테 엔진 일관성 실증. 결과 §8.3. 다음=LO+ma200 정식화(A3) |
+| 2026-07-05 | A2 라이브-백테 정합성 | ✅ 완료 | `9180712` | paper 3거래 vs 백테(06-01~07-05) 6거래 대조: **신호 완전 일치**(6거래 같은 봉·방향·sl_hit). **정상 진입가 정합** #2 0.019%·#3 0.009%(slippage 수준), 기동직후 #1만 0.60%(현재가 진입 1회성). **I-PE006/007/008 e2e ✅**. I-PE008 복원 소스 교정. 라이브-백테 엔진 일관성 실증. 결과 §8.3 |
+| 2026-07-05 | A3 LO+ma200 정식화 | ✅ 완료 | (미커밋) | (가) 통합: 실험 plugin `trend_donchian_exp`→`trend_donchian` 흡수(단일 plugin, exp 삭제), config LO+ma200 정식값(long_only/regime_filter_type=ma/ma_period=200). 테스트 이전(옵션 필터)·회귀 538. **정합 ✅(A3-4)**: LO+ma200=§9 재현(184/1.82/pos5-7/MDD9.8/ret126.6), 옵션off=baseline 441/1.31 재현. 다음=A3-5 paper 전환(DB 백업 후 새 DB)·A4 백테재검증 |
 
 ---
 
@@ -217,14 +218,13 @@ ZigZag 20% 추세 전환 분할(32 세그먼트, 1d 2026-06-23 갱신) + LO+chop
 ### 8.1 한 줄 요약
 **추세추종 룰베이스 전략 라이브 후보 확정. MS 멀티 종목 검증(5종목, §9) → LO+필터 보편 입증 + 정식화 후보 `LO+ma200` 전환(MS-4). 라이브 인프라 검증 완료: baseline `trend_donchian` paper 3거래(#1 기동/#2 정상/#3 LONG 보유), A1 청산 e2e + A2 라이브-백테 정합성(신호 완전일치·정상진입가 0.02% 정합) + I-PE006/007/008 fix e2e ✅. 다음 = LO+ma200 정식화(방법 (b) 유력)·자금관리 ma 재확인 → 소액 라이브(risk 1%).**
 
-### 8.2 채택 전략·사이징 (MS-4 갱신 2026-06-26)
-- **전략 = LO+ma200** (MS-4 채택, §9.7): `trend_donchian_exp` + `long_only=True` + `regime_filter_type=ma` + `ma_period=200`.
-  - 5종목 위험조정(MDD 5/5 chop50 대비 낮음)·연도 일관·거래효율 우위, BTC 동급(PF 1.82 vs chop50 1.86, MDD 9.8 vs 10.8).
-  - ma100~250 robust(평탄, cherry-pick 아님). ma_period 파라미터화 완료(회귀 537 pass).
-- **이전 후보 LO+chop50** (PF 1.86/MDD 10.8): BTC 동급이라 대안 후보로 보존. 전환 손해 없음.
-  - ⚠️ **아직 정식 아님** — 둘 다 실험 plugin `trend_donchian_exp` *옵션*. config 섹션은 ablation 기본값(옵션 off=baseline).
-- **baseline `trend_donchian`** (TF-1~4 GO, PF 1.31): 정식 plugin/config 완비, paper 운영 중. 인프라(엔진·trailing·TP None·진행중봉 fix·cap)는 공유.
-- **사이징**: 라이브 초기 `risk_per_trade_pct` **1%** → 검증 후 점진 **3%**(자금관리 1차, §170). `max_leverage 5` cap 유지. ⚠️ 자금관리는 LO+chop50 기준 — LO+ma200(MDD 더 낮음) 기준 재확인 필요(라이브 정식화 시). 단일 BTC 라이브엔 I-PE005(수량 cap) 무영향.
+### 8.2 채택 전략·사이징 (A3 정식화 완료 2026-07-05)
+- **정식 전략 = LO+ma200** (MS-4 채택 §9.7 → A3 정식화): `trend_donchian` 단일 plugin(`long_only: true` / `regime_filter_type: ma` / `ma_period: 200` config 정식값).
+  - **A3 통합**: 실험 plugin `trend_donchian_exp`를 `trend_donchian`으로 흡수(단일 plugin, exp 삭제). **정합 검증 ✅**(A3-4): LO+ma200=§9 재현(184/1.82/pos5-7/MDD9.8), 옵션 off=baseline 441/1.31 재현. 회귀 538.
+  - 5종목 위험조정(MDD 5/5 chop50 대비 낮음)·연도 일관·거래효율 우위. ma100~250 robust.
+- **대안 후보 LO+chop50** (PF 1.86): config 옵션(`regime_filter_type: chop`/`regime_threshold: 50`)으로 즉시 전환 가능(동일 plugin).
+- **baseline** (옵션 off, PF 1.31): 별도 plugin 아님 — `long_only:false`/`regime:none` 로 재현.
+- **사이징**: 라이브 초기 `risk_per_trade_pct` **1%** → 검증 후 점진 **3%**(자금관리 1차, §170). `max_leverage 5` cap 유지. ⚠️ 자금관리는 LO+chop50 기준 — LO+ma200(MDD 더 낮음) 기준 재확인 필요(A4). 단일 BTC 라이브엔 I-PE005(수량 cap) 무영향.
 - **라이브 방향**: (가) 지금 소액 시작 + 국면연동(§7). 현재 BTC **하락 국면**이라 초기 부진 예상(정상).
 
 ### 8.3 paper 운영 현황 — A1 청산 e2e + A2 정합성 완료 (2026-06-28~07-05)
@@ -247,10 +247,8 @@ ZigZag 20% 추세 전환 분할(32 세그먼트, 1d 2026-06-23 갱신) + LO+chop
 ```
 1. [✅ 완료] paper 청산 e2e(A1) — 전 사이클 검증(§8.3). 부수 I-PE006/007/008 fix e2e ✅ / I-PE009 등록(라이브 전)
 2. [✅ 완료] 라이브-백테 정합성(A2) — paper 3거래 vs 백테 6거래: 신호 완전일치 + 정상진입가 0.02% 정합(§8.3). 기동직후(#1)만 0.6% 특수
-3. [★ 다음] LO+ma200 정식화 (MS-4 채택) — 방법 *미결정*:
-     (a) baseline trend_donchian 에 long_only/regime 옵션 통합 (paper 청산 후, baseline freeze 해제)
-     (b) trend_donchian_exp 을 정식 채택 (config LO+ma200 고정값) — exp plugin 이미 ma_period 지원
-4. LO+ma200 백테 재검증 (slippage/funding 보수 차감 — chop50 기준 §169 완료, ma 기준 재확인) + 자금관리 ma 재확인
+3. [✅ 완료] LO+ma200 정식화 (A3, 방법 (가) 통합) — exp를 `trend_donchian`으로 흡수(단일 plugin), config LO+ma200 정식값. 정합 ✅(§9 재현·옵션off 441 재현), 회귀 538. paper 전환(A3-5)=DB 백업 후 새 DB
+4. [★ 다음] LO+ma200 백테 재검증 (slippage/funding 보수 차감 — chop50 기준 §169 완료, ma 기준 재확인) + 자금관리 ma 재확인 (MDD 더 낮아 켈리 재계산)
 5. 소액 라이브 시작 (risk 1%, 하락장 부진 각오, 검증 목적). 서버 운영 시 AWS Lightsail 1GB(~$7/월) or EC2 t4g.small(무료) + systemd + 텔레그램 모니터링
 6. 상승 전환 + 라이브 edge 확인 후 사이징 점진 증액 (→3%)
 
@@ -286,7 +284,9 @@ ZigZag 20% 추세 전환 분할(32 세그먼트, 1d 2026-06-23 갱신) + LO+chop
 - `_tmp_ms_multisymbol.py` — MS-2 멀티 종목 검증(5종목×8변형, cap 무력화)
 - `_tmp_ms3_explore.py` — MS-3a chop 임계 평탄성 + 연도 walkforward
 - `_tmp_ms3b_filter_table.py` — MS-3b chop·ma 임계 PF/ret 테이블(ma_period 스윕)
+- `_tmp_a3_parity.py` — A3-4 정식화 정합(LO+ma200 §9 재현 + 옵션off 441 재현)
 - (PATH_D: `_tmp_r1_ic_scan.py`, `_tmp_r2_meanrev_sim.py`)
+- ⚠️ **A3 통합 후**: MS 스크립트의 `STRAT="trend_donchian_exp"` 는 **삭제됨** — 재현 시 `"trend_donchian"`(옵션 override)로 수정 필요.
 - 재현: `config/default.yaml` active/params 오버라이드 + `BacktestEngine` (각 스크립트 상단 주석 참조)
 
 ---

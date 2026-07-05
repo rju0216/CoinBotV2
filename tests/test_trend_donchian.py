@@ -162,3 +162,46 @@ class TestBuildCtxLastClosedBar:
         ctx = self._build(-1, df)
         assert len(ctx.candles["4h"]) == 3
         assert ctx.candles["4h"]["close"].iloc[-1] == 7
+
+
+# A3 통합: trend_donchian_exp → trend_donchian 흡수 (옵션 필터 테스트 이전)
+class TestLongOnly:
+    def test_short_filtered(self):
+        df = _df([10] * 22, [5] * 22, [8] * 21 + [1])   # SHORT 돌파
+        s = TrendDonchian(
+            {"entry_period": 20, "long_only": True}).generate_signal(_ctx(df, 1.0))
+        assert s.side == SignalSide.HOLD
+
+    def test_long_passes(self):
+        df = _df([10] * 22, [1] * 22, [5] * 21 + [20])  # LONG 돌파
+        s = TrendDonchian(
+            {"entry_period": 20, "long_only": True}).generate_signal(_ctx(df, 20.0))
+        assert s.side == SignalSide.LONG
+
+    def test_short_passes_when_off(self):
+        df = _df([10] * 22, [5] * 22, [8] * 21 + [1])
+        s = TrendDonchian(
+            {"entry_period": 20, "long_only": False}).generate_signal(_ctx(df, 1.0))
+        assert s.side == SignalSide.SHORT
+
+
+class TestRegimeFilter:
+    def test_none_passes(self):
+        df = _df([10] * 22, [1] * 22, [5] * 21 + [20])
+        s = TrendDonchian(
+            {"entry_period": 20, "regime_filter_type": "none"}).generate_signal(_ctx(df, 20.0))
+        assert s.side == SignalSide.LONG
+
+    def test_adx_high_threshold_blocks(self):
+        df = _df([10] * 22, [1] * 22, [5] * 21 + [20])
+        s = TrendDonchian(
+            {"entry_period": 20, "regime_filter_type": "adx", "regime_threshold": 999}
+        ).generate_signal(_ctx(df, 20.0))
+        assert s.side == SignalSide.HOLD
+
+    def test_ma_regime_nan_blocks(self):
+        # 22봉 < 200 → ema200 NaN → ma 레짐 False → HOLD (NaN 보수적)
+        df = _df([10] * 22, [1] * 22, [5] * 21 + [20])
+        s = TrendDonchian(
+            {"entry_period": 20, "regime_filter_type": "ma"}).generate_signal(_ctx(df, 20.0))
+        assert s.side == SignalSide.HOLD

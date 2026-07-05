@@ -84,7 +84,7 @@ logging:
   backup_count: 5
 
 strategies:
-  active: []                          # 뼈대 상태 — 사용자가 전략 이름을 추가해야 매매 발생.
+  active: ["trend_donchian"]          # 정식 운영 전략 (MS-4 채택 LO+ma200)
                                       # 예: ["example_macross"] 로 켜면 아래 샘플 전략이 활성화됨.
                                       # (C) 정책: 리스트 순서 = 우선순위.
 
@@ -103,6 +103,7 @@ example_macross:
 # ---- PATH_E 추세추종 전략 (룰베이스) ----
 # strategy/plugins/trend_donchian.py 의 TrendDonchian. Donchian 돌파 + exit channel trailing.
 # 백테: active 에 "trend_donchian" 임시 추가 후 실행 → 종료 시 [] 복구 (규칙 7).
+# 추세추종 정식 전략 (MS-4 채택 = LO+ma200). 옵션 off 시 baseline(TF-1~4 GO, PF 1.31).
 trend_donchian:
   risk_per_trade_pct: 0.01            # 필수 (엔진 사이징)
   max_leverage: 5                     # 필수 (엔진 사이징)
@@ -111,18 +112,8 @@ trend_donchian:
   atr_period: 14
   atr_sl_mult: 2.0                    # 초기 SL = 진입가 ± ATR×2
                                       # TP 미설정 (compute_take_profit→None, trailing SL 청산)
-
-# ---- PATH_E TF-5a 실험 plugin (edge 강화 ablation, baseline freeze) ----
-# trend_donchian_exp: baseline + long_only/regime_filter 옵션. 1회용 ablation 스크립트가 변형 오버라이드.
-trend_donchian_exp:
-  risk_per_trade_pct: 0.01
-  max_leverage: 5
-  entry_period: 20
-  exit_period: 10
-  atr_period: 14
-  atr_sl_mult: 2.0
-  long_only: false
-  regime_filter_type: "none"          # adx/er/chop/ma/vol/di/none
-  regime_threshold: 25
-  vol_lookback: 100
-  vol_max_quantile: 0.8
+  long_only: true                     # MS-4: short 제거 (BTC 상승편향)
+  regime_filter_type: "ma"            # MS-4 채택 ma 필터 (adx/er/chop/ma/vol/di/none)
+  ma_period: 200                      # ma 필터 EMA 기간
+  regime_threshold: 25                # ma/di 는 무관, chop/adx/er/vol 시 사용
+                                      # vol_lookback/vol_max_quantile 은 vol 필터 시만 (plugin 기본값)
