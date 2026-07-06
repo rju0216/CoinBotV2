@@ -195,7 +195,7 @@ hmmlearn 은 Py3.14 빌드 불가 + Student's-t 미지원(Gaussian 한정) → *
 5. **contract→position.meta**: on_position_opened 수동 기입(signal.meta 자동복사 없음).
 6. **requirements**: scipy 추가(HMM 핵심). hmmlearn 미사용(빌드 불가·드롭).
 7. **회귀 테스트**: I-002(4종)·I-005(경계 H1~H6)·합성복원(Gaussian+t)+analytic spot-check·I-006(churn 측정).
-8. **2018 스트레스 데이터**: 스트레스 테스트 단계에 다운로드.
+8. **2018 스트레스 데이터**: ~~스트레스 테스트 단계에 다운로드~~ → **확보 완료(2026-07-07)**: OKX 무기한 2018 부재(2020 상장) → Binance 현물 2017-08~2019-12 대체. 상세=변경기록·I-004. 현물대체 타당성은 D4-5.
 
 ---
 
@@ -446,7 +446,7 @@ hmmlearn 은 Py3.14 빌드 불가 + Student's-t 미지원(Gaussian 한정) → *
 | I-001 | 백테 funding=0 → 추세 장기보유 비용 과소평가 (라이브 갭) | D1 | known limitation | O-5(가): gen1 수용·측정 후 2세대 판단 |
 | I-002 | 회귀 테스트 부재 4건: ①엔진측 lookahead 절단(`_build_ctx`/`_slice_candles`) ②진입가 백테=라이브 동일성 ③트레일링 SL end-to-end ④레짐 스왑 시퀀스 | D1 | 부분해소 | **③④ D4-3 S3 E2E 해소**(트레일익절·스왑같은봉) / ①② 기존 메커니즘(`test_lookahead` 간접), 실데이터 통합 시 명시 |
 | I-003 | 2-플러그인 시 HMM 레짐 봉당 중복 계산 | D1 | 해소(설계) | D2 (가) 단일 디스패처+RegimeService 캐시로 차단 |
-| I-004 | OOS 하락 = 단일 에피소드(2025-10~2026-02) → trend/short OOS 표본 작음 | D3 | known limitation | 2018 스트레스로 보완·결과 해석 시 감안 |
+| I-004 | OOS 하락 = 단일 에피소드(2025-10~2026-02) → trend/short OOS 표본 작음 | D3 | known limitation | 2018 스트레스로 보완(무기한 부재 → **Binance 현물 2017-08~2019-12 확보**, 2026-07-07; 현물대체 타당성 D4-5)·결과 해석 시 감안 |
 | I-005 | 윈도우 경계·인덱싱 정확성 (H1~H6) | D3 | 대부분 해소(D4-2) | features 테스트(H1·H2·H5)·service sliding-window(H4·H6). 잔여 H3 walk-forward warmup 은 D4-3/5 |
 | I-006 | 추세 관대진입의 재진입 churn (트레일링 손절 후 즉시 재진입 휩쏘) | D3.5 | 해소 | τ 스윕서 실발현(연속<2h 25%) → **churn 가드(cooldown/transition)로 해소**(D4-3.5①, 연속<2h 25%→0%) |
 | I-007 | EM 학습 forward/backward Python 루프 성능 (50k봉×K×init×iter×윈도우 느릴 수 있음) | D4-2 | OPEN | D4-5 실학습 전 최적화(벡터화/numba/init·iter 축소) |
@@ -544,3 +544,12 @@ hmmlearn 은 Py3.14 빌드 불가 + Student's-t 미지원(Gaussian 한정) → *
     ②**fit 파라미터 안정성 G·t 동등**(P&L 산포차=τ경계 증폭) ③**B-3 ν 인과 미지지·반증**. 신규 **I-015**(ν=2.0 하한핀
     4/240). 신규 결정 **O-9**(t 파라미터화, ECME→**ECM 명명 정정**). **emission 표준(G vs t)=D4-5 OOS 판정**(O-8 이연).
   - 미커밋 1회용: scratchpad(s4a·s4b·s4c·plumbing·s3_integration·verify_s4), `data/regime_models_s4_*`·`s4_results.json`(untracked).
+- **2026-07-07**: **D4-5 스트레스 데이터 준비** (D4-4 종착 후 사전작업, tracked 코드 변경 없음).
+  - **OKX 무기한 = 2020-01 상장 → 2018 원천 부재** 실증(ccxt: 2019-12 이전 요청 전부 0봉; OKX 현물도
+    2018-06~ 부분). 스펙§1.1 "2017~2018 학습제외·스트레스 별도보관" 확정 (D3.5 "2018 없음" 구체화).
+  - **Binance 현물 BTC/USDT 확보**: `data/candles/BTC_USDT_binance_spot_1h.csv` (gitignored `data/candles/*.csv`·
+    무기한 캐시 무오염; 재현=ccxt binance 페이지네이션 1회용 스크립트) — **20,708봉 2017-08-17~2019-12-31,
+    $2,919(2018 바닥)~$19,710(2017-12 버블정점)** = 버블→2018 붕괴 전체 사이클. ※약 76봉 갭(0.4%).
+  - **현물을 무기한 스트레스 대용으로 쓸 타당성은 D4-5 판단**: (가)Binance 현물(feature 정상성으로
+    현물/무기한 괴리 작음·홀드아웃은 반응점검, **유력**) / (나)BitMEX inverse 무기한(구조 이질·비용) /
+    (다)스킵→OOS 하락(2025-10~2026-02 ~47%)으로 대체(I-004 연장).
