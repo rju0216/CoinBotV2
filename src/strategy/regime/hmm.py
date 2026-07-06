@@ -182,7 +182,7 @@ class StudentTEmission(Emission):
         n_dim: int,
         reg: float = 1e-6,
         nu_init: float = 10.0,
-        nu_min: float = 2.0,
+        nu_min: float = 2.1,  # ν>2 = 분산 정의 (I-015: 2.0 은 퇴화 fit)
         nu_max: float = 200.0,
         share_nu: bool = False,
     ) -> None:

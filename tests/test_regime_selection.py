@@ -12,6 +12,7 @@ from src.strategy.regime.contract import RegimeDirection, RegimeType
 from src.strategy.regime.selection import (
     CORE_COMBOS,
     KDiagnostic,
+    _core_combos,
     evaluate_k,
     recommend_k,
 )
@@ -71,3 +72,60 @@ def test_evaluate_k_integration_core_coverage():
     # 잘 분리된 3-레짐 → 코어 커버리지(trend/long·trend/short·range/none) 충족
     assert diag.has_core_coverage
     assert CORE_COMBOS.issubset(mapping.covered_combos())
+
+
+# ---- D4-5 S2: emission 배선(I-013) + core_combos 동적(C-1) ----
+
+def _synth_3regime(seed):
+    """long/short/range 3-레짐 합성 (X feature + raw 로그수익률)."""
+    rng = np.random.default_rng(seed)
+    K, d = 3, 3
+    feat_means = np.array([[2, 2, 0], [-2, 2, 0], [0, -2, 0]], float)
+    ret_mean = np.array([0.01, -0.01, 0.0])   # |μ|/std ≈ 5, 5, 0
+    ret_std = np.array([0.002, 0.002, 0.01])
+    A = np.array([[0.95, 0.025, 0.025], [0.025, 0.95, 0.025], [0.025, 0.025, 0.95]])
+    n = 2400
+    states = np.empty(n, dtype=int)
+    states[0] = 0
+    for t in range(1, n):
+        states[t] = rng.choice(K, p=A[states[t - 1]])
+    X = np.array([rng.multivariate_normal(feat_means[s], np.eye(d)) for s in states])
+    raw_ret = np.array([rng.normal(ret_mean[s], ret_std[s]) for s in states])
+    return X, raw_ret
+
+
+def test_core_combos_trend_only_excludes_range():
+    trend_only = _core_combos(False)
+    assert trend_only == frozenset({(_T, _L), (_T, _S)})
+    assert (_R, _N) not in trend_only
+    assert _core_combos(True) == CORE_COMBOS  # range 활성 = 하위호환
+
+
+def test_evaluate_k_student_t_wired():
+    # student_t emission K선택 배선(I-013) + BIC 에 ν 반영(상태별 ν → K 만큼 파라미터↑).
+    X, raw_ret = _synth_3regime(0)
+    diag_g, hmm_g, _ = evaluate_k(
+        X[:1800], raw_ret[:1800], X[1800:], k=3, tau=1.0, n_init=2, seed=0,
+        emission_kind="gaussian",
+    )
+    diag_t, hmm_t, _ = evaluate_k(
+        X[:1800], raw_ret[:1800], X[1800:], k=3, tau=1.0, n_init=2, seed=0,
+        emission_kind="student_t",
+    )
+    assert np.isfinite(diag_t.bic) and np.isfinite(diag_t.holdout_ll)
+    assert hmm_t.emission.kind == "student_t"
+    # t 는 상태별 ν(K개) 추가 → n_params 가 Gaussian 보다 정확히 K 만큼 큼 (BIC 반영)
+    assert hmm_t.n_params == hmm_g.n_params + 3
+
+
+def test_evaluate_k_enable_range_false_core():
+    # enable_range=False → 비trend 는 NONE, core 커버리지 = {trend L/S} (range 제외).
+    X, raw_ret = _synth_3regime(1)
+    diag, _, mapping = evaluate_k(
+        X[:1800], raw_ret[:1800], X[1800:], k=3, tau=1.0, n_init=4, seed=0,
+        enable_range=False,
+    )
+    covered = mapping.covered_combos()
+    assert (_R, _N) not in covered          # range 상태 → NONE 이므로 RANGE 미출현
+    assert diag.has_core_coverage           # 추세단독 core = {trend L/S} 충족
+    assert _core_combos(False).issubset(covered)

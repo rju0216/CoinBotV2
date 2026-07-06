@@ -518,9 +518,10 @@ hmmlearn 은 Py3.14 빌드 불가 + Student's-t 미지원(Gaussian 한정) → *
 | I-010 | 추세 진입 승률(19%) < 손익분기(29%) — 관대진입(DD-1) 가짜진입+churn (손익비 2.44·트레일링은 건강) | D4-3 τ스윕 | 해소 | θ_trend 무력(conf≈1) → **k_trail 6.0 + cooldown24 로 trend margin +10.7·pnl +2,434 수익전환**(D4-3.5③) |
 | I-011 | range 손실 근본: mapping 이 "저 \|μ\|/σ=range"로 정의(mean-reversion 미검증) + train 추세지배로 range 상태 오염. K=3 임의 | D4-3.5 | **해소** | v2 경량 프로파일(K=2~6, 후보식별)→**격리 백테 심판**(6후보 전부 손실 PF<0.7) → **range 엣지 없음(Dev) → O-7 (가) range 드롭**. gen2 revival 조건부(데이터확장/t-emission/다른 instrument) |
 | I-012 | **HMM fit 불안정**: 추세 P&L·상태커버리지가 EM 설정(n_init/seed) 국소최적에 민감 (+801~+2,419, 3배 스윙). 역설: n_init↑(LL↑)인데 매매↓ | D4-3.5 | OPEN | gen1 fit=NEW(n_init5) **잠정**. **D4-4 seed0~9 스윕**: t-emission **완화 안 됨**(인샘플 P&L 산포 t 큰 경향이나 n=10 미유의 F=2.34; **fit 파라미터 안정성은 G·t 동등** — P&L 산포는 τ경계 증폭). 확정=**D4-5 다중seed 안정성 + OOS**(인샘플 P&L 선택 금지=과적합) |
-| I-013 | `selection.py` CORE_COMBOS가 `(RANGE,NONE)` 요구 → enable_range=False(gen1)서 커버리지 경고. gen1 미배선(select_k 빌드 미사용이라 무영향) | D4-3.5 | OPEN(경미) | gen1 K재선택 시 trend/none 커버리지 기준으로 정리 → D4-5. **D4-4: selection Gaussian 고정 docstring 명시, t emission K선택 배선은 D4-5** |
+| I-013 | `selection.py` CORE_COMBOS가 `(RANGE,NONE)` 요구 → enable_range=False(gen1)서 커버리지 경고. gen1 미배선(select_k 빌드 미사용이라 무영향) | D4-3.5 | **해소(D4-5 S2)** | **make_emission 배선(gaussian/t) + CORE_COMBOS→`_core_combos(enable_range)` 동적(추세단독=`{trend L/S}`) + evaluate_k/select_k emission_kind·enable_range 인자. 회귀 396** |
 | I-014 | t-emission 수치 3블로커: ①brentq bracket 동부호 crash(근이 [ν_min,ν_max] 밖) ②shape≠cov 파라미터화 혼동 ③Σ 특이화/brentq 실패 시 NaN → `_forward_log` logsumexp 오염 | D4-4 | **해소(S1)** | ①bracket 선검사 clamp ②`scales` 명명+합성복원 `rvs(shape=Σ)` 일치 ③reg PD·Cholesky δ²·빈상태 가드+유한성 테스트(코어 무변경) |
-| I-015 | **ν=2.0 하한핀 퇴화 fit**: t seed 스윕서 240 윈도우 중 **4건**(seed3·6·8·9 첫 윈도우) ν 가 하한 2.0 에 고정 → ν≤2 는 분산 미정의(퇴화). 희소(1.7%)·t 특유 | D4-4 | OPEN(경미) | D4-5 `nu_min` 상향(예 2.1) 검토 + fit 안정성 판정 시 감안 |
+| I-015 | **ν=2.0 하한핀 퇴화 fit**: t seed 스윕서 240 윈도우 중 **4건**(seed3·6·8·9 첫 윈도우) ν 가 하한 2.0 에 고정 → ν≤2 는 분산 미정의(퇴화). 희소(1.7%)·t 특유 | D4-4 | **부분해소(S2)** | **`nu_min` 2.0→2.1 적용(S2·C-3, ν>2 분산정의)**. fit 안정성 최종 판정(하한핀 재발 여부)은 D4-5 후반 seed 스윕 |
+| I-016 | **gen1 trend/short 구조적 약함**: Dev 단일fit 커버리지(2020-2022, K2~6×{G,t}×τ.02/.05/.10) — **trend/short 전무**·long 도 τ0.02 일부K만. K↑ 무효(스펙§1.7 경우B 데이터빈약). gen1 **long 편향 가능성** | D4-5 S2 | OPEN | 단일fit 진단은 **walk-forward 미대변**(I-012 fit 불안정) → **S3/S4 walk-forward 실백테서 trend 방향분포 측정 후 판단**. short 부재 확정 시 스펙§1.7 관망 수용 |
 
 ---
 
