@@ -21,8 +21,23 @@ from typing import Any
 import numpy as np
 from scipy.linalg import solve_triangular
 from scipy.optimize import brentq
-from scipy.special import digamma, logsumexp
-from scipy.stats import multivariate_normal, multivariate_t
+from scipy.special import digamma, gammaln, logsumexp
+
+
+def _chol_delta2_logdet(
+    X: np.ndarray, mean: np.ndarray, cov: np.ndarray
+) -> tuple[np.ndarray, float]:
+    """Cholesky 로 δ²=(x−μ)ᵀΣ⁻¹(x−μ) (T,) 와 logdet(Σ) 동시 산출.
+
+    Gaussian·t emission 의 log_prob·mahalanobis 공통 경로 — scipy logpdf 직접 대체
+    (I-007 최적화: 매 EM iter 의 scipy 입력검증·cov 재분해 제거). cov 는 reg 로
+    항상 PD → cholesky 안전(특이화 조기감지). logdet = 2·Σ log(diag L).
+    """
+    L = np.linalg.cholesky(cov)
+    z = solve_triangular(L, (X - mean).T, lower=True)  # (d, T)
+    delta2 = (z ** 2).sum(axis=0)  # (T,)
+    logdet = 2.0 * float(np.log(np.diag(L)).sum())
+    return delta2, logdet
 
 
 class Emission(ABC):
@@ -84,10 +99,10 @@ class GaussianEmission(Emission):
     def log_prob(self, X: np.ndarray) -> np.ndarray:
         T = X.shape[0]
         out = np.empty((T, self.K))
+        const = self.d * np.log(2.0 * np.pi)
         for k in range(self.K):
-            out[:, k] = multivariate_normal.logpdf(
-                X, mean=self.means[k], cov=self.covs[k]
-            )
+            delta2, logdet = _chol_delta2_logdet(X, self.means[k], self.covs[k])
+            out[:, k] = -0.5 * (const + logdet + delta2)
         return out
 
     def m_step(self, X: np.ndarray, gamma: np.ndarray) -> None:
@@ -185,18 +200,18 @@ class StudentTEmission(Emission):
     def log_prob(self, X: np.ndarray) -> np.ndarray:
         T = X.shape[0]
         out = np.empty((T, self.K))
+        d = self.d
         for k in range(self.K):
-            out[:, k] = multivariate_t.logpdf(
-                X, loc=self.means[k], shape=self.scales[k], df=self.nus[k]
+            nu = self.nus[k]
+            delta2, logdet = _chol_delta2_logdet(X, self.means[k], self.scales[k])
+            out[:, k] = (
+                gammaln((nu + d) / 2.0)
+                - gammaln(nu / 2.0)
+                - 0.5 * d * np.log(nu * np.pi)
+                - 0.5 * logdet
+                - 0.5 * (nu + d) * np.log1p(delta2 / nu)
             )
         return out
-
-    def _mahalanobis_sq(self, X: np.ndarray, k: int) -> np.ndarray:
-        """δ²_t = (x−μ_k)ᵀ Σ_k⁻¹ (x−μ_k) — Cholesky 로 안정 계산 (특이화 조기감지)."""
-        diff = X - self.means[k]  # (T, d)
-        L = np.linalg.cholesky(self.scales[k])  # scale 은 reg 로 항상 PD
-        z = solve_triangular(L, diff.T, lower=True)  # (d, T)
-        return (z**2).sum(axis=0)  # (T,)
 
     def m_step(self, X: np.ndarray, gamma: np.ndarray) -> None:
         Nk = gamma.sum(axis=0)  # (K,)
@@ -208,7 +223,7 @@ class StudentTEmission(Emission):
             if Nk[k] < 1e-8:
                 continue  # 빈 상태 → 기존 파라미터 유지
             nu = self.nus[k]
-            delta2 = self._mahalanobis_sq(X, k)
+            delta2, _ = _chol_delta2_logdet(X, self.means[k], self.scales[k])
             E_u_all[:, k] = (nu + self.d) / (nu + delta2)
             E_logu_all[:, k] = digamma((nu + self.d) / 2.0) - np.log(
                 (nu + delta2) / 2.0
@@ -375,20 +390,26 @@ class HMM:
         T = log_obs.shape[0]
         log_alpha = np.empty((T, self.K))
         log_alpha[0] = self.log_pi + log_obs[0]
+        log_A = self.log_A
         for t in range(1, T):
-            log_alpha[t] = log_obs[t] + logsumexp(
-                log_alpha[t - 1][:, None] + self.log_A, axis=0
-            )
-        return log_alpha, float(logsumexp(log_alpha[-1]))
+            # logsumexp(log_alpha[t-1][:,None] + log_A, axis=0) 인라인 (I-007:
+            # 스텝당 scipy 호출 제거, max-shift 동일 알고리즘 → 수치 등가).
+            m = log_alpha[t - 1][:, None] + log_A  # (K_prev, K_next)
+            mx = m.max(axis=0)
+            log_alpha[t] = log_obs[t] + mx + np.log(np.exp(m - mx).sum(axis=0))
+        mx_last = log_alpha[-1].max()
+        ll = float(mx_last + np.log(np.exp(log_alpha[-1] - mx_last).sum()))
+        return log_alpha, ll
 
     def _backward_log(self, log_obs: np.ndarray) -> np.ndarray:
         T = log_obs.shape[0]
         log_beta = np.zeros((T, self.K))
+        log_A = self.log_A
         for t in range(T - 2, -1, -1):
-            log_beta[t] = logsumexp(
-                self.log_A + log_obs[t + 1][None, :] + log_beta[t + 1][None, :],
-                axis=1,
-            )
+            # logsumexp(log_A + (log_obs[t+1]+log_beta[t+1])[None,:], axis=1) 인라인.
+            m = log_A + (log_obs[t + 1] + log_beta[t + 1])[None, :]  # (K_j, K_k)
+            mx = m.max(axis=1, keepdims=True)
+            log_beta[t] = mx[:, 0] + np.log(np.exp(m - mx).sum(axis=1))
         return log_beta
 
     # ---- EM 학습 ----

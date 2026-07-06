@@ -241,6 +241,20 @@ def _sample_t_hmm(pi, A, means, scales, nus, T, rng):
 
 # ---- 배선 / 정의 ----
 
+def test_gaussian_log_prob_matches_scipy():
+    # 직접 구현(Cholesky) vs scipy(eigh) — I-007 최적화 정확성 게이트.
+    # full(비대각) cov 로 logdet·δ² 경로 검증. 실측 max|diff| ~8e-13 → atol 1e-11.
+    em = GaussianEmission(2, 2)
+    em.means = np.array([[0.0, 0.0], [3.0, -1.0]])
+    em.covs = np.array([[[2.0, 0.5], [0.5, 1.0]], [[1.5, -0.4], [-0.4, 0.8]]])
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(60, 2)) * 2.0
+    lp = em.log_prob(X)
+    for k in range(2):
+        ref = multivariate_normal.logpdf(X, mean=em.means[k], cov=em.covs[k])
+        np.testing.assert_allclose(lp[:, k], ref, atol=1e-11)
+
+
 def test_student_t_log_prob_matches_scipy():
     em = StudentTEmission(2, 2)
     em.means = np.array([[0.0, 0.0], [3.0, -1.0]])
