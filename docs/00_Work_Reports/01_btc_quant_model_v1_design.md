@@ -32,7 +32,7 @@ Phase 단위로 진행 기록·결정·잠재 이슈를 누적한다.
 | D2 | 정책 계약 표면 B 재설계 + O-2·O-4·O-5 결정 | ✅ 완료 | 2026-06-30 | (미커밋) |
 | D3 | 학습 파이프라인 설계 (데이터분할·feature·t-HMM·K선택/매핑·walk-forward) + O-1·O-3·O-6 결정 | ✅ 완료 | 2026-07-01 | 5f8a288 |
 | D3.5 | 구현 전 점검 (코드검증·환경·DD-1) — GO | ✅ 완료 | 2026-07-01 | 5f8a288 |
-| D4 | 구현 (D4-1·D4-2·D4-3·D4-3.5 ✅ range 드롭·추세단독 / D4-4 ✅ t emission·seed 스윕 / **D4-5 진행중: S0 사전등록**) | 진행중 | 2026-07-01~ | D4-3 b14f175 / D4-3.5 e1135c8 / D4-4 21c1f19 |
+| D4 | 구현 (D4-1·D4-2·D4-3·D4-3.5 ✅ range 드롭·추세단독 / D4-4 ✅ t emission·seed 스윕 / **D4-5 진행중: S0-S3 ✅**(사전등록·EM 11x·K G5/t4·Dev 계수확정) / S4-S7 예정) | 진행중 | 2026-07-01~ | D4-3 b14f175 / D4-3.5 e1135c8 / D4-4 21c1f19 / D4-5 S0 493d314·S1 54e6f3a·S2 a311a31 |
 
 ---
 
@@ -521,7 +521,7 @@ hmmlearn 은 Py3.14 빌드 불가 + Student's-t 미지원(Gaussian 한정) → *
 | I-013 | `selection.py` CORE_COMBOS가 `(RANGE,NONE)` 요구 → enable_range=False(gen1)서 커버리지 경고. gen1 미배선(select_k 빌드 미사용이라 무영향) | D4-3.5 | **해소(D4-5 S2)** | **make_emission 배선(gaussian/t) + CORE_COMBOS→`_core_combos(enable_range)` 동적(추세단독=`{trend L/S}`) + evaluate_k/select_k emission_kind·enable_range 인자. 회귀 396** |
 | I-014 | t-emission 수치 3블로커: ①brentq bracket 동부호 crash(근이 [ν_min,ν_max] 밖) ②shape≠cov 파라미터화 혼동 ③Σ 특이화/brentq 실패 시 NaN → `_forward_log` logsumexp 오염 | D4-4 | **해소(S1)** | ①bracket 선검사 clamp ②`scales` 명명+합성복원 `rvs(shape=Σ)` 일치 ③reg PD·Cholesky δ²·빈상태 가드+유한성 테스트(코어 무변경) |
 | I-015 | **ν=2.0 하한핀 퇴화 fit**: t seed 스윕서 240 윈도우 중 **4건**(seed3·6·8·9 첫 윈도우) ν 가 하한 2.0 에 고정 → ν≤2 는 분산 미정의(퇴화). 희소(1.7%)·t 특유 | D4-4 | **부분해소(S2)** | **`nu_min` 2.0→2.1 적용(S2·C-3, ν>2 분산정의)**. fit 안정성 최종 판정(하한핀 재발 여부)은 D4-5 후반 seed 스윕 |
-| I-016 | **gen1 trend/short 구조적 약함**: Dev 단일fit 커버리지(2020-2022, K2~6×{G,t}×τ.02/.05/.10) — **trend/short 전무**·long 도 τ0.02 일부K만. K↑ 무효(스펙§1.7 경우B 데이터빈약). gen1 **long 편향 가능성** | D4-5 S2 | OPEN | 단일fit 진단은 **walk-forward 미대변**(I-012 fit 불안정) → **S3/S4 walk-forward 실백테서 trend 방향분포 측정 후 판단**. short 부재 확정 시 스펙§1.7 관망 수용 |
+| I-016 | **gen1 trend/short 구조적 약함**: Dev 단일fit 커버리지(2020-2022, K2~6×{G,t}×τ.02/.05/.10) — **trend/short 전무**·long 도 τ0.02 일부K만. K↑ 무효(스펙§1.7 경우B 데이터빈약). gen1 **long 편향 가능성** | D4-5 S2 | **실증·수용(S3)** | **S3 walk-forward 87백테 실증: 확정운영점(G τ0.07·t τ0.05) 전부 long-only(S0)**. short 는 저τ(0.02/0.03)서만 발생·대부분 손실. **스펙§1.7 관망 수용**(long-dominant gen1). 2022 하락장: G 무매매 회피(p22=0)·t +261 방어. OOS 재확인 S4 |
 
 ---
 
@@ -540,6 +540,23 @@ hmmlearn 은 Py3.14 빌드 불가 + Student's-t 미지원(Gaussian 한정) → *
 | O-7 | range 매핑 정책 | **(가) gen1 range 드롭** — 격리백테서 엣지 없음(PF<0.7). 비trend→NONE(무매매). **gen2 revival 조건부 보류**(RANGE/RangeLogic 코드 보존; 조건=데이터확장/t-emission/다른 instrument) | ✅ D4-3.5 |
 | O-8 | gen1 HMM fit 표준 | **NEW(n_init5/iter100/seed0) 잠정** — 재현성·LL·보수. 최종=D4-5 다중seed 안정+OOS (인샘플 P&L 선택=과적합 금지) | 잠정 D4-3.5 (I-012) |
 | O-9 | t emission 파라미터화 (D4-4) | **(가) 3결정**: ①자유도 **상태별 ν_k**(share_nu 스위치로 공통 ν 헤지) ②**완전 EM digamma root-find**(Q-함수 최대화 = **ECM/EM**, 관측우도 직접최대화 ECME 아님 — 명명 정정) ③**I-012 seed 안정성 측정 D4-4 포함**(판정 D4-5) | ✅ D4-4 |
+
+---
+
+## gen2 백로그 (S3 실증 기반 — 스펙 §7 확장)
+
+> gen1(D4-5) 완료 후 2세대 연구 가설. **검증된 개선이 아니라 가설**이다. S3 Dev 계수 스윕이
+> 실증한 사실에서 도출. 상세 논의 = 세션 대화(2026-07-07 S3 종착).
+
+- **G2-1 short 확대**: gen1 확정운영점 전부 long-only(I-016). **단순 τ 하향은 실패**(저τ short=노이즈 손실 실증). 방향:
+  - (a) **비대칭 τ_short + 미시구조 트리거 게이트**(펀딩·거래량·다운사이드 변동성) — 스펙 §1.2 "미시구조=트리거 단계".
+  - (b) **t emission 하락 포착 재분석** — S3서 t 가 2022 하락장 +261 방어(G 무매매). 저τ t short 품질이 G보다 나은지.
+  - (c) **하락→mean-reversion(반등)** — 하락이 추세로 안 묶이면 반등을 range 로 (O-7 gen2 range revival "t-emission 후 재분해"와 직결).
+  - (d) **다운사이드 전용 feature**(하락 변동성·수익률 왜도) — 대칭 3-feature 한계. 정상성 유지 제약.
+  - 근거: BTC 1h 하락은 순수 방향성 상태로 잘 안 묶임(지그재그·고변동, D4-3.5 시장특성).
+- **G2-2 하락장 정책 (회피 vs 방어 vs 능동)**: 확정운영점 **G=무매매 회피(자본보존)·t=소폭 방어(+261)**. long-only+회피는 방어적 장점일 수 있음 → gen2 능동 short 가 이걸 이기는지 검증 대상.
+- **G2-3 거래 빈도**: gen1 월 1.3~2.5회(낮음) → 멀티스케일 feature(스펙 §7, 24·48·72봉)로 해상도·빈도 보강.
+- **G2-4 τ 적응**: emission별 τ 상이(G 0.07·t 0.05, S3) → 상태별·적응적 τ(스펙 §2.5 "type 임계 데이터 자동")로 통합.
 
 ---
 
