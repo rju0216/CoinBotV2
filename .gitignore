@@ -44,6 +44,8 @@ data/features/
 data/*_scan/
 data/*_sweep/
 data/*_ablation/
+# D4-4 seed 스윕 산출(s4_results.json 등, 결과는 작업보고서 D4-4)
+data/s4_*
 
 # 1회용 탐사/측정 스크립트 (규칙 8-4: commit 제외, 결과만 보고서에)
 scripts/_tmp_*.py

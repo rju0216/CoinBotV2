@@ -1,11 +1,11 @@
-"""레짐 모델 artifact 사전학습 (offline, O-3) — walk-forward Gaussian HMM 빌드.
+"""레짐 모델 artifact 사전학습 (offline, O-3) — walk-forward HMM(Gaussian/Student-t) 빌드.
 
 [valid-start, valid-end) 를 retrain-months 마다 잘라 anchored walk-forward 로 학습하고,
 각 윈도우 모델을 data/regime_models/window_NN.json 으로 저장한다. RegimeQuantStrategy
 (plugins/regime_quant.py)가 이 artifact 를 로드해 백테/페이퍼/라이브에서 사용한다.
 
 실 K 선택 스윕·최종 계수 확정은 D4-5. 여기는 고정 K/τ baseline 빌드 도구(재사용).
-emission 은 현재 Gaussian (D4-4 에서 Student-t 교체 예정).
+emission 은 --emission 으로 선택 (gaussian 기본 / student_t = fat tail, D4-4 O-6).
 
 사용 예 (cmd):
   REM 1) 1h 캔들 먼저 다운로드
@@ -70,6 +70,18 @@ def _parse_args() -> argparse.Namespace:
         "--no-range", action="store_true",
         help="비trend 상태를 RANGE 대신 NONE(무매매)로 매핑 → 추세-단독 gen1 (O-7 (가))",
     )
+    p.add_argument(
+        "--emission", choices=["gaussian", "student_t"], default="gaussian",
+        help="HMM emission (gaussian 기본 / student_t = fat tail, D4-4 O-6)",
+    )
+    p.add_argument(
+        "--share-nu", action="store_true",
+        help="student_t: 전 상태 공통 ν (기본 = 상태별 ν_k)",
+    )
+    p.add_argument(
+        "--nu-init", type=float, default=10.0,
+        help="student_t: ν 초기값 (fit 재현성)",
+    )
     return p.parse_args()
 
 
@@ -93,12 +105,15 @@ async def _main() -> None:
     )
     print(
         f"[2/3] walk-forward {len(windows)} 윈도우 학습 "
-        f"(재추정 {args.retrain_months}개월, K={args.k}, τ={args.tau})"
+        f"(재추정 {args.retrain_months}개월, K={args.k}, τ={args.tau}, "
+        f"emission={args.emission})"
     )
     models = walk_forward(
         candles, windows, args.k, args.tau,
         n_init=args.n_init, n_iter=args.n_iter, seed=args.seed,
         enable_range=not args.no_range,
+        emission_kind=args.emission,
+        emission_params={"share_nu": args.share_nu, "nu_init": args.nu_init},
     )
 
     out = Path(args.out_dir)

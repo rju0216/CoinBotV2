@@ -21,7 +21,7 @@ class RegimeModel:
     """walk-forward 한 윈도우의 완성 모델 (생산↔소비 계약 단위).
 
     valid_period [start, end): 이 모델을 적용할 OOS 구간 (ISO ts).
-    meta: train_window 범위·emission_type·fit_ts 등 (참조용).
+    meta: train_start·train_end·emission_kind·k·enable_range 등 (참조용).
     """
 
     hmm: HMM

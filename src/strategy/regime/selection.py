@@ -48,7 +48,11 @@ def evaluate_k(
     seed: int = 0,
     **fit_kw,
 ) -> tuple[KDiagnostic, HMM, StateMapping]:
-    """단일 K 평가: train 적합 → holdout LL, BIC(train), 매핑→커버리지."""
+    """단일 K 평가: train 적합 → holdout LL, BIC(train), 매핑→커버리지.
+
+    emission 은 **Gaussian 고정** (I-013): gen1 K선택은 미배선(select_k 빌드 미사용).
+    t emission K선택(BIC 에 ν 반영, D3 §157)은 D4-5 에서 make_emission 으로 배선.
+    """
     hmm = HMM(k, GaussianEmission(k, X_train.shape[1])).fit(
         X_train, n_init=n_init, seed=seed, **fit_kw
     )

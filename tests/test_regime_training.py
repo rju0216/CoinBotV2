@@ -9,6 +9,7 @@ from __future__ import annotations
 import subprocess
 import sys
 
+import numpy as np
 import pandas as pd
 
 from src.strategy.regime.contract import RegimeType
@@ -109,6 +110,35 @@ def test_walk_forward_enable_range_false_no_range_type():
         assert m.meta["enable_range"] is False
 
 
+# ---- emission 배선 (S2, D4-4) ----
+
+def test_walk_forward_default_gaussian_backward_compat():
+    """emission 미지정 → gaussian 유지 (하위호환)."""
+    candles = _synth_candles(400)
+    windows = make_anchored_windows("2020-01-08", "2020-01-15", 1)
+    models = walk_forward(
+        candles, windows, k=2, tau=0.5, n_init=1, n_iter=5, seed=0
+    )
+    assert all(m.hmm.emission.kind == "gaussian" for m in models)
+
+
+def test_walk_forward_student_t_emission():
+    """emission_kind='student_t' → t emission 으로 학습 (nus 존재·share_nu 전달)."""
+    candles = _synth_candles(400)
+    windows = make_anchored_windows("2020-01-08", "2020-01-15", 1)
+    models = walk_forward(
+        candles, windows, k=2, tau=0.5, n_init=1, n_iter=5, seed=0,
+        emission_kind="student_t",
+        emission_params={"share_nu": True, "nu_init": 8.0},
+    )
+    for m in models:
+        em = m.hmm.emission
+        assert em.kind == "student_t"
+        assert em.nus.shape == (2,) and np.isfinite(em.nus).all()
+        assert em.share_nu is True  # emission_params 전달 확인
+        assert m.meta["emission_kind"] == "student_t"  # meta 자동 배선
+
+
 # ---- 빌드 스크립트 CLI smoke ----
 
 def test_build_script_cli_help():
@@ -120,3 +150,5 @@ def test_build_script_cli_help():
     assert "walk-forward" in r.stdout
     assert "--valid-start" in r.stdout
     assert "--no-range" in r.stdout  # gen1 추세-단독 플래그
+    assert "--emission" in r.stdout  # D4-4 emission 선택
+    assert "--share-nu" in r.stdout

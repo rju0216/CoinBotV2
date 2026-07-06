@@ -80,6 +80,8 @@ strategies:
 #   빌드(비trend 상태 → NONE=무매매; τ는 config 미노출 CLI 인자라 재빌드 시 명시 필수 — 기본 0.5면
 #   매핑 달라짐). 아래 추세 계수·τ 는 잠정 — 최종 τ·k 재최적·fit 안정성(I-012)은 D4-5(OOS·다중seed)
 #   에서 확정. RangeLogic·range 파라미터는 gen2 revival 대비 보존(현재 미사용).
+#   emission: 현행 gen1 baseline 은 Gaussian(기본). Student-t(`--emission student_t`, D4-4 구현)는
+#   fat tail 대응이나 인샘플 fit 개선 미확인 → 최종 G vs t 선택은 D4-5 OOS/스트레스 판정(O-6·O-8).
 regime_quant:
   model_dir: "data/regime_models"   # walk-forward artifact 디렉토리 (untracked). gen1 은 --no-range 로 재빌드 필요(현 포인터는 range 베이스라인이라 stale)
   filter_window: 100                # RegimeService HMM sliding-window filter 봉 수

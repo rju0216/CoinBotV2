@@ -32,7 +32,7 @@ Phase 단위로 진행 기록·결정·잠재 이슈를 누적한다.
 | D2 | 정책 계약 표면 B 재설계 + O-2·O-4·O-5 결정 | ✅ 완료 | 2026-06-30 | (미커밋) |
 | D3 | 학습 파이프라인 설계 (데이터분할·feature·t-HMM·K선택/매핑·walk-forward) + O-1·O-3·O-6 결정 | ✅ 완료 | 2026-07-01 | 5f8a288 |
 | D3.5 | 구현 전 점검 (코드검증·환경·DD-1) — GO | ✅ 완료 | 2026-07-01 | 5f8a288 |
-| D4 | 구현 (D4-1·D4-2·D4-3·**D4-3.5 ✅ range 드롭·추세단독** / D4-4~5 예정) | 진행중 | 2026-07-01~ | D4-3 b14f175 / 백테분석·τ스윕 f90ae56·5841f6e / logic·churn가드 eb9d8e1·216612f / **D4-3.5 추세단독 리팩터 (커밋대기)** |
+| D4 | 구현 (D4-1·D4-2·D4-3·D4-3.5 ✅ range 드롭·추세단독 / **D4-4 ✅ t emission·seed 스윕** / D4-5 예정) | 진행중 | 2026-07-01~ | D4-3 b14f175 / D4-3.5 e1135c8 / **D4-4 (커밋대기)** |
 
 ---
 
@@ -210,7 +210,7 @@ hmmlearn 은 Py3.14 빌드 불가 + Student's-t 미지원(Gaussian 한정) → *
 | **D4-2** ✅ | 발견층(Gaussian): feature·EM·sliding-window filter·K선택·매핑·artifact·RegimeService | 회귀 294 + 합성복원·analytic·causal·M-step 참조대조 |
 | **D4-3** ✅ | 매매층: 디스패처+Trend/Range(DD-1·None) + 빌드도구·Dev 백테 가이드 | 회귀 358 + E2E·I-002④·churn(I-006)·정합성 |
 | **D4-3.5** ✅ | Gaussian 계수 스윕(τ·θ·k·churn가드) + range 유효성 규명 → **O-7 (가) range 드롭** + 추세-단독 리팩터 | trend 수익전환 ✅ · range 격리백테 손실→드롭 · 회귀 371 · 재백테 +801 |
-| D4-4 | Gaussian→t emission 교체 (**trend-only**) + **I-012 fit 안정성** 점검 | 합성복원(t) + Dev 재백테 + 다중seed 안정 |
+| **D4-4** ✅ | Gaussian→t emission **구현·배선** (**trend-only**) + I-012 fit 안정성 seed 스윕 | 회귀 386 + 합성복원(t·shape·ν) + 재현성게이트 + seed0~9 정합성 20/20 + 독립재검증 |
 | D4-5 | walk-forward OOS + 계수 스윕 + 커버리지 최종 + 2018 스트레스 + 낙관편향/funding 해석 + **fit 안정성(I-012)** + **gen1 as-built 스펙 작성**(`docs/01_Guide_Docs/`) | OOS 정직 평가 |
 | (범위 밖) | 라이브 통합(C): RegimeService 상태 복원·OKX 배선 | 라이브 단계 |
 
@@ -224,7 +224,7 @@ hmmlearn 은 Py3.14 빌드 불가 + Student's-t 미지원(Gaussian 한정) → *
 
 ### D4-2 — 발견층 Gaussian (완료)
 - **신규 모듈** `src/strategy/regime/`: contract·features·hmm·mapping·selection·artifact·service·training.
-- **HMM**: Emission ABC(m_step 자기완결 → t 수용) + GaussianEmission(full cov+reg) + log-space EM(다중 init·best LL) + **forward-only filter**.
+- **HMM**: Emission ABC(m_step 자기완결 → t 수용) + GaussianEmission(full cov+reg; D4-4서 StudentTEmission 형제 추가) + log-space EM(다중 init·best LL) + **forward-only filter**.
 - **추론(RegimeService)**: **sliding-window filter**(직전 W봉) + **bounded ATR**(직전 W+24봉) + feature 도 직전(W+warmup)봉만 계산(O(T²)→O(T)) → **백테=라이브 동일(H4)**. 봉당 timestamp 캐시.
 - **매핑**: raw 로그수익률 per-state 통계 type=|μ|/std vs τ·direction·confidence=γ집계. **K선택**: holdout LL+BIC+커버리지 진단·추천.
 - **artifact**: 단일 JSON (emission type-agnostic, t-swap 대비).
@@ -380,6 +380,63 @@ hmmlearn 은 Py3.14 빌드 불가 + Student's-t 미지원(Gaussian 한정) → *
 - **I-012 신규**: HMM fit 불안정 — 추세 P&L·상태커버리지가 EM 설정(n_init/seed)에 민감(+801~+2,419, 3배 스윙). 역설: n_init↑(LL↑)인데 매매↓("LL 최대 ≠ tradeable trend"). **어느 fit도 정답 아님·둘 다 PF>1이라 O-7 (가) 무관하게 유지.**
 - **gen1 fit 표준 = NEW(n_init5/iter100/seed0) 잠정 채택** (재현성=커밋 빌드도구 결정론 기본값 / LL 안나쁨 n_init5⊇2 / 보수적 +801). **잠정인 이유**: fit "최종"엔 안정성+OOS 필요한데 인샘플 P&L로 고르면 과적합 → OOS 전 최종불가. 참성능·표준 확정은 **D4-5(다중seed 안정성 + OOS)**.
 
+### D4-4 — t emission 구현·배선 + I-012 seed 스윕 (완료, 커밋대기)
+
+> O-6 (나) 최종 단계: Gaussian → Student-t emission. **엔진·매매층 무변경**(Contract 고정 인터페이스
+> 검증). 4 Step, 각 Step 독립 fresh-eyes 재검증(규칙14). 백테는 **이번 D4-4 한정 Claude 직접**
+> 수행 승인(config/default.yaml 무접촉 — programmatic override, 규칙7).
+
+**S1 — StudentTEmission 구현** (`hmm.py`, 회귀 386):
+- `StudentTEmission(Emission)`: 다변량 Student-t(scale 행렬 `scales`·상태별 `nus`). Gaussian
+  scale-mixture EM — m_step 이 γ 만 받아 스케일 latent u 의 E-step 을 내부수행(ABC 계약, t 복잡도 격리).
+  ν = **Q-함수(complete-data 기대우도) 최대화의 digamma 방정식 root-find**(표준 EM/ECM).
+- **★ν 방정식 double-count 정정**: 정확형 E[logu] 사용 시 보정항 없는 canonical
+  `g(ν)=1−ψ(ν/2)+log(ν/2)+c`, `c=(1/N)Σγ(E[logu]−E[u])`. (초안 식의 `+ψ((ν+d)/2)−log((ν+d)/2)`
+  는 E[logu] 에 이미 포함 → 중복.) **독립 Q-max(minimize_scalar) 대조**로 tautology-free 검증.
+- `make_emission` factory(emission_from_dict 순방향 대칭) + student_t 분기. 명명 `scales`(≠공분산,
+  실 cov=Σ·ν/(ν−2))·`nus`.
+- **I-014 신규 = 블로커 3 해소**: brentq bracket 동부호 clamp(구간 밖 근 crash 방지) / shape≠cov
+  파라미터화(합성복원 `multivariate_t.rvs(shape=Σ)` 일치) / NaN 원천차단(reg PD·Cholesky δ²·빈상태
+  가드)+유한성 테스트. 코어 `_forward_log` 무변경.
+
+**S2 — 학습/빌드 배선** (회귀 392):
+- `build_model`/`walk_forward` 에 `emission_kind`·`emission_params`(디폴트 gaussian=하위호환).
+  `build_regime_artifacts.py --emission {gaussian,student_t}·--share-nu·--nu-init`.
+- `selection.py` **Gaussian 고정**(I-013, docstring 명시 — t K선택 배선은 D4-5). `meta.emission_kind`
+  는 `hmm.emission.kind` 자동 흐름.
+
+**S3 — 통합점검**: t build→save→load→RegimeService 추론 스모크 완주(nus·round-trip 무손실).
+문서↔코드 양방향 대조(규칙13) 블로커 0 (`artifact.py` meta 키·`hmm.py` 모듈 docstring 정정).
+
+**S4 — seed 스윕 실측** (Claude 직접 백테):
+- **재현성 게이트 통과**: Gaussian seed0 재빌드 means = 기존 baseline **0/8 결정론 일치**(스레드=1 +
+  `default_rng(seed)`). **+801 정확 재현**(정합성 OK, 51 trades 전부 trend).
+- **timing**: 빌드 Gaussian 43분·t 52분/건, 백테 ~290s. seed 0~9 × G/t = 20건 **병렬**(6워커, 251분).
+- **정합성 20/20**(규칙10 전건 trades pnl합=total_pnl). 측정(사전등록 지표):
+
+  | 지표 | Gaussian | Student-t |
+  |---|---|---|
+  | trend P&L CV (std/\|mean\|) | 1.582 | 2.545 |
+  | τ-독립 trend-strength CV | 0.089 | 0.102 |
+  | trend_windows std | 0.46 | 0.54 |
+  | ν 상한포화 / 하한핀(=2.0) | — | 0 / **4**/240 |
+
+**★S4 결론 (독립 재검증 후 정정 — 성급한 결론 3회 방지)**:
+> 원결론("t가 fit 덜 안정·B-3 실증")을 독립검증이 데이터로 반증·순화. 아래가 확정본.
+1. 인샘플 **P&L** 산포가 t 큰 "경향"(trend_pnl std 1.53×)이나 **n=10 통계 미유의**(분산비 F=2.34 <
+   5%임계 3.18) → 다지표 같은방향 **정성 관찰**에 한정.
+2. **emission fit 파라미터(μ/σ 분리도) 안정성은 G·t 거의 동등**(τ-독립 CV 0.089 vs 0.102, 15%갭·
+   미유의). P&L 갭(61%) ≫ fit 갭(15%) → 산포차는 fit 이 아니라 **τ 경계 라벨링 다운스트림 증폭**
+   혐의(B-1 미완전통제). "t emission fit 덜 안정" **단정 불가**.
+3. **B-3(per-state ν 인과) 미지지·부분반증**: ν seed 간 안정적(bimodal·heavy(ν<3.5) 6~8 일정),
+   corr(heavy,\|pnl\|)=0.07 무상관·corr(minν,pnl)=−0.61 역방향. **단 신규 I-015 = ν=2.0 하한핀 4/240**
+   (분산 미정의 퇴화 fit) → D4-5 nu_min 상향 검토. (원결론 "포화0"은 상한만 봄.)
+4. t 정상작동(ν 상한포화0=진짜 fat-tail·정합성20/20 → 비교 유효). **O-8 준수·판정 D4-5 이연**:
+   인샘플(2021-22) 관찰뿐, fat-tail 이점은 OOS·2018 스트레스(패닉 레짐, 스펙§1.4)서. **emission
+   표준(G vs t)=D4-5 OOS/스트레스 후 확정.**
+- 미커밋 1회용: scratchpad(s4a·s4b·s4c·plumbing·s3_integration·verify_s4), `data/regime_models_s4_*`·
+  `data/s4_results.json`·`regime_models_trendonly*`(untracked).
+
 ---
 
 ## 잠재 이슈 트래커
@@ -397,8 +454,10 @@ hmmlearn 은 Py3.14 빌드 불가 + Student's-t 미지원(Gaussian 한정) → *
 | I-009 | 매핑 τ 스케일 미스매치: per-state \|μ\|/σ ~0.01-0.1 vs τ=0.5 → 24상태 전부 range | D4-3 백테 | **해소** | τ 스윕(→0.05)으로 trend 살림. range 드롭(O-7 가) 후 **τ는 trend/none 게이트로 확정**(3분류 불필요) → 최종 τ 재최적은 D4-5 |
 | I-010 | 추세 진입 승률(19%) < 손익분기(29%) — 관대진입(DD-1) 가짜진입+churn (손익비 2.44·트레일링은 건강) | D4-3 τ스윕 | 해소 | θ_trend 무력(conf≈1) → **k_trail 6.0 + cooldown24 로 trend margin +10.7·pnl +2,434 수익전환**(D4-3.5③) |
 | I-011 | range 손실 근본: mapping 이 "저 \|μ\|/σ=range"로 정의(mean-reversion 미검증) + train 추세지배로 range 상태 오염. K=3 임의 | D4-3.5 | **해소** | v2 경량 프로파일(K=2~6, 후보식별)→**격리 백테 심판**(6후보 전부 손실 PF<0.7) → **range 엣지 없음(Dev) → O-7 (가) range 드롭**. gen2 revival 조건부(데이터확장/t-emission/다른 instrument) |
-| I-012 | **HMM fit 불안정**: 추세 P&L·상태커버리지가 EM 설정(n_init/seed) 국소최적에 민감 (+801~+2,419, 3배 스윙). 역설: n_init↑(LL↑)인데 매매↓ | D4-3.5 | OPEN | gen1 fit=NEW(n_init5) **잠정**(재현성·보수). 확정=**D4-5 다중seed 안정성 선택 + OOS**(인샘플 P&L로 fit 선택 금지=과적합). t-emission(D4-4) 완화 여부도 관측 |
-| I-013 | `selection.py` CORE_COMBOS가 `(RANGE,NONE)` 요구 → enable_range=False(gen1)서 커버리지 경고. gen1 미배선(select_k 빌드 미사용이라 무영향) | D4-3.5 | OPEN(경미) | gen1 K재선택 시 trend/none 커버리지 기준으로 정리 → D4-5 |
+| I-012 | **HMM fit 불안정**: 추세 P&L·상태커버리지가 EM 설정(n_init/seed) 국소최적에 민감 (+801~+2,419, 3배 스윙). 역설: n_init↑(LL↑)인데 매매↓ | D4-3.5 | OPEN | gen1 fit=NEW(n_init5) **잠정**. **D4-4 seed0~9 스윕**: t-emission **완화 안 됨**(인샘플 P&L 산포 t 큰 경향이나 n=10 미유의 F=2.34; **fit 파라미터 안정성은 G·t 동등** — P&L 산포는 τ경계 증폭). 확정=**D4-5 다중seed 안정성 + OOS**(인샘플 P&L 선택 금지=과적합) |
+| I-013 | `selection.py` CORE_COMBOS가 `(RANGE,NONE)` 요구 → enable_range=False(gen1)서 커버리지 경고. gen1 미배선(select_k 빌드 미사용이라 무영향) | D4-3.5 | OPEN(경미) | gen1 K재선택 시 trend/none 커버리지 기준으로 정리 → D4-5. **D4-4: selection Gaussian 고정 docstring 명시, t emission K선택 배선은 D4-5** |
+| I-014 | t-emission 수치 3블로커: ①brentq bracket 동부호 crash(근이 [ν_min,ν_max] 밖) ②shape≠cov 파라미터화 혼동 ③Σ 특이화/brentq 실패 시 NaN → `_forward_log` logsumexp 오염 | D4-4 | **해소(S1)** | ①bracket 선검사 clamp ②`scales` 명명+합성복원 `rvs(shape=Σ)` 일치 ③reg PD·Cholesky δ²·빈상태 가드+유한성 테스트(코어 무변경) |
+| I-015 | **ν=2.0 하한핀 퇴화 fit**: t seed 스윕서 240 윈도우 중 **4건**(seed3·6·8·9 첫 윈도우) ν 가 하한 2.0 에 고정 → ν≤2 는 분산 미정의(퇴화). 희소(1.7%)·t 특유 | D4-4 | OPEN(경미) | D4-5 `nu_min` 상향(예 2.1) 검토 + fit 안정성 판정 시 감안 |
 
 ---
 
@@ -411,11 +470,12 @@ hmmlearn 은 Py3.14 빌드 불가 + Student's-t 미지원(Gaussian 한정) → *
 | O-3 | walk-forward 재추정 방식 | **(가) 오프라인 사전학습** (N=3~6개월 D4 스윕) | ✅ D3 |
 | O-4 | 적대청산 매핑 | **force_exit + 빈슬롯**(should_reverse 미사용) | ✅ D2 |
 | O-5 | gen1 펀딩 처리 | **(가) 백테 funding=0 수용 + 측정 후 결정** | ✅ D2 |
-| O-6 | t-HMM 구현 경로 | **(나) Gaussian 스캐폴드 → t 교체** (gen1=t). 검증=합성복원+analytic, hmmlearn 드롭(D4-1) | ✅ D3 |
+| O-6 | t-HMM 구현 경로 | **(나) Gaussian 스캐폴드 → t 교체**. 검증=합성복원+analytic, hmmlearn 드롭(D4-1). D4-4 구현·배선 완료. **최종 emission(G vs t) 선택은 D4-5 OOS/스트레스 판정** (S4 는 인샘플 관찰뿐) | ✅ D3 (구현 D4-4) |
 | S1-1 | 변동성 feature 정의 | **(가) 실현변동성** std(24봉 로그수익률) | ✅ D3 |
 | DD-1 | 추세 진입 정책 | **관대 진입 → churn 가드 도입** (`cooldown_bars`·`entry_on_transition_only`) | ✅ D4-3.5 (가드로 trend 수익전환 +2,434) |
 | O-7 | range 매핑 정책 | **(가) gen1 range 드롭** — 격리백테서 엣지 없음(PF<0.7). 비trend→NONE(무매매). **gen2 revival 조건부 보류**(RANGE/RangeLogic 코드 보존; 조건=데이터확장/t-emission/다른 instrument) | ✅ D4-3.5 |
 | O-8 | gen1 HMM fit 표준 | **NEW(n_init5/iter100/seed0) 잠정** — 재현성·LL·보수. 최종=D4-5 다중seed 안정+OOS (인샘플 P&L 선택=과적합 금지) | 잠정 D4-3.5 (I-012) |
+| O-9 | t emission 파라미터화 (D4-4) | **(가) 3결정**: ①자유도 **상태별 ν_k**(share_nu 스위치로 공통 ν 헤지) ②**완전 EM digamma root-find**(Q-함수 최대화 = **ECM/EM**, 관측우도 직접최대화 ECME 아님 — 명명 정정) ③**I-012 seed 안정성 측정 D4-4 포함**(판정 D4-5) | ✅ D4-4 |
 
 ---
 
@@ -474,3 +534,13 @@ hmmlearn 은 Py3.14 빌드 불가 + Student's-t 미지원(Gaussian 한정) → *
   - **재백테**(2021-2022 --no-range): **+801(+8.01%) PF1.27 range0** → combined −6.8%서 순수익 전환.
   - **fit 규명**: +801 vs 이전 +2,434 = **HMM 적합 차이 100%**(OLD n_init2 캐시 vs NEW n_init5 재빌드, OLD none변환 백테 +2,419 재현). 신규 **I-012**(fit 불안정 3배 스윙)·**I-013**(selection CORE_COMBOS 경미). 신규 결정 **O-8**(gen1 fit=NEW 잠정).
   - 미커밋 1회용: scratchpad `range_profile.py`·`range_bt.py`·`trend_only_bt.py`, `data/range_scan/`·`regime_models_trendonly*/`(untracked).
+- **2026-07-06**: **D4-4 t emission 구현·배선 + I-012 seed 스윕** (4 Step, 각 Step 독립 fresh-eyes 재검증).
+  - **S1** `StudentTEmission`(scale-mixture EM·상태별 ν·**ν방정식 double-count 정정**·독립 Q-max 검증) + `make_emission`
+    factory. **I-014**(수치 블로커3: bracket·shape≠cov·NaN) 해소. 회귀 **386**.
+  - **S2** build/CLI emission 배선(`--emission student_t`, 하위호환), selection Gaussian 고정(I-013). 회귀 **392**.
+  - **S3** 통합 스모크(t build→load→추론) + 문서↔코드 대조(블로커0).
+  - **S4** Claude 직접 백테(config 무접촉). 재현성 게이트 통과(결정론)·**+801 재현**. seed0~9×G/t 병렬(정합성 **20/20**).
+  - **★S4 결론(독립 재검증 정정)**: 내 원결론 2건 과대해석 반증 — ①인샘플 P&L 산포 t 큰 경향이나 **n=10 미유의**(F=2.34)
+    ②**fit 파라미터 안정성 G·t 동등**(P&L 산포차=τ경계 증폭) ③**B-3 ν 인과 미지지·반증**. 신규 **I-015**(ν=2.0 하한핀
+    4/240). 신규 결정 **O-9**(t 파라미터화, ECME→**ECM 명명 정정**). **emission 표준(G vs t)=D4-5 OOS 판정**(O-8 이연).
+  - 미커밋 1회용: scratchpad(s4a·s4b·s4c·plumbing·s3_integration·verify_s4), `data/regime_models_s4_*`·`s4_results.json`(untracked).

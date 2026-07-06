@@ -16,7 +16,7 @@ from src.strategy.regime.features import (
     ZScoreParams,
     compute_raw_features,
 )
-from src.strategy.regime.hmm import GaussianEmission, HMM
+from src.strategy.regime.hmm import HMM, make_emission
 from src.strategy.regime.mapping import StateMapping
 
 
@@ -31,11 +31,15 @@ def build_model(
     seed: int = 0,
     meta: dict | None = None,
     enable_range: bool = True,
+    emission_kind: str = "gaussian",
+    emission_params: dict | None = None,
     **fit_kw,
 ) -> RegimeModel:
     """한 train 윈도우 → RegimeModel (feature→zscore→HMM fit→mapping).
 
     enable_range: 비trend 상태를 RANGE(True, 기존) / NONE(False, gen1 추세-단독) 로 매핑.
+    emission_kind/emission_params: HMM emission 종류(gaussian 기본·student_t) 와 그 파라미터
+      (t 의 nu_init·share_nu 등). make_emission 이 생성 (O-6 단계화, D4-4).
     """
     raw = compute_raw_features(train_candles, feature_config)
     zscore = ZScoreParams.fit(raw)
@@ -44,9 +48,8 @@ def build_model(
     X = z.loc[valid_idx].to_numpy()
     raw_log = raw["log_return"].loc[valid_idx].to_numpy()  # X 와 정렬
 
-    hmm = HMM(k, GaussianEmission(k, X.shape[1])).fit(
-        X, n_init=n_init, seed=seed, **fit_kw
-    )
+    emission = make_emission(emission_kind, k, X.shape[1], **(emission_params or {}))
+    hmm = HMM(k, emission).fit(X, n_init=n_init, seed=seed, **fit_kw)
     gamma = hmm.smoothed_posterior(X)  # offline 특성화 (smoothed OK)
     mapping = StateMapping.fit(raw_log, gamma, tau, enable_range=enable_range)
 

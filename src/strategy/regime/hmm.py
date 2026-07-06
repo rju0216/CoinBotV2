@@ -1,9 +1,9 @@
 """레짐 발견용 HMM — EM 학습 + forward-only filtering (D4-2b).
 
 설계 (D2/D3 결정):
-  - **emission 추상화**: HMM 은 `emission.log_prob` / `emission.m_step` /
-    `n_params` / `get_params`/`set_params` 만 안다. GaussianEmission 먼저,
-    D4-4 에서 StudentTEmission 한 클래스 추가로 교체(O-6 단계화).
+  - **emission 추상화**: HMM 은 `Emission` 인터페이스(log_prob·m_step·init_params·
+    get/set_params·to_dict·n_params·n_states·n_dim)만 통해 상호작용한다. GaussianEmission
+    (D4-2) 과 StudentTEmission(D4-4, fat tail) 을 클래스 교체만으로 갈아끼운다(O-6 단계화).
   - **emission.m_step 자기완결**: HMM E-step 은 상태 책임도 γ(T,K) 만 제공하고,
     emission 이 자기 M-step 을 내부에서 완수 — t 의 추가 latent(스케일 u)도
     emission 안에서 처리(γ 만 받으면 됨). → t 복잡도가 emission 에 격리.
@@ -19,8 +19,10 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 import numpy as np
-from scipy.special import logsumexp
-from scipy.stats import multivariate_normal
+from scipy.linalg import solve_triangular
+from scipy.optimize import brentq
+from scipy.special import digamma, logsumexp
+from scipy.stats import multivariate_normal, multivariate_t
 
 
 class Emission(ABC):
@@ -143,10 +145,215 @@ class GaussianEmission(Emission):
         return em
 
 
+class StudentTEmission(Emission):
+    """다변량 Student-t emission (scale 행렬 Σ + 상태별 자유도 ν) — fat tail (스펙 §1.4).
+
+    Gaussian scale-mixture 표현:
+      x | u ~ N(μ_k, Σ_k/u),  u ~ Gamma(ν_k/2, ν_k/2)  → 주변분포 t(μ_k, Σ_k, ν_k).
+    m_step 이 상태책임도 γ 만 받아 스케일 latent u 의 E-step 을 내부에서 수행한다
+    (Emission ABC 계약 — t 의 추가 latent 를 emission 안에 격리). ν 는 상태별 추정
+    (share_nu=True 면 공통 ν 하나), Q-함수(complete-data 기대우도) 최대화의 digamma
+    방정식 root-find (표준 EM/ECM — 관측우도 직접 최대화인 ECME 변형 아님).
+
+    **명명 주의**: `scales` = **scale 행렬 Σ (공분산 아님)**. 실제 cov = Σ·ν/(ν−2) (ν>2).
+    GaussianEmission.covs 와 의미가 달라 이름을 분리했다 (shape/cov 혼동 차단). `nus` = ν.
+    """
+
+    kind = "student_t"
+
+    def __init__(
+        self,
+        n_states: int,
+        n_dim: int,
+        reg: float = 1e-6,
+        nu_init: float = 10.0,
+        nu_min: float = 2.0,
+        nu_max: float = 200.0,
+        share_nu: bool = False,
+    ) -> None:
+        self.K = n_states
+        self.d = n_dim
+        self.reg = reg
+        self.nu_init = float(nu_init)
+        self.nu_min = float(nu_min)
+        self.nu_max = float(nu_max)
+        self.share_nu = share_nu
+        self.means = np.zeros((n_states, n_dim))
+        self.scales = np.tile(np.eye(n_dim), (n_states, 1, 1))
+        self.nus = np.full(n_states, float(nu_init))
+
+    def log_prob(self, X: np.ndarray) -> np.ndarray:
+        T = X.shape[0]
+        out = np.empty((T, self.K))
+        for k in range(self.K):
+            out[:, k] = multivariate_t.logpdf(
+                X, loc=self.means[k], shape=self.scales[k], df=self.nus[k]
+            )
+        return out
+
+    def _mahalanobis_sq(self, X: np.ndarray, k: int) -> np.ndarray:
+        """δ²_t = (x−μ_k)ᵀ Σ_k⁻¹ (x−μ_k) — Cholesky 로 안정 계산 (특이화 조기감지)."""
+        diff = X - self.means[k]  # (T, d)
+        L = np.linalg.cholesky(self.scales[k])  # scale 은 reg 로 항상 PD
+        z = solve_triangular(L, diff.T, lower=True)  # (d, T)
+        return (z**2).sum(axis=0)  # (T,)
+
+    def m_step(self, X: np.ndarray, gamma: np.ndarray) -> None:
+        Nk = gamma.sum(axis=0)  # (K,)
+        # E-step(u): 갱신 전 params 로 상태별 산출·저장 (단일 E-step 표준 EM).
+        E_u_all = np.zeros_like(gamma)  # (T, K)
+        E_logu_all = np.zeros_like(gamma)
+        updated = np.zeros(self.K, dtype=bool)  # μ,Σ 를 실제 갱신한 상태 (ν 일관용)
+        for k in range(self.K):
+            if Nk[k] < 1e-8:
+                continue  # 빈 상태 → 기존 파라미터 유지
+            nu = self.nus[k]
+            delta2 = self._mahalanobis_sq(X, k)
+            E_u_all[:, k] = (nu + self.d) / (nu + delta2)
+            E_logu_all[:, k] = digamma((nu + self.d) / 2.0) - np.log(
+                (nu + delta2) / 2.0
+            )
+            # M-step μ, Σ(scale): μ = Σγu·x / Σγu, Σ = Σγu(·)(·)ᵀ / Σγ (분모 Nk).
+            w = gamma[:, k]
+            gu = w * E_u_all[:, k]
+            sum_gu = gu.sum()
+            if sum_gu < 1e-12:
+                continue  # 병리적(E[u]≈0) → μ,Σ,ν 모두 유지 (일관 skip)
+            mean_k = (gu[:, None] * X).sum(axis=0) / sum_gu
+            d2 = X - mean_k
+            scale_k = (d2.T * gu) @ d2 / Nk[k] + self.reg * np.eye(self.d)
+            self.means[k] = mean_k
+            self.scales[k] = scale_k
+            updated[k] = True
+        # ν 업데이트 (정확형 E[logu] → 보정항 없는 canonical 방정식). μ,Σ 갱신 상태만.
+        if self.share_nu:
+            if updated.any():
+                g = gamma[:, updated]
+                den = float(g.sum())
+                c = (
+                    float((g * (E_logu_all[:, updated] - E_u_all[:, updated])).sum()
+                          / den)
+                    if den > 1e-12
+                    else 0.0
+                )
+                self.nus[:] = self._solve_nu(c)
+        else:
+            for k in range(self.K):
+                if not updated[k]:
+                    continue
+                c = float(
+                    (gamma[:, k] * (E_logu_all[:, k] - E_u_all[:, k])).sum() / Nk[k]
+                )
+                self.nus[k] = self._solve_nu(c)
+
+    def _solve_nu(self, c: float) -> float:
+        """g(ν)=1−ψ(ν/2)+log(ν/2)+c=0 의 근. g 는 ν 에 단조감소.
+
+        c=(1/N)Σγ(E[logu]−E[u]) (정확형·보정항 없음). MLE 가 [nu_min,nu_max] 밖이면
+        경계로 clamp (brentq 동부호 crash 방지).
+        """
+
+        def g(nu: float) -> float:
+            return 1.0 - digamma(nu / 2.0) + np.log(nu / 2.0) + c
+
+        glo, ghi = g(self.nu_min), g(self.nu_max)
+        if glo == 0.0:
+            return self.nu_min
+        if ghi == 0.0:
+            return self.nu_max
+        if glo * ghi > 0.0:
+            # 동부호 = 근이 구간 밖. g 단조감소 → 둘 다 양수면 근>max, 음수면 근<min.
+            return self.nu_max if ghi > 0.0 else self.nu_min
+        return float(brentq(g, self.nu_min, self.nu_max))
+
+    def init_params(self, X: np.ndarray, rng: np.random.Generator) -> None:
+        idx = rng.choice(len(X), self.K, replace=False)
+        self.means = X[idx].astype(float).copy()
+        global_cov = np.atleast_2d(np.cov(X.T)) + self.reg * np.eye(self.d)
+        self.scales = np.tile(global_cov, (self.K, 1, 1))
+        self.nus = np.full(self.K, self.nu_init)
+
+    def get_params(self) -> Any:
+        return (self.means.copy(), self.scales.copy(), self.nus.copy())
+
+    def set_params(self, params: Any) -> None:
+        self.means = params[0].copy()
+        self.scales = params[1].copy()
+        self.nus = params[2].copy()
+
+    @property
+    def n_params(self) -> int:
+        # state 별: 평균 d + scale d(d+1)/2 ; ν 는 share_nu 면 1, 아니면 K.
+        base = self.K * (self.d + self.d * (self.d + 1) // 2)
+        return base + (1 if self.share_nu else self.K)
+
+    @property
+    def n_states(self) -> int:
+        return self.K
+
+    @property
+    def n_dim(self) -> int:
+        return self.d
+
+    def to_dict(self) -> dict:
+        return {
+            "kind": self.kind,
+            "n_states": self.K,
+            "n_dim": self.d,
+            "reg": self.reg,
+            "nu_init": self.nu_init,
+            "nu_min": self.nu_min,
+            "nu_max": self.nu_max,
+            "share_nu": self.share_nu,
+            "means": self.means.tolist(),
+            "scales": self.scales.tolist(),
+            "nus": self.nus.tolist(),
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "StudentTEmission":
+        em = cls(
+            d["n_states"],
+            d["n_dim"],
+            reg=d.get("reg", 1e-6),
+            nu_init=d.get("nu_init", 10.0),
+            nu_min=d.get("nu_min", 2.0),
+            nu_max=d.get("nu_max", 200.0),
+            share_nu=d.get("share_nu", False),
+        )
+        em.means = np.asarray(d["means"], dtype=float)
+        em.scales = np.asarray(d["scales"], dtype=float)
+        em.nus = np.asarray(d["nus"], dtype=float)
+        return em
+
+
+def make_emission(kind: str, n_states: int, n_dim: int, **params) -> Emission:
+    """순방향 생성: kind + params → 새 Emission (emission_from_dict 의 대칭).
+
+    build_model·selection(D4-5)·향후 확장이 emission 생성을 공유한다 (DRY). kind 별로
+    쓰는 params 키가 다르므로 dict(kwargs) 로 받고, 안 쓰는 키는 무시한다.
+    """
+    if kind == "gaussian":
+        return GaussianEmission(n_states, n_dim, reg=params.get("reg", 1e-6))
+    if kind == "student_t":
+        return StudentTEmission(
+            n_states,
+            n_dim,
+            reg=params.get("reg", 1e-6),
+            nu_init=params.get("nu_init", 10.0),
+            nu_min=params.get("nu_min", 2.0),
+            nu_max=params.get("nu_max", 200.0),
+            share_nu=params.get("share_nu", False),
+        )
+    raise ValueError(f"unknown emission kind: {kind!r}")
+
+
 def emission_from_dict(d: dict) -> Emission:
-    """직렬화 dict → Emission (kind 로 dispatch). D4-4 에서 student_t 추가."""
+    """직렬화 dict → Emission (kind 로 dispatch)."""
     if d["kind"] == "gaussian":
         return GaussianEmission.from_dict(d)
+    if d["kind"] == "student_t":
+        return StudentTEmission.from_dict(d)
     raise ValueError(f"unknown emission kind: {d['kind']!r}")
 
 
