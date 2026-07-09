@@ -3,8 +3,6 @@
 equity/peak/일일 PnL 을 추적·계측한다. 진입 게이트·사이징·DD/일일손실 *정책*은
 전략(StrategyModule.allow_entry / compute_position_size)이 소유한다 — 이 클래스는
 그 판단에 필요한 숫자(AccountState)를 제공하는 계측기일 뿐이다.
-
-재사용 가능한 리스크 게이트·사이징 공식은 src/strategy/helpers/ 에 opt-in 으로 있다.
 """
 
 from __future__ import annotations
@@ -43,8 +41,7 @@ class AccountTracker:
     def maybe_reset_for_new_day(self, now: datetime) -> bool:
         """UTC date 경계 인식 시 daily_pnl 자동 reset.
 
-        엔진 봉 마감 entry(evaluate_strategies_on_bar)에서 매 봉 호출.
-        백테/페이퍼/라이브 일관 적용.
+        엔진 봉 마감 dispatch(evaluate_strategies_on_bar)에서 매 봉 호출.
 
         - 첫 호출: base date 설정만 (no-op)
         - 같은 UTC date: no-op

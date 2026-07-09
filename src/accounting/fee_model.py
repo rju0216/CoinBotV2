@@ -1,7 +1,7 @@
 """수수료·슬리피지·펀딩비 정산 모델.
 
-라이브 엔진과 백테스트 엔진이 같은 클래스로 PnL을 정산하여 공식 일관성을 보장한다.
-백테는 estimate_* 메서드로 사전 계산, 라이브는 record_actual_*로 실제 체결값을 기록.
+PnL 은 `calc_pnl` 단일 공식으로 산출한다. 백테 엔진이 캔들 가격으로 체결을
+시뮬하고 이 클래스로 왕복 수수료·순손익을 정산한다.
 """
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.core.enums import PositionSide
-from src.core.types import Fill, Position
+from src.core.types import Position
 
 
 class FeeModel:
@@ -49,10 +49,6 @@ class FeeModel:
         return self.estimate_entry_fee(entry_price, size) + self.estimate_exit_fee(
             exit_price, size
         )
-
-    def record_actual_fee(self, fill: Fill) -> float:
-        """라이브 체결 수수료 기록 — 거래소 응답값을 그대로 사용."""
-        return float(fill.fee)
 
     def estimate_funding(self, position: Position, hours: float) -> float:
         """백테용 펀딩비 근사. 프로토타입은 0 반환.

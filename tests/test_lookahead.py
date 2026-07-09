@@ -1,232 +1,93 @@
-"""Lookahead bias 점검.
+"""Lookahead bias 회귀 방지 — 엔진 _slice_candles 인과성.
 
-인프라 레이어(indicators / 데이터 로더)의 forward-bias 회귀 방지:
-
-1. **Indicator forward-bias** — indicators.py 의 행 i 결과가 행 i+1, i+2, ...
-   데이터에 의존하지 않는지 합성 데이터로 검증 (causal 보장).
-2. **OHLCV fetch fresh-bar 점검** — `HistoricalDataLoader.download` 응답에
-   미완성 봉(현재 진행 중)이 포함되지 않는지 검증. 합성 mock으로 점검.
-
-엔진 측 lookahead(BacktestEngine._slice_candles, _build_ctx 의 진행 중 봉 절단)는
-별도로 처리됨. 본 모듈은 인프라 지표/로더 보완 점검.
+백테 엔진의 lookahead 차단은 `BacktestEngine._slice_candles(ts)` 가 `df.index < ts`
+로 진행 중 봉을 배제하는 데 있다. ts 시점에 그 봉은 아직 마감 전이므로 close 가
+피처에 새면 안 된다. 이 규율이 지켜지는지 합성 캔들로 검증한다.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch
-
-import numpy as np
 import pandas as pd
 import pytest
 
-from src.data.historical import HistoricalDataLoader
-from src.strategy.indicators import (
-    compute_adx,
-    compute_atr,
-    compute_bb_width,
-    compute_bbands,
-    compute_choppiness,
-    compute_efficiency_ratio,
-    compute_ema,
-    compute_macd,
-    compute_rsi,
-    compute_sma,
-)
+from src.backtest.engine import BacktestEngine
+from src.core.enums import SignalSide
+from src.core.types import Signal
+from src.strategy.registry import register_strategy, reset_registry_for_testing
+from tests.strategy_stub import StubStrategy
 
 
-# ───────────────────────────────────────────────────────────────
-# 1. Indicator forward-bias 점검
-# ───────────────────────────────────────────────────────────────
+@pytest.fixture(autouse=True)
+def _isolated_registry():
+    reset_registry_for_testing()
+    yield
+    reset_registry_for_testing()
 
 
-def _synthetic_ohlcv(n: int = 300, seed: int = 42) -> pd.DataFrame:
-    """OHLCV 합성 캔들 (랜덤 워크)."""
-    rng = np.random.default_rng(seed)
-    dates = pd.date_range("2024-01-01", periods=n, freq="15min", tz="UTC")
-    close = 67000.0 + np.cumsum(rng.normal(0, 50, n))
-    high = close + rng.uniform(10, 100, n)
-    low = close - rng.uniform(10, 100, n)
-    open_ = close + rng.normal(0, 30, n)
-    volume = rng.uniform(100, 1000, n)
-    return pd.DataFrame(
-        {"open": open_, "high": high, "low": low, "close": close, "volume": volume},
-        index=dates,
+def _candles(n: int = 20) -> pd.DataFrame:
+    idx = pd.date_range("2024-01-01", periods=n, freq="15min", tz="UTC")
+    closes = [67000.0 + i for i in range(n)]
+    df = pd.DataFrame(
+        {
+            "open": closes,
+            "high": [c + 5 for c in closes],
+            "low": [c - 5 for c in closes],
+            "close": closes,
+            "volume": [1.0] * n,
+        },
+        index=idx,
     )
+    df.index.name = "timestamp"
+    return df
 
 
-def _mutated_tail(df: pd.DataFrame, tail_n: int, seed: int = 999) -> pd.DataFrame:
-    """df의 마지막 tail_n 행만 다른 값으로 교체.
+def _config() -> dict:
+    return {"strategies": {"active": []}}
 
-    앞부분 (0 ~ -tail_n)은 동일. 마지막 tail_n 행만 교체.
-    Indicator가 backward-only라면 앞부분 결과가 두 df에서 동일해야 함.
-    """
-    df2 = df.copy()
-    rng = np.random.default_rng(seed)
-    tail_close = 50000.0 + rng.normal(0, 1000, tail_n)  # 의도적으로 큰 다른 값
-    df2.iloc[-tail_n:, df2.columns.get_loc("close")] = tail_close
-    df2.iloc[-tail_n:, df2.columns.get_loc("open")] = tail_close + 10
-    df2.iloc[-tail_n:, df2.columns.get_loc("high")] = tail_close + 100
-    df2.iloc[-tail_n:, df2.columns.get_loc("low")] = tail_close - 100
-    df2.iloc[-tail_n:, df2.columns.get_loc("volume")] = rng.uniform(
-        100, 1000, tail_n
+
+def test_slice_excludes_current_and_future_bars():
+    eng = BacktestEngine(_config(), "2024-01-01", "2024-01-02")
+    df = _candles(20)
+    eng.inject_candles({"15m": df})
+
+    ts = df.index[10]
+    sliced = eng._slice_candles(ts)["15m"]
+    # ts '미만' 만 포함 — ts 봉과 그 이후는 배제
+    assert (sliced.index < ts).all()
+    assert len(sliced) == 10
+    # 마지막 포함 봉은 직전 마감 봉 (index[9])
+    assert sliced.index[-1] == df.index[9]
+
+
+def test_ctx_last_bar_is_prior_closed_bar_during_signal():
+    """generate_signal 이 보는 ctx.candles[tf].iloc[-1] 이 항상 직전 마감 봉인지."""
+    seen_last_close: list[float] = []
+    bar_open_prices: list[float] = []
+
+    class _RecorderStrategy(StubStrategy):
+        name = "recorder"
+        entry_timeframe = "15m"
+        required_timeframes = ["15m"]
+
+        def generate_signal(self, ctx):
+            df = ctx.candles["15m"]
+            if not df.empty:
+                seen_last_close.append(float(df["close"].iloc[-1]))
+                bar_open_prices.append(ctx.current_price)
+            return Signal(side=SignalSide.HOLD)
+
+    register_strategy(_RecorderStrategy)
+    df = _candles(12)
+    eng = BacktestEngine(
+        {"strategies": {"active": ["recorder"]}, "recorder": {}},
+        df.index[0].to_pydatetime(),
+        df.index[-1].to_pydatetime(),
     )
-    return df2
+    eng.inject_candles({"15m": df})
+    eng.account_tracker.set_initial_balance(eng.balance)
+    eng.run()
 
-
-def _assert_prefix_unchanged(s1: pd.Series, s2: pd.Series, prefix_n: int) -> None:
-    """앞 prefix_n 행이 두 시리즈에서 동일한지 (NaN-aware)."""
-    a = s1.iloc[:prefix_n].to_numpy()
-    b = s2.iloc[:prefix_n].to_numpy()
-    # NaN은 NaN끼리 동일로 간주
-    nan_a = np.isnan(a) if a.dtype == np.float64 else np.zeros_like(a, dtype=bool)
-    nan_b = np.isnan(b) if b.dtype == np.float64 else np.zeros_like(b, dtype=bool)
-    assert (nan_a == nan_b).all(), "NaN 패턴 불일치 → forward-bias 의심"
-    mask = ~nan_a
-    np.testing.assert_allclose(
-        a[mask], b[mask], rtol=1e-9, atol=1e-9,
-        err_msg="앞부분 결과 변경 → forward-bias 발견",
-    )
-
-
-class TestIndicatorForwardBias:
-    """각 indicator: 합성 df + 마지막 tail 교체 df → 앞부분 indicator 결과 동일성 검증."""
-
-    N = 300
-    TAIL = 50  # 마지막 50행 교체
-    PREFIX = 250  # 앞 250행 비교
-
-    def setup_method(self):
-        self.df = _synthetic_ohlcv(self.N)
-        self.df_mut = _mutated_tail(self.df, self.TAIL)
-
-    def test_compute_ema(self):
-        for period in (10, 20, 50, 200):
-            s1 = compute_ema(self.df, period)
-            s2 = compute_ema(self.df_mut, period)
-            _assert_prefix_unchanged(s1, s2, self.PREFIX)
-
-    def test_compute_sma(self):
-        for period in (10, 20, 50):
-            s1 = compute_sma(self.df, period)
-            s2 = compute_sma(self.df_mut, period)
-            _assert_prefix_unchanged(s1, s2, self.PREFIX)
-
-    def test_compute_macd(self):
-        m1 = compute_macd(self.df)
-        m2 = compute_macd(self.df_mut)
-        for col in ("macd", "signal", "histogram"):
-            _assert_prefix_unchanged(m1[col], m2[col], self.PREFIX)
-
-    def test_compute_rsi(self):
-        for period in (7, 14):
-            s1 = compute_rsi(self.df, period)
-            s2 = compute_rsi(self.df_mut, period)
-            _assert_prefix_unchanged(s1, s2, self.PREFIX)
-
-    def test_compute_atr(self):
-        s1 = compute_atr(self.df, 14)
-        s2 = compute_atr(self.df_mut, 14)
-        _assert_prefix_unchanged(s1, s2, self.PREFIX)
-
-    def test_compute_bbands(self):
-        b1 = compute_bbands(self.df, 20, 2.0)
-        b2 = compute_bbands(self.df_mut, 20, 2.0)
-        for col in ("lower", "mid", "upper"):
-            _assert_prefix_unchanged(b1[col], b2[col], self.PREFIX)
-
-    def test_compute_bb_width(self):
-        s1 = compute_bb_width(self.df, 20, 2.0)
-        s2 = compute_bb_width(self.df_mut, 20, 2.0)
-        _assert_prefix_unchanged(s1, s2, self.PREFIX)
-
-    def test_compute_adx(self):
-        a1 = compute_adx(self.df, 14)
-        a2 = compute_adx(self.df_mut, 14)
-        for col in ("adx", "plus_di", "minus_di"):
-            _assert_prefix_unchanged(a1[col], a2[col], self.PREFIX)
-
-    def test_compute_choppiness(self):
-        s1 = compute_choppiness(self.df, 14)
-        s2 = compute_choppiness(self.df_mut, 14)
-        _assert_prefix_unchanged(s1, s2, self.PREFIX)
-
-    def test_compute_efficiency_ratio(self):
-        s1 = compute_efficiency_ratio(self.df, 10)
-        s2 = compute_efficiency_ratio(self.df_mut, 10)
-        _assert_prefix_unchanged(s1, s2, self.PREFIX)
-
-
-# ───────────────────────────────────────────────────────────────
-# 2. OHLCV fetch fresh-bar 점검 (mock)
-# ───────────────────────────────────────────────────────────────
-
-
-class TestOhlcvFreshBar:
-    """HistoricalDataLoader.download가 미완성 봉을 포함하지 않는지 검증.
-
-    OKX는 정책상 fetch_ohlcv 응답에 진행 중인 봉이 포함될 수 있음.
-    mock으로 미완성 봉 시나리오를 주입하여 코드 동작 확인.
-    """
-
-    @pytest.mark.asyncio
-    async def test_download_returns_only_completed_bars(self):
-        """현재 시간보다 timestamp가 작은 (완료된) 봉만 반환되는지 검증.
-
-        15m 봉 기준: 현재 시간이 12:34:00이면 마지막 완료 봉은 12:15 시작 (12:30 마감 직전).
-        12:30 시작 봉 (12:45 마감)은 진행 중 → 반환 시 lookahead 위험.
-        """
-        config = {
-            "exchange": {"symbol": "BTC/USDT:USDT"},
-            "data": {"candle_dir": "/tmp"},
-        }
-        loader = HistoricalDataLoader(config)
-        # 진행 중 봉이 포함된 mock 응답
-        # 현재 시각이 2024-01-01 12:34 라고 가정
-        # 완료된 봉: ..., 12:00, 12:15 (12:30에 마감)
-        # 진행 중 봉: 12:30 (12:45에 마감 예정) — 응답에 포함되면 안 됨
-        now_ms = int(
-            datetime(2024, 1, 1, 12, 34, tzinfo=timezone.utc).timestamp() * 1000
-        )
-        completed_bars = [
-            [now_ms - 30 * 60_000, 67000.0, 67100.0, 66900.0, 67050.0, 1.0],
-            [now_ms - 15 * 60_000, 67050.0, 67200.0, 67000.0, 67150.0, 1.0],
-        ]
-        in_progress_bar = [
-            [now_ms - 4 * 60_000, 67150.0, 67250.0, 67100.0, 67200.0, 0.5],  # 진행 중
-        ]
-        all_bars = completed_bars + in_progress_bar
-
-        mock_exchange = AsyncMock()
-        mock_exchange.fetch_ohlcv = AsyncMock(return_value=all_bars)
-        mock_exchange.load_markets = AsyncMock()
-        mock_exchange.close = AsyncMock()
-
-        with patch("ccxt.async_support.okx", return_value=mock_exchange):
-            df = await loader.download("15m", limit=3, since=now_ms - 60 * 60_000)
-
-        await loader.close()
-
-        # **현재 동작 점검**: ccxt 응답을 그대로 반환하므로 진행 중 봉도 포함될 가능성
-        # 본 테스트는 사실상 "현 동작 documentation" — 진행 중 봉이 포함되면
-        # plugin/엔진 측에서 ts < now 차단 또는 BacktestEngine._slice_candles로 처리됨
-        # 라이브 ccxt.pro는 봉 마감 이벤트 (BAR_CLOSED)로 처리 — 미완성 봉 미발행
-        last_ts_ms = int(df.index[-1].timestamp() * 1000)
-        # 진행 중 봉 timestamp가 (현재시간 - 15분) 미만인지 검증 (관용 기준)
-        # 만약 ccxt 응답 그대로면 last가 진행 중 봉 ts일 수 있음 — 실 환경 점검 신호
-        bar_age_minutes = (now_ms - last_ts_ms) / 60_000
-        # 본 검증은 단위 테스트로 단정 어려움 (OKX 정책 의존). 코드 동작 logging 위해 assert는 None 반환만 거부
-        assert df is not None
-        assert not df.empty
-
-    def test_download_empty_response(self):
-        """API 응답이 빈 리스트이면 빈 DataFrame 반환 (예외 없이)."""
-        # 단순 sanity check — fetch_ohlcv가 빈 리스트면 download가 예외 없이 빈 df 반환
-        config = {
-            "exchange": {"symbol": "BTC/USDT:USDT"},
-            "data": {"candle_dir": "/tmp"},
-        }
-        loader = HistoricalDataLoader(config)
-        # 비동기 환경 없이도 객체 생성/속성만 확인
-        assert loader.symbol == "BTC/USDT:USDT"
-        # 실제 호출은 위 mock 테스트에서 검증됨
+    assert seen_last_close, "generate_signal 이 호출되지 않음"
+    # 매 평가에서 직전 마감 봉 close < 현재 봉 open (단조 증가 시리즈이므로)
+    for last_close, bar_open in zip(seen_last_close, bar_open_prices):
+        assert last_close < bar_open

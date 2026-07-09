@@ -1,59 +1,21 @@
 # CoinBot 뼈대 기본 config.
-# 실행 모드는 subcommand(paper/live/backtest)로 결정 — config 에 mode 필드 없음.
-# OKX API 자격증명은 .env 의 OKX_API_KEY / OKX_SECRET / OKX_PASSPHRASE 로 주입.
+# 거래 정책(사이징·SL/TP·reverse·진입 게이트)은 전략(모델)이 소유한다 — 엔진엔 정책값 없음.
+# 정책 임계값은 각 전략의 <strategy.name> 섹션 params 로 둔다.
 
 exchange:
   symbol: "BTC/USDT:USDT"
-  sandbox: false
-  leverage: 5                         # 거래소 단일 레버리지 (전략 사이징과 별개)
-
-# 거래 정책(사이징·SL/TP·reverse·진입 게이트)은 전략(모델)이 소유한다.
-# 정책 임계값은 각 전략의 <strategy.name> 섹션 params 로 둔다. 엔진엔 정책값 없음.
-
-risk:                                # 거래소 연결 안전장치(circuit breaker)만 — 거래 정책 아님
-  circuit_breaker:                   # API 연속 실패 자동 차단 (라이브 안전망)
-    enabled: true
-    failure_threshold: 5             # 연속 실패 N회 → CircuitBreakerOpen + 새 진입 차단
-    # OPEN 후 자동 재개 없음 — manual 해제만 (CoreEngine 재시작 또는 broker.executor.circuit_breaker.reset())
 
 accounting:
-  taker_fee_pct: 0.0005
-  slippage_pct: 0.0
-  funding_enabled: true              # 라이브는 close 시 fetch_funding_history 로 funding 반영, 백테는 0
+  taker_fee_pct: 0.0005              # 체결 한쪽당 수수료
+  slippage_pct: 0.0                  # 체결 한쪽당 슬리피지 근사
+  funding_enabled: true              # 백테는 0 반환 (근사 모델 미구현)
 
-paper:
+backtest:
   initial_balance: 10000.0
 
-live:
-  orderbook:                         # 호가창 수집 인프라 (paper 모드 슬리피지 시뮬용)
-    enabled: false                   # default 비활성 (paper 시연 시 활성)
-    depth: 20                        # 호가 단계 수
-    save_dir: "data/orderbook"       # parquet 저장 디렉토리
-
-  notifications:                     # 알림 인프라
-    enabled: true                    # default 활성 (LogNotifier만)
-    channels: ["log"]                # 텔레그램 추가 시 ["log", "telegram"]
-    telegram:
-      bot_token: ""                  # @BotFather 발급 후 입력
-      chat_id: ""                    # 본인 chat_id 입력
-    email:                           # 옵션 (SMTP 설정 시)
-      smtp_host: ""
-      smtp_port: 587
-      username: ""
-      password: ""
-      from_addr: ""
-      to_addr: ""
-    levels:                          # 각 이벤트의 송신 활성/비활성
-      circuit_breaker: true
-      position_open: true
-      position_close: true
-
 data:
-  history_bars: 300
-  candle_dir: "data/candles"
-
-database:
-  path: "data/coinbot.db"             # mode별 접미사 자동 부여 (coinbot_live.db, coinbot_paper.db). 백테는 메모리라 DB 미생성
+  history_bars: 300                  # 백테 시작 전 indicator warmup 캔들 수
+  candle_dir: "data/candles"         # 다운로드 캔들 CSV 캐시 경로
 
 logging:
   level: "INFO"
@@ -68,11 +30,10 @@ strategies:
                                       # 리스트 순서 = 단일 슬롯 경합 시 우선순위.
 
 # ---- 전략 섹션 (전략 추가 시 여기에 <strategy.name>: 블록을 둔다) ----
-# 엔진이 강제하는 필수 키는 없다 — 거래 정책(사이징·리스크 등)은 전략 메서드가 소유한다.
-# 정책 임계값은 전략이 자기 params 로 정의하고 compute_position_size / allow_entry 등에서 읽는다.
+# 엔진이 강제하는 필수 키는 없다. 정책 임계값은 전략이 자기 params 로 정의하고
+# compute_position_size / allow_entry 등에서 읽는다.
 # 예:
 # my_strategy:
-#   risk_per_trade_pct: 0.01   # 예) 전략이 compute_position_size 에서 읽는 param
-#   max_leverage: 5            # 예) 전략이 compute_position_size 에서 읽는 param
-#   max_drawdown_pct: 0.35     # 예) 전략이 allow_entry 에서 읽는 param
+#   risk_per_trade_pct: 0.01
+#   max_drawdown_pct: 0.35
 #   <전략 고유 파라미터>: ...

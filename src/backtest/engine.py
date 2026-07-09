@@ -1,127 +1,96 @@
-"""백테스트 엔진.
+"""백테스트 엔진 — 봉마감 평가·진입·청산·SL/TP 시뮬을 한 클래스에 담은 골격.
 
-DataStore에 의존하지 않고 메모리에서 trades·equity_curve를 누적한 뒤
-종료 시 `data/backtest_reports/00_Working/` 하위로 결과 파일을 출력.
+전략(플러그인)의 존재를 `StrategyModule` 인터페이스로만 안다. 모든 거래 정책
+(진입 신호·사이징·SL/TP·reverse·진입 게이트)은 전략이 소유하고 엔진은 집행만 한다.
+체결은 캔들 가격으로 시뮬하고 PnL 은 `FeeModel.calc_pnl` 단일 공식으로 정산한다
+(외부 브로커·거래소 없음 — 순수 인메모리).
 
-리포트 디렉토리 구조 (merge_yearly_reports.py 호환):
-  data/backtest_reports/00_Working/{tag}_backtest_{start}_{end}_{config_name}/{config_name}/
-    ├── trades.csv
-    ├── equity_curve.csv
-    ├── metrics.json
-    ├── config_snapshot.yaml
-    └── equity_curve.png
-
-마스터 TF(가장 작은 활성 TF) 캔들을 순회하며:
-  1) SL/TP 캔들 체결 검사 (모델의 sl_tp_fill_priority 로 동시 hit 우선순위 결정)
-  2) update_stop_loss / should_force_exit 훅 호출
-  3) 봉 경계 TF별 evaluate_strategies_on_bar dispatch
+흐름 (마스터 TF = 가장 작은 활성 TF 캔들 순회):
+  1) 보유 중이면 SL/TP 캔들 체결 검사 (동시 hit 은 모델의 sl_tp_fill_priority)
+  2) 보유 중이면 update_stop_loss / should_force_exit 훅
+  3) 봉 경계 TF 별 evaluate_strategies_on_bar (진입 또는 reverse)
 종료 시 잔여 포지션은 ENGINE_SHUTDOWN 사유로 강제 청산.
+
+lookahead 차단: `_slice_candles(ts)` 가 ts '미만' 캔들만 전달 → 진행 중 봉의 close 가
+피처에 새지 않는다. 결과적으로 `ctx.candles[tf].iloc[-1]` 은 항상 직전 마감 봉.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
-import yaml
 
-from src.core.engine_base import AbstractEngine
-from src.core.enums import ExitReason, PositionSide
-from src.core.types import Position
+from src.accounting.account_tracker import AccountTracker
+from src.accounting.fee_model import FeeModel
+from src.core.enums import ExitReason, PositionSide, PositionStatus, SignalSide
+from src.core.types import (
+    AccountState,
+    ExitDecision,
+    Position,
+    Signal,
+    StrategyContext,
+)
 from src.data.historical import TF_MS, HistoricalDataLoader
-from src.utils.path_utils import resolve_unique_dir
+from src.strategy.base import StrategyModule
+from src.strategy.registry import load_active_strategies
 
 logger = logging.getLogger(__name__)
 
+REPORT_BASE = Path("data/backtest_reports")
 
-REPORT_BASE = Path("data/backtest_reports/00_Working")
-
-
-@dataclass
-class BacktestResult:
-    initial_balance: float
-    final_balance: float
-    equity_curve: list[tuple[datetime, float]] = field(default_factory=list)
-    trades: list[dict[str, Any]] = field(default_factory=list)
-
-    @property
-    def total_pnl(self) -> float:
-        return self.final_balance - self.initial_balance
-
-    @property
-    def total_pnl_pct(self) -> float:
-        if self.initial_balance <= 0:
-            return 0.0
-        return self.total_pnl / self.initial_balance * 100.0
-
-    @property
-    def num_trades(self) -> int:
-        return len(self.trades)
-
-    @property
-    def num_winners(self) -> int:
-        return sum(1 for t in self.trades if (t.get("pnl") or 0) > 0)
-
-    @property
-    def num_losers(self) -> int:
-        return sum(1 for t in self.trades if (t.get("pnl") or 0) < 0)
-
-    @property
-    def win_rate(self) -> float:
-        if self.num_trades == 0:
-            return 0.0
-        return self.num_winners / self.num_trades * 100.0
-
-    @property
-    def max_drawdown_pct(self) -> float:
-        if not self.equity_curve:
-            return 0.0
-        peak = self.equity_curve[0][1]
-        max_dd = 0.0
-        for _, eq in self.equity_curve:
-            if eq > peak:
-                peak = eq
-            if peak > 0:
-                dd = (peak - eq) / peak * 100.0
-                if dd > max_dd:
-                    max_dd = dd
-        return max_dd
-
-    def summary(self) -> dict[str, Any]:
-        return {
-            "initial_balance": round(self.initial_balance, 2),
-            "final_balance": round(self.final_balance, 2),
-            "total_pnl": round(self.total_pnl, 2),
-            "total_pnl_pct": round(self.total_pnl_pct, 2),
-            "num_trades": self.num_trades,
-            "num_winners": self.num_winners,
-            "num_losers": self.num_losers,
-            "win_rate": round(self.win_rate, 2),
-            "max_drawdown_pct": round(self.max_drawdown_pct, 2),
-        }
+_TF_PRIORITY = {"1m": 0, "5m": 1, "15m": 2, "1h": 3, "4h": 4, "1d": 5}
 
 
-class BacktestEngine(AbstractEngine):
+def signal_side_to_position_side(side: SignalSide) -> PositionSide:
+    if side == SignalSide.LONG:
+        return PositionSide.LONG
+    if side == SignalSide.SHORT:
+        return PositionSide.SHORT
+    return PositionSide.NONE
+
+
+class BacktestEngine:
     def __init__(
         self,
         config: dict[str, Any],
         start: str | datetime,
         end: str | datetime,
     ) -> None:
-        super().__init__(config, mode="backtest")
+        self.config = config
+        self.fee_model = FeeModel.from_config(config)
+        self.account_tracker = AccountTracker()
+        self.strategies: list[StrategyModule] = load_active_strategies(config)
+        self.strategy_by_name: dict[str, StrategyModule] = {
+            s.name: s for s in self.strategies
+        }
+        self.timeframes: list[str] = self._compute_timeframe_union()
+        self.master_timeframe: str | None = (
+            self.timeframes[0] if self.timeframes else None
+        )
+
         self.start_dt = self._parse_dt(start)
         self.end_dt = self._parse_dt(end)
+        self.balance = float(
+            (config.get("backtest", {}) or {}).get("initial_balance", 10000.0)
+        )
+
+        # 배타적 경합 — 전역 슬롯 1개 (동시에 한 포지션만 보유)
+        self._position: Position | None = None
+
         self.candles_per_tf: dict[str, pd.DataFrame] = {}
         self.equity_curve: list[tuple[datetime, float]] = []
-        # 메모리 trades 관리 — DataStore 미사용 (백테는 종료 시 파일로만 출력)
         self._next_trade_id = 0
         self._open_trades: dict[int, dict[str, Any]] = {}
         self.trades: list[dict[str, Any]] = []
+
+    @property
+    def position(self) -> Position | None:
+        return self._position
 
     @staticmethod
     def _parse_dt(value: str | datetime) -> datetime:
@@ -134,18 +103,27 @@ class BacktestEngine(AbstractEngine):
             dt = datetime.strptime(s, "%Y-%m-%d")
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
-    # ---- 추상 구현 ----
+    # ---- 활성 TF 산출 ----
 
-    async def initialize(self) -> None:
-        await self.broker.initialize()
-        balance = await self.broker.get_balance()
-        self.account_tracker.set_initial_balance(balance)
-        await self._load_candles()
+    def _compute_timeframe_union(self) -> list[str]:
+        """활성 전략의 entry_timeframe + required_timeframes 합집합.
+        가장 작은 TF 가 첫 번째 (마스터 루프 후보)."""
+        seen: set[str] = set()
+        for s in self.strategies:
+            if s.entry_timeframe:
+                seen.add(s.entry_timeframe)
+            for tf in s.required_timeframes:
+                if tf:
+                    seen.add(tf)
+        return sorted(seen, key=lambda tf: _TF_PRIORITY.get(tf, 99))
 
-    async def shutdown(self) -> None:
-        await self.broker.close()
+    # ---- lifecycle ----
 
-    async def run(self) -> None:
+    def initialize(self) -> None:
+        self.account_tracker.set_initial_balance(self.balance)
+        self._load_candles()
+
+    def run(self) -> None:
         if self.master_timeframe is None or not self.candles_per_tf:
             logger.error("Cannot run: no master timeframe or candles loaded")
             return
@@ -154,13 +132,14 @@ class BacktestEngine(AbstractEngine):
             logger.warning("Master candles empty for %s", self.master_timeframe)
             return
 
-        start, end = self.start_dt, self.end_dt
         master_df = master_df.loc[
-            (master_df.index >= pd.Timestamp(start))
-            & (master_df.index <= pd.Timestamp(end))
+            (master_df.index >= pd.Timestamp(self.start_dt))
+            & (master_df.index <= pd.Timestamp(self.end_dt))
         ]
         if master_df.empty:
-            logger.warning("No master candles in range %s ~ %s", start, end)
+            logger.warning(
+                "No master candles in range %s ~ %s", self.start_dt, self.end_dt
+            )
             return
         if not self.strategies:
             logger.warning(
@@ -179,34 +158,31 @@ class BacktestEngine(AbstractEngine):
             open_ = float(candle["open"])
             now = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
 
-            # SL/TP 안전장치 — 봉 안에서 hit 여부는 high/low로 판정 (라이브와 일치)
+            # SL/TP — 봉 내 hit 여부는 high/low 로 판정 (거래소 체결 시뮬)
             if self._position is not None:
                 fill = self.check_candle_sl_tp(self._position, high, low)
                 if fill is not None:
                     exit_price, reason = fill
-                    await self.close_position(exit_price, reason, now=now)
+                    self.close_position(exit_price, reason, now=now)
 
-            # ts 시점에는 직전 봉까지의 데이터로 평가 + open 가격으로 진입.
-            # _slice_candles는 ts 미만 슬라이스 (lookahead 제거)
+            # ts 시점엔 직전 봉까지의 데이터로 평가 + open 가격으로 진입.
+            # _slice_candles 는 ts 미만 슬라이스 (lookahead 제거).
             candles_slice = self._slice_candles(ts)
-            balance = await self.broker.get_balance()
 
             if self._position is not None:
                 exit_decision = self.check_strategy_exits(
-                    candles_slice, open_, balance, now
+                    candles_slice, open_, self.balance, now
                 )
                 if exit_decision is not None:
-                    await self.close_position(open_, exit_decision.reason, now=now)
-                    balance = await self.broker.get_balance()
+                    self.close_position(open_, exit_decision.reason, now=now)
 
             for tf in self.timeframes:
                 if self._is_tf_boundary(now, tf):
-                    await self.evaluate_strategies_on_bar(
-                        tf, candles_slice, open_, balance, now
+                    self.evaluate_strategies_on_bar(
+                        tf, candles_slice, open_, self.balance, now
                     )
-                    balance = await self.broker.get_balance()
 
-            self.equity_curve.append((now, balance))
+            self.equity_curve.append((now, self.balance))
 
         if self._position is not None:
             last_ts = master_df.index[-1]
@@ -216,21 +192,355 @@ class BacktestEngine(AbstractEngine):
                 if hasattr(last_ts, "to_pydatetime")
                 else last_ts
             )
-            await self.close_position(
+            self.close_position(
                 last_close, ExitReason.ENGINE_SHUTDOWN, now=last_now
             )
-            balance = await self.broker.get_balance()
-            self.equity_curve.append((last_now, balance))
+            self.equity_curve.append((last_now, self.balance))
 
         logger.info(
-            "Backtest complete: equity=%.2f, trades=%d",
-            balance if self.equity_curve else self.account_tracker.initial_balance,
+            "Backtest complete: balance=%.2f, trades=%d",
+            self.balance,
             len(self.trades),
         )
 
-    # ---- 거래 기록 (메모리) ----
+    def shutdown(self) -> None:
+        return None
 
-    async def _record_trade_open(
+    # ---- 컨텍스트 빌더 ----
+
+    def _build_ctx(
+        self,
+        strategy: StrategyModule,
+        candles_per_tf: dict[str, pd.DataFrame],
+        current_price: float,
+        balance: float,
+        now: datetime,
+    ) -> StrategyContext:
+        # 슬롯이 이 전략 소유면 해당 Position 노출, 아니면 None
+        own_position = (
+            self._position
+            if self._position is not None
+            and self._position.strategy_name == strategy.name
+            else None
+        )
+        return StrategyContext(
+            candles=dict(candles_per_tf),
+            current_price=current_price,
+            balance=balance,
+            position=own_position,
+            is_slot_occupied=self._position is not None,
+            params=strategy.params,
+            now=now,
+            account=self._build_account_state(balance, current_price),
+        )
+
+    def _build_account_state(
+        self, balance: float, current_price: float
+    ) -> AccountState:
+        """allow_entry / compute_position_size 가 참조할 계좌 텔레메트리 (계측치)."""
+        unrealized = 0.0
+        pos = self._position
+        if pos is not None and current_price > 0:
+            if pos.side == PositionSide.LONG:
+                unrealized = (current_price - pos.entry_price) * pos.size
+            elif pos.side == PositionSide.SHORT:
+                unrealized = (pos.entry_price - current_price) * pos.size
+        equity = balance + unrealized
+        tracker = self.account_tracker
+        return AccountState(
+            balance=balance,
+            equity=equity,
+            peak_equity=tracker.peak_equity,
+            daily_pnl=tracker.daily_pnl,
+            initial_balance=tracker.initial_balance,
+            drawdown_pct=tracker.drawdown_pct(equity),
+        )
+
+    # ---- 봉 마감 dispatch ----
+
+    def evaluate_strategies_on_bar(
+        self,
+        bar_close_tf: str,
+        candles_per_tf: dict[str, pd.DataFrame],
+        current_price: float,
+        balance: float,
+        now: datetime,
+    ) -> None:
+        """봉 마감 시 전략 평가.
+
+        1) 관련 TF 전략에 on_bar_close 훅 dispatch
+        2) 슬롯이 비었으면 entry_timeframe 일치 전략을 우선순위로 generate_signal,
+           첫 actionable 신호로 진입 시도
+        3) 슬롯이 차있으면 보유 전략의 should_reverse 로 청산·재진입 결정
+        """
+        # 자정 경계 인식 시 daily_pnl reset
+        self.account_tracker.maybe_reset_for_new_day(now)
+
+        # 1) on_bar_close 훅
+        for strategy in self.strategies:
+            if (
+                bar_close_tf == strategy.entry_timeframe
+                or bar_close_tf in strategy.required_timeframes
+            ):
+                ctx = self._build_ctx(
+                    strategy, candles_per_tf, current_price, balance, now
+                )
+                strategy.on_bar_close(ctx, bar_close_tf)
+
+        # 2) 슬롯 빔 → 진입 시도
+        if self._position is None:
+            for strategy in self.strategies:
+                if strategy.entry_timeframe != bar_close_tf:
+                    continue
+                ctx = self._build_ctx(
+                    strategy, candles_per_tf, current_price, balance, now
+                )
+                signal = strategy.generate_signal(ctx)
+                if not signal.is_actionable:
+                    continue
+                if self.try_enter(strategy, signal, ctx, now):
+                    return  # 첫 진입 성공 시 종료
+            return
+
+        # 3) 슬롯 참 → 보유(owner) 전략이 reverse 여부 결정 (정책=모델 소유).
+        held_strategy = self.strategy_by_name.get(self._position.strategy_name)
+        if held_strategy is not None:
+            for strategy in self.strategies:
+                if strategy.entry_timeframe != bar_close_tf:
+                    continue
+                ctx = self._build_ctx(
+                    strategy, candles_per_tf, current_price, balance, now
+                )
+                signal = strategy.generate_signal(ctx)
+                if not signal.is_actionable:
+                    continue
+                held_ctx = self._build_ctx(
+                    held_strategy, candles_per_tf, current_price, balance, now
+                )
+                if held_strategy.should_reverse(held_ctx, self._position, signal):
+                    self.close_position(
+                        current_price, ExitReason.REVERSE_SIGNAL, now=now
+                    )
+                    if self.try_enter(strategy, signal, ctx, now):
+                        return
+
+    # ---- 진입 ----
+
+    def try_enter(
+        self,
+        strategy: StrategyModule,
+        signal: Signal,
+        ctx: StrategyContext,
+        now: datetime,
+    ) -> bool:
+        if self._position is not None:
+            return False
+
+        # 진입 게이트(리스크 정책) — 모델 소유
+        if not strategy.allow_entry(ctx):
+            logger.info("allow_entry rejected entry for %s", strategy.name)
+            return False
+
+        # SL/TP — 모델 소유. SL None = standing SL 미설정 (청산은 should_force_exit).
+        sl_raw = strategy.compute_stop_loss(ctx, signal)
+        sl_price = float(sl_raw) if sl_raw is not None else None
+        tp_raw = strategy.compute_take_profit(ctx, signal, sl_price)
+        tp_price = float(tp_raw) if tp_raw is not None else None
+
+        # 사이징(공식·레버리지) — 모델 소유
+        size = float(strategy.compute_position_size(ctx, signal, sl_price))
+        if size <= 0:
+            logger.info("compute_position_size returned 0 for %s", strategy.name)
+            return False
+
+        # 체결은 캔들 가격(current_price = 봉 open)으로 시뮬. 수수료는 청산 시 왕복 차감.
+        position_side = signal_side_to_position_side(signal.side)
+        entry_price = ctx.current_price
+
+        trade_id = self._record_trade_open(
+            strategy_name=strategy.name,
+            side=position_side,
+            size=size,
+            entry_price=entry_price,
+            stop_loss=sl_price,
+            take_profit=tp_price,
+            now=now,
+        )
+
+        self._position = Position(
+            side=position_side,
+            size=size,
+            entry_price=entry_price,
+            entry_time=now,
+            strategy_name=strategy.name,
+            stop_loss=sl_price,
+            take_profit=tp_price,
+            trade_id=trade_id,
+            status=PositionStatus.OPEN,
+        )
+
+        try:
+            strategy.on_position_opened(self._position)
+        except Exception as e:
+            logger.error(
+                "on_position_opened hook error in %s: %s", strategy.name, e,
+                exc_info=True,
+            )
+
+        logger.info(
+            "ENTRY[%s]: %s %.4f @ %.2f, SL=%s, TP=%s, trade_id=%d",
+            strategy.name, position_side.value, size, entry_price,
+            f"{sl_price:.2f}" if sl_price is not None else "None",
+            f"{tp_price:.2f}" if tp_price is not None else "None",
+            trade_id,
+        )
+        return True
+
+    # ---- 청산 ----
+
+    def close_position(
+        self,
+        exit_price: float,
+        reason: ExitReason,
+        funding_fee: float = 0.0,
+        now: datetime | None = None,
+    ) -> None:
+        if self._position is None:
+            return
+        pos = self._position
+        now = now or datetime.now(timezone.utc)
+
+        # 수수료·PnL 정산 — FeeModel 단일 공식. 왕복 수수료를 balance 에서 차감.
+        fees = self.fee_model.estimate_round_trip(
+            pos.entry_price, exit_price, pos.size
+        )
+        pnl_result = self.fee_model.calc_pnl(
+            pos.side, pos.entry_price, exit_price, pos.size,
+            fees=fees, funding=funding_fee,
+        )
+        net_pnl = pnl_result["net_pnl"]
+        self.balance += net_pnl
+
+        if pos.trade_id is not None:
+            self._record_trade_close(
+                trade_id=pos.trade_id,
+                position=pos,
+                exit_price=exit_price,
+                pnl=net_pnl,
+                pnl_pct=pnl_result["pnl_pct"],
+                trading_fee=fees,
+                funding_fee=funding_fee,
+                exit_reason=reason.value,
+                now=now,
+            )
+
+        # 계좌 추적 갱신 (계측)
+        self.account_tracker.add_pnl(net_pnl)
+        self.account_tracker.update_equity(self.balance)
+
+        strategy = self.strategy_by_name.get(pos.strategy_name)
+        if strategy is not None:
+            try:
+                strategy.on_position_closed(pos, net_pnl)
+            except Exception as e:
+                logger.error(
+                    "on_position_closed hook error in %s: %s", strategy.name, e,
+                    exc_info=True,
+                )
+
+        logger.info(
+            "EXIT[%s]: %s @ %.2f, reason=%s, net_pnl=$%.2f, fees=$%.2f",
+            pos.strategy_name, pos.side.value, exit_price, reason.value,
+            net_pnl, fees,
+        )
+        self._position = None
+
+    # ---- 캔들 기반 SL/TP 체결 시뮬 ----
+
+    def check_candle_sl_tp(
+        self, position: Position, candle_high: float, candle_low: float
+    ) -> tuple[float, ExitReason] | None:
+        """한 캔들 내 SL/TP 도달 판정 (거래소 체결 시뮬).
+
+        동시 도달 시 보유 전략의 sl_tp_fill_priority 로 결정 (정책=모델 소유).
+        SL/TP 값은 모델이 설정한 것이며, 이 메서드는 가격 교차 *감지*만 한다.
+        """
+        if position is None:
+            return None
+        sl = position.stop_loss
+        tp = position.take_profit
+        if sl is None and tp is None:
+            return None
+
+        if position.side == PositionSide.LONG:
+            sl_hit = sl is not None and candle_low <= sl
+            tp_hit = tp is not None and candle_high >= tp
+        elif position.side == PositionSide.SHORT:
+            sl_hit = sl is not None and candle_high >= sl
+            tp_hit = tp is not None and candle_low <= tp
+        else:
+            return None
+
+        if sl_hit and tp_hit:
+            if self._fill_priority(position) == "tp_first":
+                return tp, ExitReason.TP_HIT
+            return sl, ExitReason.SL_HIT
+        if sl_hit:
+            return sl, ExitReason.SL_HIT
+        if tp_hit:
+            return tp, ExitReason.TP_HIT
+        return None
+
+    def _fill_priority(self, position: Position) -> str:
+        """동시 도달 시 체결 우선순위 (보유 전략 소유). 부재 시 보수적 sl_first."""
+        strat = self.strategy_by_name.get(position.strategy_name)
+        return getattr(strat, "sl_tp_fill_priority", "sl_first") if strat else "sl_first"
+
+    # ---- 전략 훅: update_stop_loss / should_force_exit ----
+
+    def check_strategy_exits(
+        self,
+        candles_per_tf: dict[str, pd.DataFrame],
+        current_price: float,
+        balance: float,
+        now: datetime,
+    ) -> ExitDecision | None:
+        """보유 중 봉 마감 시 호출.
+
+        1) update_stop_loss 결과로 position.stop_loss 갱신 (None 반환=유지)
+        2) should_force_exit 가 ExitDecision 반환 시 그 값 리턴 (엔진이 청산 트리거)
+        """
+        if self._position is None:
+            return None
+        strategy = self.strategy_by_name.get(self._position.strategy_name)
+        if strategy is None:
+            return None
+
+        ctx = self._build_ctx(
+            strategy, candles_per_tf, current_price, balance, now
+        )
+        try:
+            new_sl = strategy.update_stop_loss(ctx, self._position)
+            if new_sl is not None:
+                self._position.stop_loss = float(new_sl)
+        except Exception as e:
+            logger.error(
+                "update_stop_loss hook error in %s: %s", strategy.name, e,
+                exc_info=True,
+            )
+
+        try:
+            return strategy.should_force_exit(ctx, self._position)
+        except Exception as e:
+            logger.error(
+                "should_force_exit hook error in %s: %s", strategy.name, e,
+                exc_info=True,
+            )
+            return None
+
+    # ---- 거래 기록 (인메모리) ----
+
+    def _record_trade_open(
         self,
         strategy_name: str,
         side: PositionSide,
@@ -239,7 +549,6 @@ class BacktestEngine(AbstractEngine):
         stop_loss: float | None,
         take_profit: float | None,
         now: datetime,
-        entry_order_id: str | None = None,
     ) -> int:
         self._next_trade_id += 1
         tid = self._next_trade_id
@@ -256,7 +565,7 @@ class BacktestEngine(AbstractEngine):
         }
         return tid
 
-    async def _record_trade_close(
+    def _record_trade_close(
         self,
         trade_id: int,
         position: Position,
@@ -267,7 +576,6 @@ class BacktestEngine(AbstractEngine):
         funding_fee: float,
         exit_reason: str,
         now: datetime,
-        exit_order_id: str | None = None,
     ) -> None:
         rec = self._open_trades.pop(trade_id, None)
         if rec is None:
@@ -284,7 +592,6 @@ class BacktestEngine(AbstractEngine):
         rec.update(
             {
                 "exit_time": now,
-                "closed_at": now.isoformat(),    # trades 스키마 일관 유지
                 "exit_price": exit_price,
                 "pnl": pnl,
                 "pnl_pct": pnl_pct,
@@ -298,25 +605,22 @@ class BacktestEngine(AbstractEngine):
 
     # ---- 캔들 로딩 ----
 
-    async def _load_candles(self) -> None:
-        # data.history_bars만큼 warmup 캔들을 미리 로드해 indicator NaN 구간을 단축.
-        # master_df slice는 run() 루프에서 [start, end]로 잘라내므로 warmup 캔들은
-        # 진입 전 indicator 워밍업용으로만 사용 (라이브 backfill과 동일 키 재사용).
-        warmup_bars = int(self.config.get("data", {}).get("history_bars", 300))
+    def _load_candles(self) -> None:
+        # data.history_bars 만큼 warmup 캔들을 미리 로드해 indicator NaN 구간을 단축.
+        warmup_bars = int((self.config.get("data", {}) or {}).get("history_bars", 300))
         loader = HistoricalDataLoader(self.config)
         try:
             end_ms = int(self.end_dt.timestamp() * 1000)
             for tf in self.timeframes:
                 tf_ms = TF_MS.get(tf, 60_000)
                 start_ms = int(self.start_dt.timestamp() * 1000) - warmup_bars * tf_ms
-                df = await loader.download_range_merged(tf, start_ms, end_ms)
+                df = loader.download_range_merged(tf, start_ms, end_ms)
                 self.candles_per_tf[tf] = df
                 logger.info(
-                    "Loaded %d %s candles (warmup_bars=%d)",
-                    len(df), tf, warmup_bars,
+                    "Loaded %d %s candles (warmup_bars=%d)", len(df), tf, warmup_bars
                 )
         finally:
-            await loader.close()
+            loader.close()
 
     def _is_tf_boundary(self, ts: datetime, tf: str) -> bool:
         if tf == "1m":
@@ -336,129 +640,18 @@ class BacktestEngine(AbstractEngine):
     def _slice_candles(self, ts) -> dict[str, pd.DataFrame]:
         """ts 시점 직전까지의 캔들 반환 (lookahead 제거).
 
-        과거에는 `df.loc[:ts]`로 ts 봉을 포함시켰으나,
-        이는 봉 시작 시점에 그 봉의 close 정보가 피처에 들어가는 lookahead bias.
-        라이브 환경에서는 ts 시점에 그 봉이 시작도 안 한 상태이므로,
-        직전 봉까지의 데이터로만 의사결정해야 함.
+        `df[df.index < ts]` 로 진행 중 봉을 배제 — ts 시점엔 그 봉이 아직 마감 전이라
+        close 가 확정되지 않았으므로, 그 값이 피처로 새면 미래 정보 누출이 된다.
         """
         result: dict[str, pd.DataFrame] = {}
         for tf, df in self.candles_per_tf.items():
-            if df.empty:
-                result[tf] = df
-            else:
-                result[tf] = df[df.index < ts]
+            result[tf] = df if df.empty else df[df.index < ts]
         return result
 
-    # ---- 결과 집계 ----
+    # ---- 결과 ----
 
-    async def get_result(self) -> BacktestResult:
-        # equity_curve 비어있으면 initial_balance fallback
-        initial = self.account_tracker.initial_balance
-        if self.equity_curve:
-            final = self.equity_curve[-1][1]
-        else:
-            final = initial
-        return BacktestResult(
-            initial_balance=initial,
-            final_balance=final,
-            equity_curve=list(self.equity_curve),
-            trades=list(self.trades),
-        )
-
-    # ---- 결과 파일 출력 ----
-
-    def write_reports(
-        self,
-        config_path: str | Path | None = None,
-        out_root: str | Path | None = None,
-    ) -> Path:
-        """리포트 5종(trades / equity_curve / metrics / config_snapshot / png)을
-        `data/backtest_reports/00_Working/{tag}_backtest_{start}_{end}_{name}/{name}/`
-        하위에 저장하고 디렉토리 경로를 반환.
-
-        out_root가 지정되면 기본 경로 대신 그 디렉토리를 사용 (호출자가 출력 위치 지정 시).
-        """
-        config_name = "default"
-        if config_path:
-            config_name = Path(str(config_path)).stem
-        if out_root is None:
-            today = datetime.now().strftime("%y%m%d")
-            start_str = self.start_dt.strftime("%Y-%m-%d")
-            end_str = self.end_dt.strftime("%Y-%m-%d")
-            out_root_path = REPORT_BASE / (
-                f"{today}_backtest_{start_str}_{end_str}_{config_name}"
-            )
-            # 동일 명칭 디렉토리 존재 시 _1, _2 postfix로 보존
-            out_root_path = resolve_unique_dir(out_root_path)
-        else:
-            # 호출자가 명시 지정한 out_root는 그대로 사용
-            out_root_path = Path(out_root)
-        out = out_root_path / config_name
-        out.mkdir(parents=True, exist_ok=True)
-
-        # trades.csv
-        if self.trades:
-            df = pd.DataFrame(self.trades)
-            cols_order = [
-                "id", "strategy_name", "side", "size",
-                "entry_time", "entry_price", "exit_time", "exit_price",
-                "stop_loss", "take_profit",
-                "pnl", "pnl_pct", "trading_fee", "funding_fee",
-                "exit_reason", "status",
-            ]
-            ordered = [c for c in cols_order if c in df.columns] + [
-                c for c in df.columns if c not in cols_order
-            ]
-            df = df[ordered]
-            df.to_csv(out / "trades.csv", index=False)
-        else:
-            (out / "trades.csv").write_text(
-                "id,strategy_name,side,size,entry_time,entry_price,"
-                "exit_time,exit_price,stop_loss,take_profit,pnl,pnl_pct,"
-                "trading_fee,funding_fee,exit_reason,status\n",
-                encoding="utf-8",
-            )
-
-        # equity_curve.csv
-        if self.equity_curve:
-            ec = pd.DataFrame(self.equity_curve, columns=["timestamp", "balance"])
-            ec["equity"] = ec["balance"]  # 현재 unrealized 미추적, balance==equity
-            ec.set_index("timestamp", inplace=True)
-            ec.to_csv(out / "equity_curve.csv")
-        else:
-            (out / "equity_curve.csv").write_text(
-                "timestamp,balance,equity\n", encoding="utf-8"
-            )
-
-        # metrics.json
-        with open(out / "metrics.json", "w", encoding="utf-8") as f:
-            json.dump(self._build_metrics(), f, indent=2, default=str, ensure_ascii=False)
-
-        # config_snapshot.yaml — 자격증명 제거
-        snapshot = {k: v for k, v in self.config.items()}
-        if "exchange" in snapshot:
-            ex = dict(snapshot["exchange"])
-            for secret_key in ("api_key", "secret", "passphrase"):
-                ex.pop(secret_key, None)
-            snapshot["exchange"] = ex
-        with open(out / "config_snapshot.yaml", "w", encoding="utf-8") as f:
-            yaml.dump(
-                snapshot,
-                f,
-                default_flow_style=False,
-                allow_unicode=True,
-                sort_keys=False,
-            )
-
-        # equity_curve.png
-        try:
-            self._plot_equity(out / "equity_curve.png")
-        except Exception as e:
-            logger.warning("Failed to render equity_curve.png: %s", e)
-
-        return out
-
-    def _build_metrics(self) -> dict[str, Any]:
+    def summary(self) -> dict[str, Any]:
+        """핵심 성과 지표 dict (콘솔 출력 + metrics.json 공용)."""
         initial = self.account_tracker.initial_balance
         final = self.equity_curve[-1][1] if self.equity_curve else initial
         total_pnl = final - initial
@@ -467,149 +660,77 @@ class BacktestEngine(AbstractEngine):
         n_total = len(self.trades)
         winning = [t for t in self.trades if (t.get("pnl") or 0) > 0]
         losing = [t for t in self.trades if (t.get("pnl") or 0) < 0]
-        n_winners = len(winning)
-        n_losers = len(losing)
-        win_rate = (n_winners / n_total * 100.0) if n_total > 0 else 0.0
-
         gp = sum(t["pnl"] for t in winning) if winning else 0.0
         gl = abs(sum(t["pnl"] for t in losing)) if losing else 0.0
         pf = (gp / gl) if gl > 0 else (float("inf") if gp > 0 else 0.0)
+        win_rate = (len(winning) / n_total * 100.0) if n_total > 0 else 0.0
 
         max_dd = 0.0
         if self.equity_curve:
             peak = self.equity_curve[0][1]
             for _, eq in self.equity_curve:
-                if eq > peak:
-                    peak = eq
+                peak = max(peak, eq)
                 if peak > 0:
-                    dd = (peak - eq) / peak * 100.0
-                    if dd > max_dd:
-                        max_dd = dd
-
-        avg_win = (gp / n_winners) if n_winners > 0 else 0.0
-        avg_loss = (gl / n_losers) if n_losers > 0 else 0.0
+                    max_dd = max(max_dd, (peak - eq) / peak * 100.0)
 
         return {
-            "integrated": {
-                "initial_balance": round(initial, 2),
-                "final_balance": round(final, 2),
-                "total_pnl": round(total_pnl, 2),
-                "total_return_pct": round(total_pct, 2),
-                "total_trades": n_total,
-                "winning_trades": n_winners,
-                "losing_trades": n_losers,
-                "win_rate_pct": round(win_rate, 2),
-                "gross_profit": round(gp, 2),
-                "gross_loss": round(gl, 2),
-                "profit_factor": (
-                    round(pf, 2) if pf != float("inf") else "inf"
-                ),
-                "avg_win": round(avg_win, 2),
-                "avg_loss": round(avg_loss, 2),
-                "max_drawdown_pct": round(max_dd, 2),
-            },
-            "by_strategy_name": self._split_by(
-                lambda t: t.get("strategy_name", "_unknown")
-            ),
-            "by_exit_reason": self._split_by(
-                lambda t: t.get("exit_reason", "_unknown")
-            ),
-            "by_direction": self._split_by(lambda t: t.get("side", "_unknown")),
+            "initial_balance": round(initial, 2),
+            "final_balance": round(final, 2),
+            "total_pnl": round(total_pnl, 2),
+            "total_pnl_pct": round(total_pct, 2),
+            "num_trades": n_total,
+            "num_winners": len(winning),
+            "num_losers": len(losing),
+            "win_rate_pct": round(win_rate, 2),
+            "profit_factor": round(pf, 2) if pf != float("inf") else "inf",
+            "max_drawdown_pct": round(max_dd, 2),
         }
 
-    def _split_by(self, key_fn) -> dict[str, dict[str, Any]]:
-        groups: dict[str, list[dict[str, Any]]] = {}
-        for t in self.trades:
-            k = key_fn(t)
-            groups.setdefault(k, []).append(t)
-        out: dict[str, dict[str, Any]] = {}
-        for k, trs in groups.items():
-            wins = [t for t in trs if (t.get("pnl") or 0) > 0]
-            losses = [t for t in trs if (t.get("pnl") or 0) < 0]
-            gp = sum(t["pnl"] for t in wins) if wins else 0.0
-            gl = abs(sum(t["pnl"] for t in losses)) if losses else 0.0
-            pf = (gp / gl) if gl > 0 else (float("inf") if gp > 0 else 0.0)
-            out[k] = {
-                "trades": len(trs),
-                "winning_trades": len(wins),
-                "losing_trades": len(losses),
-                "win_rate_pct": (
-                    round(len(wins) / len(trs) * 100.0, 2) if trs else 0.0
-                ),
-                "pnl": round(sum(t["pnl"] for t in trs), 2),
-                "profit_factor": (
-                    round(pf, 2) if pf != float("inf") else "inf"
-                ),
-            }
+    def write_reports(self, out_dir: str | Path | None = None) -> Path:
+        """결과 3종(trades.csv / equity_curve.csv / metrics.json)을 out_dir 에 저장.
+
+        out_dir 미지정 시 `data/backtest_reports/backtest_{start}_{end}/` 사용.
+        """
+        if out_dir is None:
+            out_dir = REPORT_BASE / (
+                f"backtest_{self.start_dt.date()}_{self.end_dt.date()}"
+            )
+        out = Path(out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+
+        cols_order = [
+            "id", "strategy_name", "side", "size",
+            "entry_time", "entry_price", "exit_time", "exit_price",
+            "stop_loss", "take_profit",
+            "pnl", "pnl_pct", "trading_fee", "funding_fee",
+            "exit_reason", "status",
+        ]
+        if self.trades:
+            df = pd.DataFrame(self.trades)
+            ordered = [c for c in cols_order if c in df.columns] + [
+                c for c in df.columns if c not in cols_order
+            ]
+            df[ordered].to_csv(out / "trades.csv", index=False)
+        else:
+            (out / "trades.csv").write_text(
+                ",".join(cols_order) + "\n", encoding="utf-8"
+            )
+
+        if self.equity_curve:
+            ec = pd.DataFrame(self.equity_curve, columns=["timestamp", "balance"])
+            ec.set_index("timestamp", inplace=True)
+            ec.to_csv(out / "equity_curve.csv")
+        else:
+            (out / "equity_curve.csv").write_text(
+                "timestamp,balance\n", encoding="utf-8"
+            )
+
+        with open(out / "metrics.json", "w", encoding="utf-8") as f:
+            json.dump(self.summary(), f, indent=2, ensure_ascii=False)
+
         return out
-
-    def _plot_equity(self, path: Path) -> None:
-        if not self.equity_curve:
-            return
-        import matplotlib
-
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-
-        timestamps = [t for t, _ in self.equity_curve]
-        balances = [b for _, b in self.equity_curve]
-        initial = self.account_tracker.initial_balance
-
-        fig, axes = plt.subplots(
-            2, 1, figsize=(16, 9), gridspec_kw={"height_ratios": [3, 1]}
-        )
-        axes[0].plot(timestamps, balances, color="blue", linewidth=1, label="Equity")
-        axes[0].axhline(
-            y=initial, color="gray", linestyle="--", alpha=0.5,
-            label=f"Initial ${initial:,.0f}",
-        )
-        axes[0].set_title(
-            f"Backtest Equity Curve "
-            f"({self.start_dt.date()} ~ {self.end_dt.date()})"
-        )
-        axes[0].set_ylabel("Equity ($)", color="blue")
-        axes[0].tick_params(axis="y", labelcolor="blue")
-        axes[0].grid(True, alpha=0.3)
-
-        # BTC overlay
-        try:
-            btc_csv = Path("data/candles/BTC_USDT_USDT_1d.csv")
-            if btc_csv.exists():
-                btc = pd.read_csv(
-                    btc_csv, parse_dates=["timestamp"], index_col="timestamp"
-                )
-                btc.index = pd.to_datetime(btc.index, utc=True)
-                btc = btc.loc[
-                    (btc.index >= pd.Timestamp(self.start_dt))
-                    & (btc.index <= pd.Timestamp(self.end_dt))
-                ]
-                if not btc.empty:
-                    ax2 = axes[0].twinx()
-                    ax2.plot(
-                        btc.index, btc["close"],
-                        color="orange", linewidth=1, alpha=0.7, label="BTC",
-                    )
-                    ax2.set_ylabel("BTC Price ($)", color="orange")
-                    ax2.tick_params(axis="y", labelcolor="orange")
-        except Exception:
-            pass
-        axes[0].legend(loc="upper left")
-
-        eq_series = pd.Series(balances, index=pd.DatetimeIndex(timestamps))
-        peak = eq_series.expanding().max()
-        dd = (peak - eq_series) / peak * 100.0
-        axes[1].fill_between(dd.index, 0, dd, color="red", alpha=0.3)
-        axes[1].set_title("Drawdown (%)")
-        axes[1].set_ylabel("Drawdown %")
-        axes[1].grid(True, alpha=0.3)
-
-        plt.tight_layout()
-        plt.savefig(path, dpi=150)
-        plt.close(fig)
 
     # ---- 테스트용: 외부 캔들 주입 ----
 
     def inject_candles(self, candles_per_tf: dict[str, pd.DataFrame]) -> None:
-        self.candles_per_tf = {
-            tf: df.copy() for tf, df in candles_per_tf.items()
-        }
+        self.candles_per_tf = {tf: df.copy() for tf, df in candles_per_tf.items()}

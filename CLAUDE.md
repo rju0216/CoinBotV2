@@ -4,29 +4,30 @@
 위한 정보를 담는다. 프로젝트의 정체성, 응답 규칙, 협업 규칙, 세션 시작
 체크리스트, 주요 명령을 인라인으로 통합.
 
-> **현재 상태**: 새 퀀트 모델 구현을 위해 **인프라 뼈대만 남긴 상태**
-> (`InitialInfraSetup` 브랜치). 과거 구현했던 특정 모델·학습/평가 파이프라인은
-> 모두 제거됨. 인프라 구조와 주의점은 `docs/INFRA_GUIDE.md` 단일 문서 참조.
+> **현재 상태**: 새 퀀트 모델 구현을 위해 **최소 개념 골격만 남긴 상태**
+> (백테 전용). 과거의 특정 모델·학습/평가 파이프라인과 라이브/페이퍼 실거래·
+> 거래소 종속 인프라는 모두 제거됨. 인프라 구조와 주의점은 `docs/INFRA_GUIDE.md`
+> 단일 문서 참조.
 
 ---
 
 ## 프로젝트 정체성
 
-**CoinBot** — 매매 로직이 분리된 자동매매 봇 뼈대.
+**CoinBot** — 매매 로직(전략)이 엔진과 분리된 백테스트 골격.
 
 - 전략은 `src/strategy/plugins/<name>.py` 파일 1개 + `config/default.yaml` 섹션 1개로 추가됨
-- 엔진(`AbstractEngine` / `CoreEngine` / `BacktestEngine`)은 전략의 존재를 모르고도 동작 가능
-- backtest / paper / live 모드 모두 같은 `FeeModel`(PnL) · `AccountTracker`(계측) · 동일 전략(사이징·SL/TP 포함) 사용 (라이브-백테 일관성). 거래 정책은 전략(모델)이 소유
-- OKX 무기한 선물 (`BTC/USDT:USDT`) 기반
+- 엔진(`BacktestEngine`)은 전략의 존재를 모르고도 동작 가능 — `StrategyModule` 인터페이스로만 상호작용
+- 체결은 캔들 가격으로 시뮬하고 PnL 은 `FeeModel.calc_pnl` 단일 공식으로 정산 (외부 브로커·거래소 없음, 순수 인메모리)
+- 거래 정책(진입 신호·사이징·SL/TP·reverse·진입 게이트)은 전략(모델)이 소유. 엔진은 메커니즘만
+- 대상 심볼: OKX 무기한 선물 (`BTC/USDT:USDT`) 캔들
 - **현재 `strategies.active: []` (무거래 뼈대). 전략을 추가해야 매매 발생.**
 
 ---
 
 ## 응답 규칙
 
-- 모든 응답은 **한글**로 작성한다.
+- 모든 응답은 **한글 존댓말**로 작성한다.
 - naming convention 변경 시 반드시 **명시적으로 고지**한다.
-- 전략 변경은 **백테스트 검증 후에만** 라이브에 적용한다.
 - **확인되지 않은 사실을 단정적으로 말하지 않는다.** 추정·가정·미검증 영역은 그렇게 명시한다.
 - **셸 명령 표기는 두 갈래로 분리한다.** 사용자가 직접 실행할 명령(작업 보고서·가이드·안내 메시지)은 **cmd 문법** (`dir`, `type`, `findstr`, `\` 경로, `%VAR%`, `set VAR=...`). Claude 가 세션 내 Bash 도구로 직접 실행할 때는 **bash 문법** (`ls`, `cat`, `grep`, `/` 경로, `$VAR`). 셸 호환에 의존하지 않는 명령(`git`, `python`, `pytest`, `npm` 등)은 양쪽 동일. PowerShell 도구도 보조적으로 사용 가능.
 
@@ -45,14 +46,14 @@
 7. **임시 변경 즉시 복구**: 시연·테스트용 임시 변경(예: `default.yaml` 의 `active` 임시 활성)은 작업 종료 시 반드시 원상 복구한다.
 8. **구조 점검 단계**: 비자명한 작업의 상세 계획 수립 후, 사용자 결정·구현 착수 직전에 다음 4가지를 자체 점검하고 발견 사항을 계획에 반영한다:
    - **DRY**: 동일 패턴이 N개 파일에 중복되지 않는가? helper/추상화로 단일 출처화 가능한가?
-   - **캡슐화**: 한 레이어의 관심사(예: 백테/라이브 모드 차이)가 다른 레이어(예: plugin 추론 로직)로 누출되지 않는가?
+   - **캡슐화**: 한 레이어의 관심사가 다른 레이어(예: plugin 추론 로직)로 누출되지 않는가?
    - **미래 확장성**: 현재 가정(예: 단일 포지션 슬롯, entry_tf 봉마감 평가)에 잠긴 "지금만 작동" 코드를 만들지 않는가?
    - **1회용 코드 분리**: 탐사용/측정용 스크립트(profiling, 한 번 돌리고 폐기)는 commit 제외, 결과 텍스트만 작업 보고서에 보존.
-9. **Phase 내부 Step 임시 보존**: Phase가 여러 Step으로 분할된 경우, 각 Step 종착 시 결과·핵심 수치를 메모리 파일(`~/.claude/.../memory/phase_<id>_step<n>.md`)에 즉시 기록한다. Phase 종착 시 모든 Step 결과를 작업 보고서에 일괄 통합하고 커밋한 직후 임시 메모리 파일을 삭제한다. 목적: compact/세션 단절 시 컨텍스트 손실 방지. **모든 Step에 일관 적용** — 작업 시간(짧음/긺) 무관, 코드 작성처럼 결과 형태가 비정형이어도 변경 매트릭스 + 검증 결과(pytest/회귀) + 핵심 수치 형태로 짧게라도 작성한다. "짧으니까 면제" 같은 임의 판단 금지 — 사용자가 명시적으로 면제할 때만 예외.
-10. **백테 결과 정합성 검증 우선**: 백테 결과 신뢰성 점검 시 데이터 단위 정합성을 먼저 검증한다 — `trades.csv pnl 합` ↔ `metrics.json total_pnl` ↔ `equity_curve.csv 변화량` 일치성. 사용자가 결과를 의심할 때(예: 비현실적 수익률) 직관적 가설(데이터 누출/lookahead)보다 정합성 검증을 우선 수행한다. 불일치 발견 시 즉시 잠재 이슈로 등록. 라이브-백테 PnL 산출 흐름 동등성도 같이 검증한다.
+9. **Phase 내부 Step 임시 보존**: Phase가 여러 Step으로 분할된 경우, 각 Step 종착 시 결과·핵심 수치를 메모리 파일(`~/.claude/.../memory/phase_<id>_step<n>.md`)에 즉시 기록한다. Phase 종착 시 모든 Step 결과를 작업 보고서에 일괄 통합하고 커밋한 직후 임시 메모리 파일을 삭제한다. 목적: compact/세션 단절 시 컨텍스트 손실 방지. **모든 Step에 일관 적용** — 작업 시간(짧음/긺) 무관. "짧으니까 면제" 같은 임의 판단 금지 — 사용자가 명시적으로 면제할 때만 예외.
+10. **백테 결과 정합성 검증 우선**: 백테 결과 신뢰성 점검 시 데이터 단위 정합성을 먼저 검증한다 — `trades.csv pnl 합` ↔ `metrics.json total_pnl` ↔ `equity_curve.csv 변화량` 일치성. 사용자가 결과를 의심할 때(예: 비현실적 수익률) 직관적 가설(데이터 누출/lookahead)보다 정합성 검증을 우선 수행한다. 불일치 발견 시 즉시 잠재 이슈로 등록.
 11. **코드 점검은 주석이 아닌 실제 구현 기준**: 코드의 구현 상태·동작을 점검·보고할 때는 주석·docstring·문서가 아니라 **실제 코드(및 테스트)** 를 근거로 한다. 주석은 갱신 누락으로 구현과 어긋날 수 있으므로, 주석 내용을 사실로 단정하지 말고 코드로 확인한 뒤 보고한다.
-12. **개명·삭제 시 전수 스윕 검증**: 심볼·파일·config 키를 개명/삭제하면 **src·tests·config·docs 전체를 grep 스윕**해 모든 참조(주석·docstring·문자열 라벨 포함)를 찾아 정리하고, **잔존 0 + 회귀(pytest) 통과**를 확인한 뒤 완료로 본다. 코드 식별자 변경뿐 아니라 그것을 가리키던 주석·테스트 라벨·문서까지 같이 정리한다.
-13. **문서·config ↔ 코드 양방향 대조**: 문서·주석·config를 갱신하거나 그 정합성을 점검할 때 코드와 **양방향**으로 대조한다 — ① 문서/config가 주장하는 심볼·경로·키·동작이 코드에 실재·일치하는가, ② 코드가 읽는 config 키가 전부 config·문서에 존재하는가. 한 방향만 보면 미배선 키(설정엔 있으나 코드가 안 읽음)나 누락 키(코드가 읽으나 설정에 없음)를 놓친다.
+12. **개명·삭제 시 전수 스윕 검증**: 심볼·파일·config 키를 개명/삭제하면 **src·tests·config·docs 전체를 grep 스윕**해 모든 참조(주석·docstring·문자열 라벨 포함)를 찾아 정리하고, **잔존 0 + 회귀(pytest) 통과**를 확인한 뒤 완료로 본다.
+13. **문서·config ↔ 코드 양방향 대조**: 문서·주석·config를 갱신하거나 그 정합성을 점검할 때 코드와 **양방향**으로 대조한다 — ① 문서/config가 주장하는 심볼·경로·키·동작이 코드에 실재·일치하는가, ② 코드가 읽는 config 키가 전부 config·문서에 존재하는가.
 14. **비자명 변경 후 독립 fresh-eyes 검증**: 대규모 리팩터링/삭제 후에는 가능하면 별도 에이전트/재스캔으로 **독립 교차검증**해 자기 확증 편향에 의한 누락·불일치를 잡는다. (매 변경이 아니라 비자명 변경 한정.)
 
 ---
@@ -63,9 +64,9 @@
 (이 문서가 시스템 프롬프트로 자동 주입되지 않은 경우, 사용자에게 명시 요청)
 
 1. **인프라 구조 파악**: `docs/INFRA_GUIDE.md` — 아키텍처·모듈 구조·신규 전략
-   추가법·**인프라 구조상 주의점**·명령어. 새 모델 구현의 출발점.
-2. **작업 보고서 확인 (있으면)**: `docs/00_Work_Report/` 하위 최근 문서의 진행
-   기록·미해결 잠재 이슈. (뼈대 직후에는 없을 수 있음 — 새 작업 시작 시 생성.)
+   추가법·구조상 주의점·명령어. 새 모델 구현의 출발점.
+2. **작업 보고서 확인 (있으면)**: `docs/00_Work_Report/` 하위 최근 문서. (뼈대
+   직후에는 없을 수 있음 — 새 작업 시작 시 생성.)
 3. **git 상태**:
    ```bash
    git status
@@ -73,43 +74,31 @@
    git diff --stat   # 미커밋 변경이 있다면
    ```
 4. **config 운영 상태**: `config/default.yaml` 의 `strategies.active` 확인
-   (`[]` → 뼈대 무거래 / 비어있지 않음 → 활성 전략 목록). 실행 모드는 CLI
-   subcommand 로 결정 (paper / live / backtest).
+   (`[]` → 뼈대 무거래 / 비어있지 않음 → 활성 전략 목록).
 5. **활성 코드 위치**:
-   - `src/core/engine_base.py` — AbstractEngine (봉마감 평가·진입·청산 공통 흐름)
-   - `src/live/engine.py` — CoreEngine (paper/live)
-   - `src/backtest/engine.py` — BacktestEngine + write_reports
+   - `src/backtest/engine.py` — BacktestEngine (봉마감 평가·진입·청산·SL/TP 시뮬 + 리포트)
    - `src/strategy/base.py` — StrategyModule 추상 / `registry.py` — auto-discovery
    - `src/strategy/plugins/` — 전략 플러그인 폴더 (현재 비어 있음)
-6. **운영 메타 파일 (data/, git untracked)**: `data/coinbot_*.db` (모드별 거래/equity/메타).
+   - `src/accounting/` — fee_model(PnL 공식) + account_tracker(계측)
+   - `src/data/historical.py` — 백테 캔들 로더
+   - `src/core/` — types + enums
+6. **캔들 캐시 (data/, git untracked)**: `data/candles/*.csv`.
 
 ---
 
 ## 주요 명령
 
+### 캔들 다운로드
+```bash
+python scripts/download_history.py --timeframe 15m --start 2024-01-01 --end 2024-12-31
+```
+
 ### 백테스트
 ```bash
 python -m src.main backtest --config config/default.yaml --start 2024-01-01 --end 2024-12-31
 ```
-- 결과: `data/backtest_reports/00_Working/{tag}_backtest_{start}_{end}_{config_name}/{config_name}/`
-- 5종 파일: `trades.csv`, `equity_curve.csv`, `metrics.json`, `config_snapshot.yaml`, `equity_curve.png`
-
-### 페이퍼 / 라이브
-```bash
-python -m src.main paper --config config/default.yaml
-python -m src.main live  --config config/default.yaml
-```
-
-### 다중 연도 병렬 백테 + 통합 (Windows)
-```bash
-scripts\run_full_backtest.bat config/default.yaml
-scripts\merge_reports.bat <tag> default
-```
-
-### 캔들 다운로드 (수동)
-```bash
-python scripts/download_history.py --config config/default.yaml --timeframe 1d,4h,15m --start 2020-01-01 --end 2026-01-01
-```
+- 결과: `data/backtest_reports/backtest_<start>_<end>/`
+- 3종 파일: `trades.csv`, `equity_curve.csv`, `metrics.json`
 
 ### 테스트
 ```bash
@@ -120,7 +109,8 @@ python -m pytest tests/ -q
 
 ## 백테스트 정책
 
-- 백테스트는 기본적으로 **사용자가 직접 수행**한다. 백테스트가 필요하면 커맨드 가이드를 제공할 것.
+- 백테스트는 **Claude 가 수행하되, 실행 전 사용자 승인을 받는다.** 실행할 명령(설정·기간·대상)을 먼저 제시하고 승인받은 뒤 돌린다. 승인 없이 임의 실행 금지.
+- 캔들 다운로드가 필요하면 그 사실·범위도 함께 고지하고 승인에 포함한다.
 
 ---
 
@@ -133,14 +123,13 @@ python -m pytest tests/ -q
    - 클래스 속성: `name`, `entry_timeframe`, `required_timeframes`, `sl_tp_fill_priority`
    - 필수 메서드 6개(거래 정책=모델 소유): `generate_signal` / `compute_stop_loss`(None 허용) /
      `compute_take_profit` / `compute_position_size`(사이징) / `should_reverse` / `allow_entry`(진입 게이트)
-   - 선택 훅: `update_stop_loss`(trailing) / `should_force_exit` / `on_bar_close` / `generate_pyramid_signal`(opt-in `supports_pyramiding`, 현재 stub) 등
-   - opt-in 공식: `src/strategy/helpers/`(sizing·risk_gates·reverse) — 엔진 미호출, 모델이 골라 import
+   - 선택 훅: `update_stop_loss`(trailing) / `should_force_exit` / `on_bar_close` 등
 2. `config/default.yaml` 에 `my_strategy:` 섹션 추가 — **엔진 강제 필수 키 없음**. 정책 임계값은 모델 params 로.
 3. `strategies.active` 리스트에 `"my_strategy"` 추가
 
 엔진 코드 수정은 0이어야 한다 — 그렇지 않으면 추상화가 잘못된 것.
 **거래 정책(사이징·SL/TP·reverse·진입 게이트)·모델 학습·피처 엔지니어링은 전부 전략 소유**
-(엔진은 메커니즘만; 인프라는 피처/학습 파이프라인을 제공하지 않음). 상세는 `docs/INFRA_GUIDE.md`.
+(엔진은 메커니즘만; 인프라는 피처/학습 파이프라인을 제공하지 않음).
 
 ---
 
@@ -148,22 +137,19 @@ python -m pytest tests/ -q
 
 ```
 src/
-├── core/        # AbstractEngine + types(+AccountState)/enums/event_bus
-├── live/        # CoreEngine (paper/live) + trade_sync (OKX 실값 동기화)
-├── backtest/    # BacktestEngine
+├── core/        # types(Signal/Position/…) + enums
+├── backtest/    # engine.py — BacktestEngine (엔진 전체) + 리포트
 ├── strategy/
-│   ├── base.py / registry.py / indicators.py
-│   ├── helpers/   # opt-in 정책 공식 (sizing·risk_gates·reverse) — 엔진 미호출
+│   ├── base.py / registry.py
 │   └── plugins/   # ★ 신규 전략 (현재 비어 있음)
-├── execution/   # Broker + OKX/Paper executor
-├── accounting/  # FeeModel(PnL 공식) + AccountTracker(equity 계측)
-├── data/        # feed/historical/store/orderbook
-└── utils/       # logger / config_loader / notifier / path_utils
+├── accounting/  # fee_model(PnL 공식) + account_tracker(equity 계측)
+├── data/        # historical (백테 캔들 로더)
+└── utils/       # config_loader / logger
 
-config/default.yaml
+config/default.yaml   # 통합 설정 1개
 docs/INFRA_GUIDE.md   # 인프라 구조·주의점 단일 문서
-tests/                # 인프라 회귀 테스트
-scripts/              # download_history / run_full_backtest / merge_(yearly_)reports
+tests/                # 백테 골격 회귀 테스트
+scripts/download_history.py  # 캔들 다운로드
 ```
 
 ---

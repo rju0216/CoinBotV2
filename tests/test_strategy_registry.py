@@ -185,6 +185,5 @@ class TestStrategyModuleAbstract:
         assert s.on_bar_close(ctx, "15m") is None
         assert s.update_stop_loss(ctx, None) is None  # type: ignore[arg-type]
         assert s.should_force_exit(ctx, None) is None  # type: ignore[arg-type]
-        assert s.generate_pyramid_signal(ctx, None) is None  # type: ignore[arg-type]
-        # supports_pyramiding 기본값
-        assert s.supports_pyramiding is False
+        assert s.on_position_opened(None) is None  # type: ignore[arg-type]
+        assert s.on_position_closed(None, 0.0) is None  # type: ignore[arg-type]
