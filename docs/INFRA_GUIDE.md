@@ -53,6 +53,12 @@ scripts/download_history.py  # 캔들 다운로드
 tests/                       # 백테 골격 회귀 테스트 (픽스처는 tests/strategy_stub.py)
 ```
 
+> **`src/research/` (모델 개발 오프라인 substrate)**: 위 백테 골격과 **별개**로, 새 퀀트
+> 모델의 라벨·피처·학습·검증 파이프라인이 사는 곳(Phase 0 완성 — 데이터로더·audit·regime·
+> walk-forward splitter·누수 하네스·normalize·metrics·baselines·harness·ledger). 엔진/플러그인과
+> 분리(엔진 수정 0). 상세·진행은 `docs/00_Work_Report/QuantModel_MasterPlan.md`,
+> 의존성은 `requirements-ml.txt`.
+
 ## 3. 새 모델(전략) 추가 방법
 
 1. `src/strategy/plugins/my_strategy.py` 작성:

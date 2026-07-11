@@ -14,6 +14,9 @@
 ```bash
 pip install -r requirements.txt
 
+# 모델/리서치(src/research) 개발 시: ML 선택 의존성 추가 설치
+# pip install -r requirements-ml.txt
+
 # 1) 백테 캔들 다운로드 (OKX 공개 API — 키 불필요)
 python scripts/download_history.py --timeframe 15m --start 2024-01-01 --end 2024-12-31
 
