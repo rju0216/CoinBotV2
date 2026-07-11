@@ -5,7 +5,7 @@
 > **참조만** 한다(중복 서술 금지). 이 문서는 개발 계획·학습 스케줄·리뷰어
 > 플래그·결정 로그(D-NNN)·잠재 이슈(I-NNN)·진행 기록표를 담는다.
 >
-> **현재 시점**: 전체 계획 확정 단계 (구현 착수 전). 다음 = Phase 0 상세계획.
+> **현재 시점**: **Phase 0~2 완료**(검증 substrate·삼중배리어 라벨 N=24·1층 피처 X 8열). 다음 = **Phase 3**(2층 MLP+트리, 관문1).
 
 ---
 
@@ -51,7 +51,7 @@
 |---|---|---|---|
 | **0 검증 인프라** | walk-forward 하네스, **국면 태깅(규칙기반)**, 인과성/누수 테스트 스위트, z-score train-only, 지표계산(균형정확도·MCC·로그손실·semi-dev), 결과 정합성 검증(CLAUDE 10) | 소프트웨어 정합성 | — |
 | **1 라벨** ✅ | 삼중배리어 생성기(ATR·YZ, x·N, 인과) + **라벨분포 검증**(층1 학습가능성·층3 국면일관성) — **완료: N=24·atr/w96/x3.0 확정** | **후보1 라벨분포**(성과 안 봄) | 분포 게이트 **통과** |
-| **2 1층 피처** | 6축 피처(robust KF·ER/Hurst·변동성변화·상대거래량·semi-dev·종가위치), **기본창** | 소프트웨어 정합성(인과·정상성) | — |
+| **2 1층 피처** ✅ | 6축 피처(robust KF·ER/Hurst·변동성변화·상대거래량·semi-dev·종가위치), **기본창** — **완료: build_features→X 8열, 인과·행동 검증** | 소프트웨어 정합성(인과·정상성) | — |
 | **3 2층 MLP** | 공유트렁크 멀티태스크 MLP + 트리 벤치. 여기서 **창 순차탐색·λ·정규화·TF/MTF 확장** | **후보2 예측력** | **관문1 통계적엣지** |
 | **4 멍청한 3층** | 방향·θ진입·고정사이즈·배리어청산 + 비용모델, **기존 엔진 경유** | **후보3 경제성** | **관문2 경제적엣지** |
 | **5 최종 3층** | 엣지 성격에 맞춘 형태(직접정책최적화 유력) | — | — |
@@ -65,7 +65,7 @@
 **substrate 계약 (Phase 0 확정 → 하류 준수, 규칙 18)** — Phase 1~3 은 아래 인터페이스에 맞춘다:
 - **모델 콜러블** `fit(X,y)`/`predict(X)`/`predict_proba(X)→DataFrame[classes]`·`classes_`, 산출 `FoldPrediction` → **Phase 3** 트리벤치·MLP 가 구현(baseline 이 참조 구현)
 - **라벨** = 클래스 Series(X.index 정렬), **N=label_horizon** 이 splitter purge/꼬리예약 구동 → **Phase 1** 삼중배리어가 이 형태 + N 공급 **(실현: `src/research/labeling` — `BarrierLabels`(labels·first_touch·label_horizon), `LABEL_CLASSES=("up","down","expire")`, N=24 확정)**
-- **피처** = X DataFrame, **정규화는 harness 소유**(폴드 train-only) → **Phase 2** 피처는 자기정규화 불필요, `BaseScaler` 교체(F-6)
+- **피처** = X DataFrame, **정규화는 harness 소유**(폴드 train-only) → **Phase 2** 피처는 자기정규화 불필요, `BaseScaler` 교체(F-6) **(실현: `src/research/features` — `build_features`→X 8열 [vol_change·relative_volume·semi_dev·close_position·er·hurst·kf_slope·kf_uncertainty], 전부 OHLCV만·인과. F-6 해소: `RobustScaler`(median/MAD) 드롭인 제공, z vs robust 선택은 Phase 3)**
 - **regime** = 모델 TF(forward_fill) → Phase 3/4 국면집계(계약 F-8) · **실행** = `run_walk_forward` + `RunLedger`(비교계수 F-1) → Phase 3 R1~R5
 
 ---
@@ -120,6 +120,7 @@
 **요지**: 처음부터 전TF×전조합 폭발 금지. 1h 에서 파이프라인 입증 후 확장.
 
 - **R1 관문1 순진 기준선** = **Prior/Uniform**(Phase 0 확정, `baselines.py`) + 트리벤치(Phase 3). 실행·비교계수는 `run_walk_forward`+`RunLedger`(Phase 0 완성).
+- **R2 전제**: **F-13(hurst 성능) 완화** 권장 — 창 순차탐색이 다수 config×폴드를 돌아 hurst 병목(실 56.9k봉 build 67.7s)이 증폭됨.
 - **R4 전제**: **I-001(1d 오프그리드) remediation 완료 필수** — MTF 가 1d 를 쓰므로 확장 전 해결(fix-before-MTF 게이트).
 
 ---
@@ -149,12 +150,14 @@ CLAUDE.md 규칙 15의 C 등급은 아래 기둥을 약화·모순·재도입하
 | **F-3** | 펀딩 데이터 부재 → 상수 근사가 실비용/엣지 왜곡 가능. Phase4 전 실펀딩 다운로드 옵션. | 계획 §0 | 열림(Phase4 대비) |
 | **F-4** | TF별 종료일 불일치 → MTF 결합 시 겹치는 구간 정렬 필수. | 계획 §0 | 열림(Phase3 MTF 대비) |
 | **F-5** | purge/embargo = 라벨 지평 N에 결합(교차-Phase). splitter가 N을 파라미터로 받아야 하고, walk-forward T·V·S 도 피처/라벨 창에 번인 결합 → 수치는 Phase1~2 후 확정. | 계획 §11 | **해소(Phase1)**: **N=24 확정** → T·V·S = train_min 8760·val_size 2160·N 24·**22폴드**(step=val). embargo 0 유지 |
-| **F-6** | 설계 §7이 **z-score** 지정했으나 robust 대비 **논증 없음**(근거는 train-only 인과성뿐). 기둥6(팻테일) 견주면 robust(median/MAD)이 이상치에 강함. **방식**: Phase2에서 ①분포 진단 먼저(비교예산 무관)→②왜곡 유의시만 예측력 비교(F-1 계수). Step0.3 scaler는 `BaseScaler` 교체 인터페이스(robust 드롭인). | Step0.3 | 열림(Phase2 재검토) |
+| **F-6** | 설계 §7이 **z-score** 지정했으나 robust 대비 **논증 없음**(근거는 train-only 인과성뿐). 기둥6(팻테일) 견주면 robust(median/MAD)이 이상치에 강함. **방식**: Phase2에서 ①분포 진단 먼저(비교예산 무관)→②왜곡 유의시만 예측력 비교(F-1 계수). Step0.3 scaler는 `BaseScaler` 교체 인터페이스(robust 드롭인). | Step0.3 | **해소(Phase2 Step2.4)**: 실 1h 진단 → 팻테일 축(semi_dev·kf_uncertainty 초과첨도~73, kf_uncertainty std/robustScale≈5.0, \|z\|>5가 정규 1만배) z-score 왜곡 유의 → `RobustScaler` 드롭인 제공. **최종 z vs robust 선택은 Phase3 예측력**(F-1). 기본 z-score 유지 |
 | **F-7** | 겹치는 val 창(step<val_size) → per-regime 봉단위 귀속 **이중계수**. 현재 non-overlap 기본이라 미발현(문서화됨). | fresh-eyes | 열림(Phase3 rolling/overlap 시 dedup·가중) |
 | **F-8** | per-regime 귀속 계약: regime_tags는 **모델 TF 정렬** 필수(원시 상위TF 주면 대부분 드롭), n은 "귀속 가능 봉만"(NaN 태그 제외). 문서화됨. | fresh-eyes | 열림(Phase3 커버리지 경고 추가 고려) |
 | **F-9** | `forward_fill_completed`·`ZScoreNormalizer.transform`이 unique/complete 컬럼 무가드 전제. | fresh-eyes | 열림(Phase3 MTF 재사용 시 가드) |
 | **F-10** | `run_walk_forward`가 fold의 y NaN을 드롭 안 함(harness). 삼중배리어 라벨은 동시터치→NaN을 중간에 낼 수 있어(실측 ~0.08%) Phase3 모델 학습 시 NaN 클래스 유입 가능. R0(Phase1)는 분포만·모델 fit 안 함이라 미발현. | Phase1 seam | 열림(**Phase3 harness 통합 전** fold별 NaN 드롭 필요) |
 | **F-11** | 라벨 참조가=close_i·스캔=후속 high/low(D-007)인데 엔진 진입은 현재봉 open(INFRA §4-3). 라벨-실행 미세 불일치 + 봉내 동시터치(현 NaN 제외)는 1m/15m 인트라바로 복원 가능. | Phase1 | 열림(**Phase4 플러그인 배선 시** 정합·인트라바 복원 검토) |
+| **F-12** | KF Q/R/dof 를 Phase3 에서 어떻게 인과적합하나 — (a)폴드 train-only MLE 재적합(정규화 동형) vs (b)창길이처럼 config 하이퍼 coordinate descent. 설계 §7 문구는 (a) 뉘앙스, R2 파이프라인은 (b) 정합. Phase2 는 고정 기본값이라 무관. | Phase2 Step2.3 | 열림(Phase3 R2 착수 전 확정) |
+| **F-13** | hurst(R/S) `rolling.apply(python)` 성능 — 실 56.9k봉 build_features 67.7s(hurst 병목). Phase3 R2 창 순차탐색(다수 config×폴드) 전 벡터화 필요. Phase2 스코프=정합성이라 미해결. | Phase2 Step2.2/2.4 | 열림(Phase3 R2 전 완화) |
 
 ---
 
@@ -174,6 +177,15 @@ CLAUDE.md 규칙 15 트리아지 적용. 등급 L/S/C, 건드린 기둥, 상태.
 | **D-008** | 3-class 인코딩 **{up,down,expire}** (대칭·방향편향 없음 — 실측 |up−down|≤0.01 확증) | L | 5 | 확정 |
 | **D-009** | vol estimator = **공통 콜러블 인터페이스**(ATR·YZ 병렬 탐색축, `VOL_ESTIMATORS`) | S | — | 확정 |
 | **D-010** | 변동성 = **분수(가격대비) 정규화** → 배리어 `close·(1±x·σ)`, x 추정기간 비교가능 | L | 6,7 | 확정 |
+| **D-011** | 단순피처 정의: vol_change=ln(σ_t/σ_{t-lag})·relative_volume=ln(vol_t/MA_past)·close_position flat→0.5·semi_dev=metrics 재사용 | L | 5 | 확정 |
+| **D-012** | Hurst 추정 = R/S(Rescaled Range). DFA/VR 은 Phase3 예측력 요구시 격상 | S | 6 | 확정 |
+| **D-013** | 계열2 모듈명 `trend_strength`(features 안 "regime" 미사용 — 방화벽 개념 혼동 회피) | L | 2 | 확정 |
+| **D-014** | 기본창/기본파라미터 = Phase2 placeholder, Phase3 R2 튜닝(기둥5) | L | 5 | 확정 |
+| **D-015** | F-6 해소 = `RobustScaler`(median/MAD) 드롭인 제공, 선택은 Phase3 예측력 | S | 6 | 확정 |
+| **D-016** | KF 상태공간 = 선형 local linear trend(level+slope), F=[[1,1],[0,1]] (비선형 미도입→EKF/UKF 불요) | S | 4,6 | 확정 |
+| **D-017** | KF robust = Student-t 1-step IRLS 재가중, 단일 KF(IMM 보류). dof→∞ Gaussian 복원 | S | 6 | 확정 |
+| **D-018** | KF Q/R/dof = Phase2 고정 기본값(하이퍼), 튜닝 Phase3 R2(방식=F-12) | S | 2 | 확정 |
+| **D-019** | 피처 = OHLCV→X 순수함수(online 전방필터 폴드무관), 폴드로직 harness 소유(D-002) | S | 2 | 확정 |
 
 ---
 
@@ -189,6 +201,8 @@ CLAUDE.md 규칙 15 트리아지 적용. 등급 L/S/C, 건드린 기둥, 상태.
 | 2026-07-11 | Phase 1 Step 1.1~1.4 구현 | `src/research/labeling/`: volatility(ATR·YZ 인과)·triple_barrier(3-class·first_touch·유한지평 N)·distribution(층1·층3). 인과 3중 규율. tests 신규 41 | (미커밋) |
 | 2026-07-11 | Phase 1 Step 1.5 R0 스윕 | 1h 128 config(성과 안 봄) → 51 통과 → **atr/w96/x3.0/N24 1개 확정**. F-5 해소(T·V·S). up/down 대칭 실측 | (미커밋) |
 | 2026-07-11 | Phase 1 종착 검증 | 통짜 full-stack(규칙17, 확정라벨 게이트통과 박제)+층3↔regime seam(규칙16) + fresh-eyes(규칙14) **CRITICAL/HIGH 0**, LOW#4 NaN가드 수정+회귀. **188 테스트 통과**. 교차Phase전파(규칙18): F-10/11·D-007~010 | (미커밋) |
+| 2026-07-12 | Phase 2 Step 2.1~2.3 구현 | `src/research/features/`: simple(4축)·trend_strength(ER/Hurst R/S)·kalman(robust KF). build_features→X 8열. 행동검증(스파이크/지속·불확실성비상수·dof→∞). 신규 42 test | (미커밋) |
+| 2026-07-12 | Phase 2 Step 2.4 통합·종착 | seam(X↔harness/splitter/normalize)·recursive KF 폴드슬라이싱 인과·정규화후 불확실성 생존. F-6 해소(진단→RobustScaler). fresh-eyes(규칙14) KF **CRITICAL/HIGH 0**. 실 full-stack smoke. F-13 등록. **244 통과** | (미커밋) |
 
 ---
 
@@ -278,6 +292,28 @@ CLAUDE.md 규칙 15 트리아지 적용. 등급 L/S/C, 건드린 기둥, 상태.
 
 ---
 
+## 12-2. Phase 2 결과·검증 요약 (완료)
+
+**구축** (`src/research/features/`, 엔진 수정 0):
+- `simple` — vol_change(ln σ비율)·relative_volume(ln vol/MA_past)·rolling_semi_deviation
+  (metrics 재사용)·close_position. `trend_strength` — efficiency_ratio(∈[0,1])·hurst(R/S).
+  `kalman` — kf_trend(선형 level+slope, Student-t 1-step 재가중, online 전방필터) → slope+불확실성.
+  `build` — build_features → **X 8열** (자기정규화 없음, harness 소유).
+- `normalize.RobustScaler` — median/MAD 드롭인(F-6).
+
+**검증 종류 = 소프트웨어 정합성 + 행동(성과 안 봄)**: 각 축 `assert_causal`(인과) + 정상성/유계
++ **KF 행동 3종**(일시스파이크 robust<gaussian damp·지속이동 추종·불확실성 비상수·dof→∞ Gaussian복원).
+seam 통합(X↔harness/splitter/normalize)·recursive KF 폴드슬라이싱 인과·정규화후 불확실성 생존.
+
+**F-6 진단**(실 1h): 팻테일 축 z-score 왜곡 유의(semi_dev·kf_uncertainty 초과첨도~73,
+kf_uncertainty std/robustScale≈5.0) → RobustScaler 제공. 선택은 Phase3.
+
+**검증**(규칙17): **244 테스트 통과**. 통짜 full-stack(8축 X→harness 두 정규화·splitter·baseline)
++ 실 1h smoke(skip-guard) + fresh-eyes 독립 재스캔(규칙14, KF 수학 독립재구현 대조) **CRITICAL/HIGH 0**.
+교차Phase전파(규칙18): X=8열 계약·D-011~019·F-12/F-13.
+
+---
+
 ## 다음 단계
 
-**Phase 2 착수**: 1층 신호처리 피처 6축(robust KF slope·ER/Hurst·변동성변화·상대거래량·semi-dev·종가위치, 기본창) — substrate 계약(§2)의 **X DataFrame**(정규화는 harness 소유, 자기정규화 불필요) 산출. 라벨(Phase1, N=24)·splitter·정규화·하네스는 완비 → 피처만 꽂으면 Phase3 예측력(관문1) 진입. **F-6**(z-score vs robust 분포 진단) Phase2에서 재검토.
+**Phase 3 착수**: 2층 공유트렁크 멀티태스크 MLP + 트리 벤치. Phase 2 **X=8열**(자기정규화 없음, harness 소유)·Phase 1 **라벨 N=24**·Phase 0 splitter/harness/정규화/baseline 완비 → **모델 콜러블**(fit/predict_proba, baseline 참조구현)만 꽂으면 관문1(통계적 엣지) 진입. **착수 전 해결**: F-10(harness fold y NaN 드롭)·F-13(hurst 벡터화)·F-12(KF Q/R/dof 인과적합 방식). R1 스모크(1h·라벨1개·기본창·기본하이퍼)부터.

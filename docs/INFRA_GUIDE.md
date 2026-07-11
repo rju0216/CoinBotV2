@@ -59,6 +59,10 @@ tests/                       # 백테 골격 회귀 테스트 (픽스처는 test
 >   baselines·harness·ledger)·`causality/`(leakage)·`normalize.py`
 > - **Phase 1**(라벨): `labeling/` — `volatility`(ATR·YZ)·`triple_barrier`(3-class 삼중배리어
 >   라벨·first_touch·N=label_horizon)·`distribution`(층1·층3 분포 게이트). **확정 라벨 = atr/w96/x3.0/N24**.
+> - **Phase 2**(1층 피처): `features/` — `simple`(변동성변화·상대거래량·semi-dev·종가위치)·
+>   `trend_strength`(ER·Hurst R/S)·`kalman`(robust KF slope+불확실성, Student-t 1-step 재가중)·
+>   `build`(`build_features`→**X 8열**). 전부 OHLCV만·인과. 정규화는 harness 소유
+>   (z-score 기본 / `RobustScaler` 드롭인, F-6).
 > - 상세·진행은 `docs/00_Work_Report/QuantModel_MasterPlan.md`, 의존성은 `requirements-ml.txt`.
 
 ## 3. 새 모델(전략) 추가 방법
