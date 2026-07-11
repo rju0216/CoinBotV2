@@ -54,10 +54,12 @@ tests/                       # 백테 골격 회귀 테스트 (픽스처는 test
 ```
 
 > **`src/research/` (모델 개발 오프라인 substrate)**: 위 백테 골격과 **별개**로, 새 퀀트
-> 모델의 라벨·피처·학습·검증 파이프라인이 사는 곳(Phase 0 완성 — 데이터로더·audit·regime·
-> walk-forward splitter·누수 하네스·normalize·metrics·baselines·harness·ledger). 엔진/플러그인과
-> 분리(엔진 수정 0). 상세·진행은 `docs/00_Work_Report/QuantModel_MasterPlan.md`,
-> 의존성은 `requirements-ml.txt`.
+> 모델의 라벨·피처·학습·검증 파이프라인이 사는 곳. 엔진/플러그인과 분리(엔진 수정 0).
+> - **Phase 0**(검증 substrate): `data/`(로더·audit)·`validation/`(regime·splitter·metrics·
+>   baselines·harness·ledger)·`causality/`(leakage)·`normalize.py`
+> - **Phase 1**(라벨): `labeling/` — `volatility`(ATR·YZ)·`triple_barrier`(3-class 삼중배리어
+>   라벨·first_touch·N=label_horizon)·`distribution`(층1·층3 분포 게이트). **확정 라벨 = atr/w96/x3.0/N24**.
+> - 상세·진행은 `docs/00_Work_Report/QuantModel_MasterPlan.md`, 의존성은 `requirements-ml.txt`.
 
 ## 3. 새 모델(전략) 추가 방법
 

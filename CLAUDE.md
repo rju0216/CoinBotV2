@@ -91,9 +91,10 @@
    - `src/accounting/` — fee_model(PnL 공식) + account_tracker(계측)
    - `src/data/historical.py` — 백테 캔들 로더
    - `src/core/` — types + enums
-   - `src/research/` — **모델 개발 오프라인 substrate**(Phase 0 완성): data(로더·audit)·validation
-     (regime·splitter·metrics·baselines·harness·ledger)·causality(leakage)·normalize. 엔진과 분리.
-     상세는 `docs/00_Work_Report/QuantModel_MasterPlan.md`. 의존성은 `requirements-ml.txt`.
+   - `src/research/` — **모델 개발 오프라인 substrate**: data(로더·audit)·validation
+     (regime·splitter·metrics·baselines·harness·ledger)·causality(leakage)·normalize (Phase 0) +
+     **labeling**(volatility·triple_barrier·distribution — 삼중배리어 라벨, **확정 atr/w96/x3.0/N24**, Phase 1).
+     엔진과 분리. 상세는 `docs/00_Work_Report/QuantModel_MasterPlan.md`. 의존성은 `requirements-ml.txt`.
 6. **캔들 캐시 (data/, git untracked)**: `data/candles/*.csv`.
 
 ---

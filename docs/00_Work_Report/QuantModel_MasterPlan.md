@@ -50,7 +50,7 @@
 | Phase | 산출물 | 검증 종류 | 관문 |
 |---|---|---|---|
 | **0 검증 인프라** | walk-forward 하네스, **국면 태깅(규칙기반)**, 인과성/누수 테스트 스위트, z-score train-only, 지표계산(균형정확도·MCC·로그손실·semi-dev), 결과 정합성 검증(CLAUDE 10) | 소프트웨어 정합성 | — |
-| **1 라벨** | 삼중배리어 생성기(ATR·YZ, x·N, 인과) + **라벨분포 검증**(층1 학습가능성·층3 국면일관성) | **후보1 라벨분포**(성과 안 봄) | 분포 게이트 |
+| **1 라벨** ✅ | 삼중배리어 생성기(ATR·YZ, x·N, 인과) + **라벨분포 검증**(층1 학습가능성·층3 국면일관성) — **완료: N=24·atr/w96/x3.0 확정** | **후보1 라벨분포**(성과 안 봄) | 분포 게이트 **통과** |
 | **2 1층 피처** | 6축 피처(robust KF·ER/Hurst·변동성변화·상대거래량·semi-dev·종가위치), **기본창** | 소프트웨어 정합성(인과·정상성) | — |
 | **3 2층 MLP** | 공유트렁크 멀티태스크 MLP + 트리 벤치. 여기서 **창 순차탐색·λ·정규화·TF/MTF 확장** | **후보2 예측력** | **관문1 통계적엣지** |
 | **4 멍청한 3층** | 방향·θ진입·고정사이즈·배리어청산 + 비용모델, **기존 엔진 경유** | **후보3 경제성** | **관문2 경제적엣지** |
@@ -64,7 +64,7 @@
 
 **substrate 계약 (Phase 0 확정 → 하류 준수, 규칙 18)** — Phase 1~3 은 아래 인터페이스에 맞춘다:
 - **모델 콜러블** `fit(X,y)`/`predict(X)`/`predict_proba(X)→DataFrame[classes]`·`classes_`, 산출 `FoldPrediction` → **Phase 3** 트리벤치·MLP 가 구현(baseline 이 참조 구현)
-- **라벨** = 클래스 Series(X.index 정렬), **N=label_horizon** 이 splitter purge/꼬리예약 구동 → **Phase 1** 삼중배리어가 이 형태 + N 공급
+- **라벨** = 클래스 Series(X.index 정렬), **N=label_horizon** 이 splitter purge/꼬리예약 구동 → **Phase 1** 삼중배리어가 이 형태 + N 공급 **(실현: `src/research/labeling` — `BarrierLabels`(labels·first_touch·label_horizon), `LABEL_CLASSES=("up","down","expire")`, N=24 확정)**
 - **피처** = X DataFrame, **정규화는 harness 소유**(폴드 train-only) → **Phase 2** 피처는 자기정규화 불필요, `BaseScaler` 교체(F-6)
 - **regime** = 모델 TF(forward_fill) → Phase 3/4 국면집계(계약 F-8) · **실행** = `run_walk_forward` + `RunLedger`(비교계수 F-1) → Phase 3 R1~R5
 
@@ -110,7 +110,7 @@
 
 | 순번 | 시점 | 무엇을 | 규모 | 성격 |
 |---|---|---|---|---|
-| **R0 라벨분포** | Phase1 직후 | {ATR/YZ}×{창}×{x}×{N}×{TF}, **분포만** 평가 | 수십~수백 계산(학습 0) | 분포선별→TF당 라벨 1~2개. 부풀림 무관 |
+| **R0 라벨분포** ✅ | Phase1 직후 | {ATR/YZ}×{창}×{x}×{N}, **분포만** 평가 | **128 config 실행** | **완료**: 51/128 통과 → **atr/w96/x3.0/N24 1개** 선택(§12-1) |
 | **R1 스모크** | Phase3 착수 | **1h·라벨1개·기본창·기본하이퍼**, 트리벤치+작은MLP | walk-forward 몇 판 | **첫 성과 비교=최소.** 첫 엣지 냄새 |
 | **R2 창 순차탐색** | R1 통과 후 | 1h 고정, 피처 창 coordinate descent | **~30~60 판(곱→합)** | 예측력 선별. **계수·사전등록**(F-1) |
 | **R3 하이퍼 소그리드** | R2 후 | 1h, λ(낮게 2~3)×정규화(2~3)×깊이너비(2~3) | 소수 | 좁게 시작 |
@@ -148,11 +148,13 @@ CLAUDE.md 규칙 15의 C 등급은 아래 기둥을 약화·모순·재도입하
 | **F-2** | 선별 2단 중첩(라벨=분포/TF=예측력). 다른 TF는 "4개 중 최고 뽑기(부풀림)" 아니라 **확증·강건성**으로. | 계획 §5 | 열림(Phase3 대비) |
 | **F-3** | 펀딩 데이터 부재 → 상수 근사가 실비용/엣지 왜곡 가능. Phase4 전 실펀딩 다운로드 옵션. | 계획 §0 | 열림(Phase4 대비) |
 | **F-4** | TF별 종료일 불일치 → MTF 결합 시 겹치는 구간 정렬 필수. | 계획 §0 | 열림(Phase3 MTF 대비) |
-| **F-5** | purge/embargo = 라벨 지평 N에 결합(교차-Phase). splitter가 N을 파라미터로 받아야 하고, walk-forward T·V·S 도 피처/라벨 창에 번인 결합 → 수치는 Phase1~2 후 확정. | 계획 §11 | **Phase0 파라미터화 완료**, N·T·V·S Phase1~2 확정 대기 |
+| **F-5** | purge/embargo = 라벨 지평 N에 결합(교차-Phase). splitter가 N을 파라미터로 받아야 하고, walk-forward T·V·S 도 피처/라벨 창에 번인 결합 → 수치는 Phase1~2 후 확정. | 계획 §11 | **해소(Phase1)**: **N=24 확정** → T·V·S = train_min 8760·val_size 2160·N 24·**22폴드**(step=val). embargo 0 유지 |
 | **F-6** | 설계 §7이 **z-score** 지정했으나 robust 대비 **논증 없음**(근거는 train-only 인과성뿐). 기둥6(팻테일) 견주면 robust(median/MAD)이 이상치에 강함. **방식**: Phase2에서 ①분포 진단 먼저(비교예산 무관)→②왜곡 유의시만 예측력 비교(F-1 계수). Step0.3 scaler는 `BaseScaler` 교체 인터페이스(robust 드롭인). | Step0.3 | 열림(Phase2 재검토) |
 | **F-7** | 겹치는 val 창(step<val_size) → per-regime 봉단위 귀속 **이중계수**. 현재 non-overlap 기본이라 미발현(문서화됨). | fresh-eyes | 열림(Phase3 rolling/overlap 시 dedup·가중) |
 | **F-8** | per-regime 귀속 계약: regime_tags는 **모델 TF 정렬** 필수(원시 상위TF 주면 대부분 드롭), n은 "귀속 가능 봉만"(NaN 태그 제외). 문서화됨. | fresh-eyes | 열림(Phase3 커버리지 경고 추가 고려) |
 | **F-9** | `forward_fill_completed`·`ZScoreNormalizer.transform`이 unique/complete 컬럼 무가드 전제. | fresh-eyes | 열림(Phase3 MTF 재사용 시 가드) |
+| **F-10** | `run_walk_forward`가 fold의 y NaN을 드롭 안 함(harness). 삼중배리어 라벨은 동시터치→NaN을 중간에 낼 수 있어(실측 ~0.08%) Phase3 모델 학습 시 NaN 클래스 유입 가능. R0(Phase1)는 분포만·모델 fit 안 함이라 미발현. | Phase1 seam | 열림(**Phase3 harness 통합 전** fold별 NaN 드롭 필요) |
+| **F-11** | 라벨 참조가=close_i·스캔=후속 high/low(D-007)인데 엔진 진입은 현재봉 open(INFRA §4-3). 라벨-실행 미세 불일치 + 봉내 동시터치(현 NaN 제외)는 1m/15m 인트라바로 복원 가능. | Phase1 | 열림(**Phase4 플러그인 배선 시** 정합·인트라바 복원 검토) |
 
 ---
 
@@ -168,6 +170,10 @@ CLAUDE.md 규칙 15 트리아지 적용. 등급 L/S/C, 건드린 기둥, 상태.
 | **D-004** | 결정 관리 = **3단 트리아지(L/S/C) + D-NNN 로그 + 고정 5문** 채택 → CLAUDE.md 규칙 15 | S | — | 확정 |
 | **D-005** | walk-forward 창 = **expanding 주 + 최소 학습창 하한 + rolling 3차 확인**(rolling은 선별 아닌 최근성 확인용) | C | 8 | 확정(수치 Phase1~2 후) |
 | **D-006** | 국면 평가 = **A(연속 walk-forward) 하드 선별 게이트 / B(방식1 국면격리) 등급형 강건성 진단**(관문2 국면일관성 구체화, **사전등록 규칙**, 붕괴·부호반전 시에만 킬) / **봉단위 국면 귀속**(경계 흐림 무해) | C | 8 | 확정(임계 Phase3~4) |
+| **D-007** | 라벨 참조가 = **close_i, 배리어 스캔 = 후속 봉 high/low** (엔진 open 진입과 미세 불일치는 F-11) | S | 2 | 확정 |
+| **D-008** | 3-class 인코딩 **{up,down,expire}** (대칭·방향편향 없음 — 실측 |up−down|≤0.01 확증) | L | 5 | 확정 |
+| **D-009** | vol estimator = **공통 콜러블 인터페이스**(ATR·YZ 병렬 탐색축, `VOL_ESTIMATORS`) | S | — | 확정 |
+| **D-010** | 변동성 = **분수(가격대비) 정규화** → 배리어 `close·(1±x·σ)`, x 추정기간 비교가능 | L | 6,7 | 확정 |
 
 ---
 
@@ -179,7 +185,10 @@ CLAUDE.md 규칙 15 트리아지 적용. 등급 L/S/C, 건드린 기둥, 상태.
 | 2026-07-11 | Phase 0 상세계획 | 컴포넌트 A~G·Step 0.1~0.5 확정. 창 방식(D-005)·국면 평가 구조(D-006)·F-5 등록. §11 신설 | (미커밋) |
 | 2026-07-11 | Phase 0 Step 0.1~0.5 구현 | `src/research/` substrate 전 컴포넌트 + `tests/research/` — 데이터로더·audit(오프그리드)·regime·splitter(purge)·누수하네스·normalize·metrics·baselines·harness·ledger. I-001 발견 | (미커밋) |
 | 2026-07-11 | 통짜 통합 검증 | full-stack 커밋 테스트 + fresh-eyes 독립 재스캔 → **실결함 F1/F2/F6 수정+회귀**, 저심각도 F-7~9 문서화·등록. 핵심 뼈대 독립 검증 clean. **143 테스트 통과** | (미커밋) |
-| 2026-07-11 | Phase 0 종착: 보고서 통합 | 교차-Phase 전파(규칙18) 반영: substrate 계약·D-003 확정·§11-4 상태·F-6~9·I-001·R4 게이트·discoverability 포인터 | (미커밋) |
+| 2026-07-11 | Phase 0 종착: 보고서 통합 | 교차-Phase 전파(규칙18) 반영: substrate 계약·D-003 확정·§11-4 상태·F-6~9·I-001·R4 게이트·discoverability 포인터 | 794f31f |
+| 2026-07-11 | Phase 1 Step 1.1~1.4 구현 | `src/research/labeling/`: volatility(ATR·YZ 인과)·triple_barrier(3-class·first_touch·유한지평 N)·distribution(층1·층3). 인과 3중 규율. tests 신규 41 | (미커밋) |
+| 2026-07-11 | Phase 1 Step 1.5 R0 스윕 | 1h 128 config(성과 안 봄) → 51 통과 → **atr/w96/x3.0/N24 1개 확정**. F-5 해소(T·V·S). up/down 대칭 실측 | (미커밋) |
+| 2026-07-11 | Phase 1 종착 검증 | 통짜 full-stack(규칙17, 확정라벨 게이트통과 박제)+층3↔regime seam(규칙16) + fresh-eyes(규칙14) **CRITICAL/HIGH 0**, LOW#4 NaN가드 수정+회귀. **188 테스트 통과**. 교차Phase전파(규칙18): F-10/11·D-007~010 | (미커밋) |
 
 ---
 
@@ -230,7 +239,7 @@ CLAUDE.md 규칙 15 트리아지 적용. 등급 L/S/C, 건드린 기둥, 상태.
 ### 11-4. 설계상 연기(데이터가 정함, 기둥5) — Phase 0 진행 후 상태
 
 - 국면 태깅 수치 → **확정**(Step 0.1): ma100/slope20/db0.02/vol30/pct0.5/mindur14
-- walk-forward T·V·S → **구체 잠정값 확정**: train_min=8760(1y)·val_size=2160(3mo)·step=val. N(라벨지평)은 **Phase 1 라벨 확정 후**(F-5)
+- walk-forward T·V·S → **확정(Phase1)**: train_min=8760(1y)·val_size=2160(3mo)·**N=24**·step=val → 1h 22폴드. (F-5 해소)
 - purge/embargo = N → **완료**(splitter가 `label_horizon` 단일파라미터로 purge+꼬리예약 구동, embargo 기본 0)
 
 ### 11-5. 모듈 배치 (naming 고지)
@@ -251,6 +260,24 @@ CLAUDE.md 규칙 15 트리아지 적용. 등급 L/S/C, 건드린 기둥, 상태.
 
 ---
 
+## 12-1. Phase 1 결과·검증 요약 (완료)
+
+**구축** (`src/research/labeling/`, 엔진 수정 0):
+- `volatility` — `atr`·`yang_zhang`(둘 다 **분수 정규화**, 공통 콜러블 `VOL_ESTIMATORS`) + `assert_causal` 회귀(배리어 폭 = 진입시점 정보만)
+- `triple_barrier` — `LabelParams`/`BarrierLabels`/`barrier_levels`/`compute_triple_barrier`. 3-class {up,down,expire}(X.index 정렬, 워밍업·꼬리 N·**동시터치 NaN 제외**), `first_touch`(도달시간 원시, expire→N), `label_horizon` 단일출처(N)
+- `distribution` — 층1(방향/만료 <0.87 극단회피 + 각 학습창 소수클래스≥100) + 층3(regime ff 슬라이스 극단회피 일관성). **성과 안 봄**(접근 B). 층2 폐기(미구현)
+
+**인과 3중 규율**: ① 배리어 레벨 `assert_causal`(미래교란 불변) ② 라벨 **유한 지평 = N**(t+N 이후 교란해도 labels[:t] 불변) ③ splitter seam(라벨 N이 purge/꼬리예약 구동, train 라벨창 val 무침범).
+
+**R0 결과** (1h 56,894봉, 128 config, splitter 22폴드):
+- **51/128 통과**(층1∧층3). N밴드: N=12(28)·24(19)·48(4)·96(0). N=96 전멸=방향 극단(장기간→거의 도달).
+- up/down 대칭 견고(|up−down|≈0) — 방향편향 없음 확증(기둥5). ATR>YZ 만료 여유(YZ 타이트).
+- **확정 라벨 = atr/w96/x3.0/N24**: 해소율 0.997, 분포 **up 0.31/down 0.31/expire 0.38**, min_minor 2329. (게이트는 통과분 우열 미판정 — 선택은 경제적 1일 지평 + ATR 실행정합 + 3-class 균형의 **원칙** 근거. 예측력은 Phase3.)
+
+**검증** (규칙 17): **188 테스트 통과**. 통짜 full-stack(확정 라벨 층1∧층3 통과 박제 + 층3↔실 regime ff seam) + fresh-eyes 독립 재스캔(규칙14) — **CRITICAL/HIGH 0**, YZ=Yang-Zhang(2000) 정합·누수 하네스 non-vacuous(주입 확인), LOW#4(미래 OHLC NaN 편향)→NaN 가드 수정+회귀.
+
+---
+
 ## 다음 단계
 
-**Phase 1 착수**: 삼중배리어 라벨 생성기(ATR·YZ, x·N, 인과) + **R0 라벨분포 검증**(층1 학습가능성·층3 국면일관성, 성과 안 봄). 라벨 N 확정 → splitter T·V·S 확정(F-5). substrate 계약(§2)에 맞춰 라벨 = 클래스 Series 산출.
+**Phase 2 착수**: 1층 신호처리 피처 6축(robust KF slope·ER/Hurst·변동성변화·상대거래량·semi-dev·종가위치, 기본창) — substrate 계약(§2)의 **X DataFrame**(정규화는 harness 소유, 자기정규화 불필요) 산출. 라벨(Phase1, N=24)·splitter·정규화·하네스는 완비 → 피처만 꽂으면 Phase3 예측력(관문1) 진입. **F-6**(z-score vs robust 분포 진단) Phase2에서 재검토.
