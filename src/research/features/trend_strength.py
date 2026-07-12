@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from numpy.lib.stride_tricks import sliding_window_view
 
 
 def efficiency_ratio(df: pd.DataFrame, window: int) -> pd.Series:
@@ -82,9 +83,71 @@ def hurst(df: pd.DataFrame, window: int, min_n: int = 8) -> pd.Series:
     로그수익률 ``ln(close_t/close_{t-1})`` 의 window 창에 R/S 회귀. >0.5 추세추종,
     0.5 무작위, <0.5 평균회귀. 창은 t 에서 끝남(인과). window 는 하위창 분할이 가능하도록
     ``min_n`` 의 배수 이상 권장(부족 시 NaN).
+
+    **벡터화(F-13)**: ``sliding_window_view`` 로 전 창을 (M, window) 배열화해 sub-window별
+    R/S 를 전 창 동시 계산 → ``rolling.apply``(창당 Python 호출) 대비 대폭 가속. 결과는
+    스칼라 ``_rs_hurst`` 와 **수치 동치**(회귀 검증). NaN 포함 창(첫 창의 ret[0]=NaN) 및 퇴화
+    창(어떤 sub-window 길이의 유효 청크 0)은 ``_rs_hurst`` 로 폴백해 정확 매칭.
     """
     if window <= 0:
         raise ValueError("window 는 양수여야 함")
-    ret = np.log(df["close"] / df["close"].shift(1))
-    h = ret.rolling(window).apply(lambda w: _rs_hurst(w, min_n), raw=True)
-    return h.rename("hurst")
+    close = df["close"]
+    ret = np.log(close / close.shift(1)).to_numpy()
+    n_total = len(ret)
+    out = np.full(n_total, np.nan)
+    if n_total < window:
+        return pd.Series(out, index=df.index, name="hurst")
+
+    # sub-window 길이 (window → 절반 → … ≥ min_n) — _rs_hurst 와 동일 규칙.
+    # len(ns)<2 ⟺ window<2·min_n (첫 절반이 min_n 미만) → _rs_hurst 의 하한과 동형.
+    ns: list[int] = []
+    n = window
+    while n >= min_n:
+        ns.append(n)
+        n //= 2
+    ns = sorted(set(ns))
+    if len(ns) < 2:
+        return pd.Series(out, index=df.index, name="hurst")
+
+    W = sliding_window_view(ret, window)      # (M, window), 행 i → 출력 index i+window-1
+    m = W.shape[0]
+    nan_rows = np.isnan(W).any(axis=1)          # NaN 포함 창(주로 ret[0] 포함 첫 창)
+
+    log_n = np.log(np.asarray(ns, dtype=float))
+    log_rs = np.full((m, len(ns)), np.nan)
+    for ni, nlen in enumerate(ns):
+        k = window // nlen                       # 비겹침 청크 수
+        sum_rs = np.zeros(m)
+        cnt = np.zeros(m)
+        for j in range(k):
+            chunk = W[:, j * nlen:(j + 1) * nlen]
+            z = np.cumsum(chunk - chunk.mean(axis=1, keepdims=True), axis=1)
+            r = z.max(axis=1) - z.min(axis=1)
+            s = chunk.std(axis=1)                # 모표준편차(ddof=0), _rs_hurst 동일
+            valid = (s > 0.0) & (r > 0.0)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                rs = np.where(valid, r / np.where(s > 0.0, s, 1.0), 0.0)
+            sum_rs += rs
+            cnt += valid
+        with np.errstate(divide="ignore", invalid="ignore"):
+            mean_rs = np.where(cnt > 0, sum_rs / np.where(cnt > 0, cnt, 1.0), np.nan)
+            log_rs[:, ni] = np.log(mean_rs)
+
+    # 정상 경로: 모든 sub-window 유효(대부분) → 벡터화 최소제곱 기울기.
+    finite = np.isfinite(log_rs)
+    simple = (finite.sum(axis=1) == len(ns)) & (~nan_rows)
+    xm = log_n - log_n.mean()
+    denom = float((xm ** 2).sum())
+    with np.errstate(invalid="ignore"):
+        ym = log_rs - log_rs.mean(axis=1, keepdims=True)
+        slope = (ym * xm).sum(axis=1) / denom    # polyfit(deg=1) 기울기와 동일
+    res = np.where(simple, np.clip(slope, 0.0, 1.0), np.nan)
+
+    # NaN 포함 창은 NaN 유지 — pandas rolling(min_periods=window)이 유효관측<window 를
+    # 미계산 NaN 처리하는 것과 매칭(폴백 금지). 폴백은 **유한하나 퇴화한** 행만(드묾).
+    degenerate = (~simple) & (~nan_rows)
+    for i in np.where(degenerate)[0]:
+        res[i] = _rs_hurst(W[i], min_n)
+
+    out[window - 1:] = res
+    return pd.Series(out, index=df.index, name="hurst")

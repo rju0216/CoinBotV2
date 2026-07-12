@@ -128,3 +128,40 @@ def test_hurst_short_window_nan():
     df = make_ohlcv(n=100)
     # window 10 < 2*min_n(16) → 각 창 NaN
     assert ts.hurst(df, 10).dropna().empty
+
+
+# ---- F-13: 벡터화 ↔ 스칼라 수치 동치 (회귀 박제) ----
+
+def _hurst_scalar_ref(df: pd.DataFrame, window: int, min_n: int = 8) -> pd.Series:
+    """구 참조 구현(rolling.apply + _rs_hurst). 벡터화가 이와 정확 일치해야 함."""
+    ret = np.log(df["close"] / df["close"].shift(1))
+    return ret.rolling(window).apply(
+        lambda w: ts._rs_hurst(w, min_n), raw=True
+    ).rename("hurst")
+
+
+@pytest.mark.parametrize("window", [48, 96, 128])
+def test_hurst_vectorized_matches_scalar(window):
+    # 벡터화 hurst 가 구 스칼라 rolling.apply 와 수치 동치(NaN 포함)
+    df = _ar1_close(1500, 0.3, seed=3)
+    ref = _hurst_scalar_ref(df, window).to_numpy()
+    vec = ts.hurst(df, window).to_numpy()
+    assert np.allclose(ref, vec, equal_nan=True, rtol=1e-9, atol=1e-12)
+
+
+def test_hurst_first_window_nan_like_pandas():
+    # 첫 창은 ret[0]=NaN 포함 → 유효관측<window → pandas min_periods 로 NaN (미계산).
+    df = make_ohlcv(n=400)
+    h = ts.hurst(df, 128)
+    assert np.isnan(h.iloc[127])          # 첫 창(ret[0] 포함) NaN
+    assert not np.isnan(h.iloc[128])      # 다음 창부터 값
+
+
+def test_hurst_degenerate_chunk_fallback_matches():
+    # 일부 구간 수익률 상수(std=0 청크) → 퇴화 폴백 경로가 스칼라와 일치
+    close = np.r_[np.full(60, 100.0), 100 * np.exp(np.cumsum(
+        np.random.default_rng(2).normal(0, 0.01, 340)))]
+    df = _df_from_close(close)
+    ref = _hurst_scalar_ref(df, 48).to_numpy()
+    vec = ts.hurst(df, 48).to_numpy()
+    assert np.allclose(ref, vec, equal_nan=True, rtol=1e-9, atol=1e-12)
