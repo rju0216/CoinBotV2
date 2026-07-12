@@ -96,8 +96,9 @@
      (regime·splitter·metrics·baselines·harness·ledger)·causality(leakage)·normalize (Phase 0) +
      **labeling**(volatility·triple_barrier·distribution — 삼중배리어 라벨, **확정 atr/w96/x3.0/N24**, Phase 1) +
      **features**(simple·trend_strength·kalman·build — 1층 6축 → **X 8열**, robust KF·ER/Hurst, Phase 2) +
-     **models**(base `ProbaModel`·tree_bench lightgbm·mlp torch, 2층)·**experiments**(r1_smoke 관문1 러너,
-     Phase 3 R1 — **관문1 PASS**). 엔진과 분리. 상세는 `docs/00_Work_Report/QuantModel_MasterPlan.md`. 의존성은 `requirements-ml.txt`.
+     **models**(base `ProbaModel`·tree_bench lightgbm·mlp torch, 2층)·**experiments**(r1_smoke 관문1 러너 —
+     **관문1 PASS**; r2_window_search 창탐색 — **기본창 유지**, Phase 3 R1·R2). 엔진과 분리.
+     상세는 `docs/00_Work_Report/QuantModel_MasterPlan.md`. 의존성은 `requirements-ml.txt`.
 6. **캔들 캐시 (data/, git untracked)**: `data/candles/*.csv`.
 
 ---

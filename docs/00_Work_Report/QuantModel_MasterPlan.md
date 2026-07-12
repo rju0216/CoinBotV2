@@ -5,7 +5,7 @@
 > **참조만** 한다(중복 서술 금지). 이 문서는 개발 계획·학습 스케줄·리뷰어
 > 플래그·결정 로그(D-NNN)·잠재 이슈(I-NNN)·진행 기록표를 담는다.
 >
-> **현재 시점**: **Phase 0~2 완료** + **Phase 3 R1 스모크 완료**(2층 트리·MLP 구현, **관문1 PASS** — mlp STRONG, §12-3). 다음 = **R2 창 순차탐색**(F-13·F-12 해소 후).
+> **현재 시점**: **Phase 0~2 + Phase 3 R1·R2 완료**(2층 트리·MLP, **관문1 PASS**; R2 창탐색 = 무material gain → **기본창 유지**, §12-3/§12-4). 다음 = **R3**(멀티태스크·정규화·구조·KF, 1h).
 
 ---
 
@@ -52,7 +52,7 @@
 | **0 검증 인프라** | walk-forward 하네스, **국면 태깅(규칙기반)**, 인과성/누수 테스트 스위트, z-score train-only, 지표계산(균형정확도·MCC·로그손실·semi-dev), 결과 정합성 검증(CLAUDE 10) | 소프트웨어 정합성 | — |
 | **1 라벨** ✅ | 삼중배리어 생성기(ATR·YZ, x·N, 인과) + **라벨분포 검증**(층1 학습가능성·층3 국면일관성) — **완료: N=24·atr/w96/x3.0 확정** | **후보1 라벨분포**(성과 안 봄) | 분포 게이트 **통과** |
 | **2 1층 피처** ✅ | 6축 피처(robust KF·ER/Hurst·변동성변화·상대거래량·semi-dev·종가위치), **기본창** — **완료: build_features→X 8열, 인과·행동 검증** | 소프트웨어 정합성(인과·정상성) | — |
-| **3 2층 MLP** 🔶 | 공유트렁크 멀티태스크 MLP + 트리 벤치. 여기서 **창 순차탐색·λ·정규화·TF/MTF 확장** — **R1 완료(관문1 PASS, 단일태스크 스모크)**, R2~R4 남음 | **후보2 예측력** | **관문1 통계적엣지** |
+| **3 2층 MLP** 🔶 | 공유트렁크 멀티태스크 MLP + 트리 벤치. 여기서 **창 순차탐색·λ·정규화·TF/MTF 확장** — **R1·R2 완료(관문1 PASS; R2 창탐색 무gain→기본창 유지)**, R3~R4 남음 | **후보2 예측력** | **관문1 통계적엣지** |
 | **4 멍청한 3층** | 방향·θ진입·고정사이즈·배리어청산 + 비용모델, **기존 엔진 경유** | **후보3 경제성** | **관문2 경제적엣지** |
 | **5 최종 3층** | 엣지 성격에 맞춘 형태(직접정책최적화 유력) | — | — |
 
@@ -112,7 +112,7 @@
 |---|---|---|---|---|
 | **R0 라벨분포** ✅ | Phase1 직후 | {ATR/YZ}×{창}×{x}×{N}, **분포만** 평가 | **128 config 실행** | **완료**: 51/128 통과 → **atr/w96/x3.0/N24 1개** 선택(§12-1) |
 | **R1 스모크** ✅ | Phase3 착수 | 1h·라벨1개·기본창·기본하이퍼, 트리벤치+작은MLP(5seed) | **8판(비교 2)** | **완료: 관문1 PASS**(mlp STRONG — ll<Prior·MCC0.13·BA0.41·일관성0.91). §12-3 |
-| **R2 창 순차탐색** | R1 통과 후 | 1h 고정, 피처 창 coordinate descent | **~30~60 판(곱→합)** | 예측력 선별. **계수·사전등록**(F-1) |
+| **R2 창 순차탐색** ✅ | R1 통과 후 | 1h 고정, 피처 창 coordinate descent(MLP 5seed 선택 + 트리 참고) | **19판(예산 60)** | **완료: 창 튜닝 무material gain**(Δll −0.0034 노이즈수준) → **기본창 유지**. §12-4 |
 | **R3 하이퍼 소그리드** | R2 후 | 1h, λ(낮게 2~3)×정규화(2~3)×깊이너비(2~3) | 소수 | 좁게 시작 |
 | **R4 TF/MTF 확장** | **1h 관문1 통과 후에만** | 4h·1d·15m 단독 + MTF 1~2조합 | TF당 튜닝 파이프 재실행, 제한 | 확증·강건성. **best-of-4 복권 금지**(F-2) |
 | **R5 경제성** | Phase4 | 멍청3층, 엔진 경유, θ 안정성 스윕 + 국면분리 | 생존자만 | 관문2 |
@@ -120,7 +120,7 @@
 **요지**: 처음부터 전TF×전조합 폭발 금지. 1h 에서 파이프라인 입증 후 확장.
 
 - **R1 관문1 순진 기준선** = **Prior/Uniform**(Phase 0 확정, `baselines.py`) + 트리벤치(Phase 3). 실행·비교계수는 `run_walk_forward`+`RunLedger`(Phase 0 완성).
-- **R2 전제**: **F-13(hurst 성능) 완화** 권장 — 창 순차탐색이 다수 config×폴드를 돌아 hurst 병목(실 56.9k봉 build 67.7s)이 증폭됨.
+- **R2 전제**: **F-13 해소**(R2.0a) — hurst 벡터화(75배, build 67.7s→9.2s). **F-12 해소**(D-025, 방식=config 하이퍼).
 - **R4 전제**: **I-001 remediation 완료** — R1 이 regime 에 1d 를 써 **선행 해소**(`resample_ohlcv` 1h→1d 파생, §12-3/I-001). MTF 도 이 파생 헬퍼 재사용.
 
 ---
@@ -145,7 +145,7 @@ CLAUDE.md 규칙 15의 C 등급은 아래 기둥을 약화·모순·재도입하
 
 | ID | 내용 | 발생 | 상태 |
 |---|---|---|---|
-| **F-1** | R2 창 순차탐색 = 홀드아웃 없는 검증셋 성과 선별 → **검증셋 과적합 위험**. 방어: 비교개수 사전등록 + 선택 창을 국면분리에서 재확인. | 계획 §5 | 열림(Phase3 대비) |
+| **F-1** | R2 창 순차탐색 = 홀드아웃 없는 검증셋 성과 선별 → **검증셋 과적합 위험**. 방어: 비교개수 사전등록 + 선택 창을 국면분리에서 재확인. | 계획 §5 | **R2 적용**(예산 사전등록 19/60 + 국면분리 재확인 5/6국면·14/22폴드 우세; 개선 미미→기본창 유지로 노이즈 미채택). 열림(R3/R4 동일 규율 지속) |
 | **F-2** | 선별 2단 중첩(라벨=분포/TF=예측력). 다른 TF는 "4개 중 최고 뽑기(부풀림)" 아니라 **확증·강건성**으로. | 계획 §5 | 열림(Phase3 대비) |
 | **F-3** | 펀딩 데이터 부재 → 상수 근사가 실비용/엣지 왜곡 가능. Phase4 전 실펀딩 다운로드 옵션. | 계획 §0 | 열림(Phase4 대비) |
 | **F-4** | TF별 종료일 불일치 → MTF 결합 시 겹치는 구간 정렬 필수. | 계획 §0 | 열림(Phase3 MTF 대비) |
@@ -156,8 +156,8 @@ CLAUDE.md 규칙 15의 C 등급은 아래 기둥을 약화·모순·재도입하
 | **F-9** | `forward_fill_completed`·`ZScoreNormalizer.transform`이 unique/complete 컬럼 무가드 전제. | fresh-eyes | 열림(Phase3 MTF 재사용 시 가드) |
 | **F-10** | `run_walk_forward`가 fold의 y NaN을 드롭 안 함(harness). 삼중배리어 라벨은 동시터치→NaN을 중간에 낼 수 있어(실측 ~0.08%) Phase3 모델 학습 시 NaN 클래스 유입 가능. R0(Phase1)는 분포만·모델 fit 안 함이라 미발현. | Phase1 seam | **해소(Phase3 R1 Step3.1)**: `run_walk_forward` 가 **정규화 前** train·val 각각 X∪y NaN 드롭 + 커버리지 로깅(`WalkForwardResult.coverage`). val NaN 채점 제외. 회귀 5. 실 R1 val 드롭 50봉 |
 | **F-11** | 라벨 참조가=close_i·스캔=후속 high/low(D-007)인데 엔진 진입은 현재봉 open(INFRA §4-3). 라벨-실행 미세 불일치 + 봉내 동시터치(현 NaN 제외)는 1m/15m 인트라바로 복원 가능. | Phase1 | 열림(**Phase4 플러그인 배선 시** 정합·인트라바 복원 검토) |
-| **F-12** | KF Q/R/dof 를 Phase3 에서 어떻게 인과적합하나 — (a)폴드 train-only MLE 재적합(정규화 동형) vs (b)창길이처럼 config 하이퍼 coordinate descent. 설계 §7 문구는 (a) 뉘앙스, R2 파이프라인은 (b) 정합. Phase2 는 고정 기본값이라 무관. | Phase2 Step2.3 | 열림(Phase3 R2 착수 전 확정) |
-| **F-13** | hurst(R/S) `rolling.apply(python)` 성능 — 실 56.9k봉 build_features 67.7s(hurst 병목). Phase3 R2 창 순차탐색(다수 config×폴드) 전 벡터화 필요. Phase2 스코프=정합성이라 미해결. | Phase2 Step2.2/2.4 | 열림(Phase3 R2 전 완화) |
+| **F-12** | KF Q/R/dof 를 Phase3 에서 어떻게 인과적합하나 — (a)폴드 train-only MLE 재적합(정규화 동형) vs (b)창길이처럼 config 하이퍼 coordinate descent. 설계 §7 문구는 (a) 뉘앙스, R2 파이프라인은 (b) 정합. Phase2 는 고정 기본값이라 무관. | Phase2 Step2.3 | **해소(R2, D-025)**: **(b) config 하이퍼** 채택 — D-019(피처=폴드무관 순수함수·전역X, harness 슬라이스) **보존**. (a)는 폴드내 KF 재계산이라 D-019 붕괴. KF 실 튜닝은 **R3**. |
+| **F-13** | hurst(R/S) `rolling.apply(python)` 성능 — 실 56.9k봉 build_features 67.7s(hurst 병목). Phase3 R2 창 순차탐색(다수 config×폴드) 전 벡터화 필요. Phase2 스코프=정합성이라 미해결. | Phase2 Step2.2/2.4 | **해소(R2.0a)**: `sliding_window_view` 벡터화(sub-window R/S 전창 동시). 스칼라와 **수치 동치**(실 1h 56.9k 완전 일치·NaN포함), hurst 48.2s→0.64s(75x), build 67.7s→9.2s. NaN 창=pandas min_periods 매칭, 퇴화행만 폴백. 회귀 박제. |
 
 ---
 
@@ -184,12 +184,15 @@ CLAUDE.md 규칙 15 트리아지 적용. 등급 L/S/C, 건드린 기둥, 상태.
 | **D-015** | F-6 해소 = `RobustScaler`(median/MAD) 드롭인 제공, 선택은 Phase3 예측력 | S | 6 | 확정 |
 | **D-016** | KF 상태공간 = 선형 local linear trend(level+slope), F=[[1,1],[0,1]] (비선형 미도입→EKF/UKF 불요) | S | 4,6 | 확정 |
 | **D-017** | KF robust = Student-t 1-step IRLS 재가중, 단일 KF(IMM 보류). dof→∞ Gaussian 복원 | S | 6 | 확정 |
-| **D-018** | KF Q/R/dof = Phase2 고정 기본값(하이퍼), 튜닝 Phase3 R2(방식=F-12) | S | 2 | 확정 |
+| **D-018** | KF Q/R/dof = Phase2 고정 기본값(하이퍼), 튜닝 Phase3 **R3**(방식=config 하이퍼 D-025; R2는 창만) | S | 2 | 확정 |
 | **D-019** | 피처 = OHLCV→X 순수함수(online 전방필터 폴드무관), 폴드로직 harness 소유(D-002) | S | 2 | 확정 |
 | **D-020** | MLP 프레임워크 = torch (2층 신경망) | L | — | 확정 |
 | **D-021** | 모델 모듈 = `src/research/models/`(`ProbaModel` 계약 base). baseline 과 동일 duck-typed 계약이나 학습모델 족 분리(argmax 소량 중복, Phase0 미변경) | S | 2,4 | 확정 |
 | **D-022** | 트리 벤치 = lightgbm 단일(xgboost 보류) | L | — | 확정 |
 | **D-023** | 트리·MLP 기본 하이퍼 = R1 placeholder(MLP 트렁크2×32·dropout0.1·Adam·시간순 early stop / tree 200·leaves31), 튜닝 R2/R3 | L | 5 | 확정 |
+| **D-024** | R2 창탐색 방식 = **MLP 5seed 직접 선택**(목적함수 log_loss) + **트리 참고**(is_comparison=False, "창=정보량 모델무관" 가설 순위상관 검증). 트리 프록시 탐색 기각(사용자). config 캐시·예산 사전등록 | S | 3,8 | 확정 |
+| **D-025** | F-12 해소 = KF Q/R/dof **config 하이퍼**(coordinate descent 축)로, 폴드 MLE 재적합(D-019 붕괴) 기각. KF 튜닝은 R3 | S | 2,4 | 확정 |
+| **D-026** | R2 결론 = 창 튜닝 무material gain(Δll −0.0034 노이즈수준, 국면 5/6·폴드 14/22 약우세) → **기본창 유지**(선택창 미채택). 1h 엣지 약함은 튜닝부족 아닌 실제 신호강도(기둥5 장식금지) | S | 5,3 | 확정 |
 
 ---
 
@@ -210,7 +213,11 @@ CLAUDE.md 규칙 15 트리아지 적용. 등급 L/S/C, 건드린 기둥, 상태.
 | 2026-07-12 | Phase 3 R1 Step 3.1~3.2 | `harness` F-10 NaN 위생(정규화前 드롭·커버리지) + `src/research/models/`(ProbaModel·TreeBench(lightgbm)·SmallMLP(torch, 단일태스크·다중seed)). 신규 harness+5·models+13 | (미커밋) |
 | 2026-07-12 | I-001 remediation(3.3 선행) | 손상 실범위 = 04-06~05-19 흩어진 14일 값손상(audit 미검출 클래스, 트래커보다 넓음). `resample_ohlcv`(1h→1d 완전버킷) 헬퍼로 regime 1d 파생. 파생 audit green·clean날 공식 일치. 신규 loader+4 | (미커밋) |
 | 2026-07-12 | I-002 해소 | `multiclass_log_loss` 비정렬 labels proba 오정렬(sklearn 정렬가정 위배, Phase0 잠복→R1 발각). labels 정렬 수정+회귀(비정렬 known-answer). blast radius=R1 ledger만 | (미커밋) |
-| 2026-07-12 | Phase 3 R1 Step 3.3 종착 | `experiments/r1_smoke`(사전등록 판정규칙 박제) 8판 실행 → **관문1 PASS**(mlp STRONG). 인과 self-check green·판정규칙 테스트+8. 규칙19 추가. **275 통과** | (미커밋) |
+| 2026-07-12 | Phase 3 R1 Step 3.3 종착 | `experiments/r1_smoke`(사전등록 판정규칙 박제) 8판 실행 → **관문1 PASS**(mlp STRONG). 인과 self-check green·판정규칙 테스트+8. 규칙19 추가. **275 통과** | 2b34548 |
+| 2026-07-12 | Phase 3 R2.0a~R2.1 | F-13 hurst `sliding_window_view` 벡터화(수치동치·75x, build 67.7s→9.2s) + `experiments/r2_window_search` coordinate descent 러너(MLP선택+트리참고·config캐시·예산등록). 신규 trend_strength+5·r2+2 | 52a60ac |
+| 2026-07-12 | R2.2 스모크 | 기본창 1config 실데이터 → R1 MLP 정확 재현(ll 1.0673·mcc0.128·ba0.413) → 파이프라인 검증. 1config=8.9분 | 52a60ac |
+| 2026-07-13 | R2.3 창탐색 실행 | 19판(예산60). 선택창(er96·rv96·lag12) Δll −0.0034. 트리vsMLP Spearman 평균 0.39(hurst −0.5 불일치). D-024/025 확정 | (미커밋) |
+| 2026-07-13 | R2.4 국면분리 재확인·종착 | 선택창 국면 5/6·폴드 14/22 우세이나 미미(down\|low 악화)·노이즈수준 → **기본창 유지**(D-026). 문서 종합 갱신·§12-4 | (미커밋) |
 
 ---
 
@@ -354,6 +361,25 @@ kf_uncertainty std/robustScale≈5.0) → RobustScaler 제공. 선택은 Phase3.
 
 ---
 
+## 12-4. Phase 3 R2 결과·검증 요약 (완료)
+
+**성격**: R1 엣지가 **창(시간척도) 튜닝으로 강해지나** 규율 평가. 1h·확정라벨·단일태스크 고정. KF·정규화·멀티태스크는 R3(D-025).
+
+**구축**(52a60ac): `features.hurst` 벡터화(F-13, R2.0a) + `experiments/r2_window_search`(coordinate descent 러너).
+
+**방식**(D-024): 초기값=R1 기본창. 피처별 창 스윕(er·hurst·vol_change window/lag/estimator·relative_volume·semi_dev) 1사이클. **각 config = MLP 5seed seed-중앙값 log_loss 최소로 선택**, **트리 참고**(관찰용). config 캐시·**예산 사전등록 19/60판**(F-1). Prior/Uniform config 무관 1회.
+
+**결과**:
+- **창 튜닝 개선 미미**: 기본창 MLP ll 1.0673 → 선택창(er96·rv96·lag12) 1.0640, **Δll −0.0034**. MCC 0.128→0.132·BA 0.413→0.414. 개선폭이 **seed 노이즈(±0.002)와 비슷**.
+- **R2.4 국면분리 재확인**(F-1): 선택창이 **6국면 중 5·22폴드 중 14 우세**(골고루 약우세, 한 곳 몰림 아님)이나 **미미**(폴드 diff 중앙값 −0.0004, down|low 국면 오히려 +0.0032 악화, 2국면 무승부).
+- **트리 vs MLP 순위상관**(가설검증): Spearman 평균 **0.39**(er 0.90·semi_dev 0.80 일치 / **hurst −0.50·vol_change.window −0.20 불일치**). 창 효과가 노이즈 수준이라 부분적 해석이나, **트리 프록시 부실 확인** → MLP 직접 탐색이 옳았음(R3/R4도 트리 프록시 미정당).
+
+**결론**(D-026): 창 튜닝은 약엣지를 **강화하지 못함**. 1h 엣지가 작은 건 튜닝부족이 아닌 **실제 신호 강도** → **기본창 유지**(노이즈 미채택, 기둥5). **282 테스트 통과**.
+
+**부산물**: F-13 해소(hurst 75x) · F-12 해소(D-025) · 트리 프록시 신뢰 불가 확인.
+
+---
+
 ## 다음 단계
 
-**Phase 3 R2 착수**: 창 순차탐색(coordinate descent) — "config 튜닝이 엣지를 강화하나"를 **규율 갖춰**(비교개수 사전등록 + 선택 창 국면분리 재확인, F-1) 정식 평가. **착수 전 해결**: **F-13**(hurst 벡터화 — 다수 config×폴드 병목)·**F-12**(KF Q/R/dof 인과적합 방식 (a)MLE재적합/(b)config하이퍼 확정). R1 스모크 완료(관문1 PASS, mlp STRONG — §12-3). R2 통과 후 R3(하이퍼)·R4(TF/MTF, best-of-N 금지 F-2).
+**Phase 3 R3 착수**: 1h **모델 하이퍼** 튜닝 — **멀티태스크 헤드**(도달시간 co-training, 기둥7 실현 — A-1 스테이징 회수)·**정규화**(z vs robust 최종선택, F-6)·깊이/너비·**KF Q/R/dof**(config 하이퍼, D-025). 비교개수 사전등록·국면분리 재확인(F-1) 지속. **기대는 신중히** — R2 증거상 창은 엣지를 못 키웠으므로, R3(새 지렛대)가 움직일지 미지수. **R3 후 R4**(TF/MTF 확장 — 4h/1d/15m 단독+MTF, 관문1 통과·I-001 해소 충족, best-of-N 금지 F-2). R4 MTF는 `resample_ohlcv` 재사용.
