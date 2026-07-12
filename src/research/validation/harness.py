@@ -31,6 +31,23 @@ class WalkForwardResult:
     fold_preds: list[FoldPrediction]
     config: dict
     n_folds: int
+    coverage: pd.DataFrame  # 폴드별 표본·NaN 드롭 계수 (F-10 커버리지, "조용한 축소" 방지)
+
+
+def _drop_nan_rows(
+    x: pd.DataFrame, y: pd.Series
+) -> tuple[pd.DataFrame, pd.Series, int]:
+    """X 임의 열 NaN 또는 y NaN 인 행을 **함께** 제거 (F-10).
+
+    실모델(MLP/트리)은 NaN 입력에 fit 불가하고, y NaN(삼중배리어 동시터치·워밍업·꼬리)은
+    정답이 없어 채점 불가다. baseline 은 X 를 무시하고 y NaN 을 조용히 흘려 이 문제가
+    미발현이었다(F-10). 드롭은 폴드 슬라이스 직후·**정규화 fit 이전**에 수행해 scaler 가
+    항상 NaN-free 입력을 받게 한다(scaler 의 complete-컬럼 전제 보장, F-9 대비).
+    반환 = (드롭된 x, 드롭된 y, 드롭 행수). x·y 인덱스 정합 유지.
+    """
+    valid = x.notna().all(axis=1) & y.notna()
+    n_dropped = int((~valid).sum())
+    return x.loc[valid], y.loc[valid], n_dropped
 
 
 def _set_seed(seed: int | None) -> None:
@@ -62,9 +79,21 @@ def run_walk_forward(
         labels = sorted(pd.Series(y).dropna().unique())
 
     fold_preds: list[FoldPrediction] = []
+    cover_rows: list[dict] = []
     for fold in splitter.split(X.index):
-        x_tr, x_val = X.loc[fold.train_index], X.loc[fold.val_index]
-        y_tr = y.loc[fold.train_index]
+        x_tr, y_tr = X.loc[fold.train_index], y.loc[fold.train_index]
+        x_val, y_val = X.loc[fold.val_index], y.loc[fold.val_index]
+
+        # F-10: NaN 위생 — 정규화·fit 이전에 train·val 각각 드롭 (통계·계약 보호)
+        x_tr, y_tr, n_tr_drop = _drop_nan_rows(x_tr, y_tr)
+        x_val, y_val, n_val_drop = _drop_nan_rows(x_val, y_val)
+        cover_rows.append({
+            "fold_id": fold.fold_id,
+            "train_n": len(y_tr), "train_dropped": n_tr_drop,
+            "val_n": len(y_val), "val_dropped": n_val_drop,
+        })
+        if len(y_tr) == 0 or len(y_val) == 0:
+            continue  # 폴드가 NaN 으로 비면 스킵 (커버리지엔 기록됨)
 
         if normalizer_factory is not None:
             norm = normalizer_factory().fit(x_tr)   # train-only fit (인과성)
@@ -73,13 +102,14 @@ def run_walk_forward(
         model = model_factory()
         model.fit(x_tr, y_tr)
         proba = model.predict_proba(x_val)
-        pred = pd.Series(model.predict(x_val), index=fold.val_index)
+        pred = pd.Series(model.predict(x_val), index=x_val.index)
         fold_preds.append(
-            FoldPrediction(fold.fold_id, y.loc[fold.val_index], pred, proba)
+            FoldPrediction(fold.fold_id, y_val, pred, proba)
         )
 
+    coverage = pd.DataFrame(cover_rows).set_index("fold_id") if cover_rows else pd.DataFrame()
     if not fold_preds:
-        raise ValueError("생성된 폴드가 없음 (splitter/데이터 확인)")
+        raise ValueError("생성된 폴드가 없음 (splitter/데이터/NaN 확인)")
 
     report = aggregate_metrics(fold_preds, regime_tags=regime_tags, labels=labels)
     config = {
@@ -90,5 +120,6 @@ def run_walk_forward(
         "val_size": splitter.val_size,
         "label_horizon": splitter.label_horizon,
         "normalized": normalizer_factory is not None,
+        "val_dropped_total": int(coverage["val_dropped"].sum()) if len(coverage) else 0,
     }
-    return WalkForwardResult(report, fold_preds, config, len(fold_preds))
+    return WalkForwardResult(report, fold_preds, config, len(fold_preds), coverage)

@@ -43,12 +43,17 @@ def mcc(y_true, y_pred) -> float:
 
 
 def multiclass_log_loss(y_true, y_proba: pd.DataFrame, labels) -> float:
-    """y_proba: index=표본, columns=클래스. labels 순서로 정렬해 sklearn log_loss.
+    """y_proba: index=표본, columns=클래스. 정렬된 클래스 순서로 sklearn log_loss.
 
     train 폴드에 없던 클래스는 proba 열이 없으므로 0 으로 채운다(그 클래스에 0 확률 →
     해당 클래스가 실제로 나오면 큰 손실, 정상). 나머지 열 합이 1 이라 정합.
+
+    **정렬 필수(버그 방지)**: sklearn(≥1.x) ``log_loss`` 는 proba 컬럼이 **사전순 정렬된
+    클래스 순서**라고 가정한다. labels 를 비정렬(예: ('up','down','expire'))로 넘기고 proba 를
+    그 순서로 맞추면 확률-클래스가 **오정렬**돼 log_loss 가 틀린다(오답 확률 참조). labels 를
+    정렬하고 proba 를 그 순서로 맞춰 넘긴다. log_loss 값은 클래스 순서 불변이라 무해.
     """
-    labels = list(labels)
+    labels = sorted(labels)
     proba = y_proba.reindex(columns=labels, fill_value=0.0).to_numpy()
     return float(log_loss(np.asarray(y_true), proba, labels=labels))
 

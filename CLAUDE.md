@@ -64,6 +64,7 @@
 16. **Seam 통합 검증 (단위·회귀와 별개)**: 전체 회귀(pytest)는 신규가 기존을 **깨지 않음(비파괴)**만 볼 뿐, 컴포넌트가 **올바르게 맞물리는지**는 증명하지 않는다. 따라서 새 컴포넌트가 추가되면 **직전까지의 컴포넌트와의 seam**을 공유 계약대로 통합 테스트한다 — 데이터 계약·인덱스 정렬·tz·온그리드·NaN 전파·완성봉 인과 규율 등, 단위 테스트가 격리 때문에 못 보는 접합부. 가능하면 계약을 **구성으로 강제**한다(예: `load_audited` 같은 표준 진입점으로 "감사 통과 데이터만 하류로"). 전체 end-to-end 시연은 계획상 지정된 통합 Step(예: Phase 0 Step 0.5)에서 일괄 수행한다. 실데이터 의존 통합 테스트는 데이터 부재 시 **skip 가드**. (문서↔코드 대조(13)·fresh-eyes(14)와 함께 적용.)
 17. **Phase 종착 전 통짜(whole-Phase) 통합 검증**: 큰 단위(Phase·마일스톤) 종착 직전, 개별 Step 검증·pairwise seam(16)·전체 회귀에 더해 **전 컴포넌트를 한 번에 관통하는 "커밋된" full-stack 통합 테스트**를 둔다 — 일회용 시연이 아니라 **회귀로 박제**해, 컴포넌트가 함께 돌 때만 드러나는 상호작용(예: 정규화+국면+purge가 한 폴드에서 얽힘)을 잡는다. 여기에 규칙 14의 **fresh-eyes 독립 재스캔**(별도 에이전트로 해당 모듈을 적대적으로 점검)을 함께 수행하고, findings를 **triage**(실이슈 = 수정+회귀테스트 / 저심각도 = 문서화·플래그 등록)한 뒤 종착한다. 목적: Phase 산출물이 하류의 토대가 되므로, 접합부 상호작용 결함과 자기확증 편향을 종착 전에 차단.
 18. **Phase 종착 전 교차-Phase 전파(스노우볼) 점검**: Phase·마일스톤 종착 시 **보고서 갱신(2) 직전**, 그 Phase가 만든 산출을 **하류 관점에서** 훑어 다른 Phase·전체 계획·타 문서로 **전파되어야 할 것**을 반영한다 — ① 하류가 준수해야 할 **인터페이스·계약**(모델 콜러블·데이터 형태·정규화 소유권 등)을 새로 확정했나 → 관련 Phase 서술에 명시, ② **결정·가정이 해소/변경**돼 다른 Phase 서술이 낡았나 → D-log 상태·잠정값 확정 반영, ③ 발견한 **이슈·플래그가 후속 Phase를 겨냥**하나 → 전제·게이트로 명시(예: I-NNN을 특정 Phase 전 해결), ④ **stale 참조**(끝난 Step을 가리키는 "다음 단계" 등)·**discoverability 공백**(신규 모듈이 세션시작 체크리스트·INFRA_GUIDE에 없음)이 있나. 규칙 15(결정 시점 실시간 트리아지)·17(코드 정합)과 층위가 다르다 — 18은 **Phase 경계의 계획·문서 정합**.
+19. **결함 발견 시 오염 산출물 무효화·재생성**: 이미 실행돼 **persist·커밋된 결과**(metric·라벨·피처·ledger·리포트·문서 수치 등)를 만든 코드에서 결함을 발견하면, 코드를 고치는 것으로 끝내지 말고 ① 결함이 오염시킨 산출물의 **blast radius를 전수 판정**(어떤 저장물·문서 수치가 결함 코드 경로로 계산됐나 — 사용처 grep 스윕), ② 오염 산출물을 **미래 비교 baseline·하류 입력으로 재사용하기 전에 무효화(삭제)하고 재생성**, ③ 커밋된 문서·보고서에 낡은(틀린) 수치가 남지 않았는지 대조(규칙 13), ④ 결함을 **I-NNN 로 등록**(규칙 3). 성과·비교 수치는 특히 **라운드 간 baseline으로 누적**되므로 오염된 채 persist되면 하류 전체가 오염된다. 방어적으로, "성과 채점은 최종 확인만"(기둥3 선별↔확인 분리)을 지켜 확정 직전까지 성과 metric persist를 미루면 blast radius가 좁아진다.
 
 ---
 
@@ -94,8 +95,9 @@
    - `src/research/` — **모델 개발 오프라인 substrate**: data(로더·audit)·validation
      (regime·splitter·metrics·baselines·harness·ledger)·causality(leakage)·normalize (Phase 0) +
      **labeling**(volatility·triple_barrier·distribution — 삼중배리어 라벨, **확정 atr/w96/x3.0/N24**, Phase 1) +
-     **features**(simple·trend_strength·kalman·build — 1층 6축 → **X 8열**, robust KF·ER/Hurst, Phase 2).
-     엔진과 분리. 상세는 `docs/00_Work_Report/QuantModel_MasterPlan.md`. 의존성은 `requirements-ml.txt`.
+     **features**(simple·trend_strength·kalman·build — 1층 6축 → **X 8열**, robust KF·ER/Hurst, Phase 2) +
+     **models**(base `ProbaModel`·tree_bench lightgbm·mlp torch, 2층)·**experiments**(r1_smoke 관문1 러너,
+     Phase 3 R1 — **관문1 PASS**). 엔진과 분리. 상세는 `docs/00_Work_Report/QuantModel_MasterPlan.md`. 의존성은 `requirements-ml.txt`.
 6. **캔들 캐시 (data/, git untracked)**: `data/candles/*.csv`.
 
 ---

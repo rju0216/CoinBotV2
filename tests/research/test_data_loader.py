@@ -6,7 +6,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.research.data.loader import OHLCV_COLUMNS, csv_filename, load_ohlcv
+from src.research.data.audit import audit_continuity
+from src.research.data.loader import (
+    OHLCV_COLUMNS,
+    csv_filename,
+    load_ohlcv,
+    resample_ohlcv,
+)
 
 
 def _write_csv(path, index, **cols):
@@ -58,3 +64,55 @@ def test_load_ohlcv_missing_column(tmp_path):
     df.to_csv(path)
     with pytest.raises(ValueError):
         load_ohlcv("BTC/USDT:USDT", "1h", candle_dir=str(tmp_path))
+
+
+# ---- I-001 remediation: 1h→1d 재표본 헬퍼 ----
+
+def _hourly(n_days, start="2020-01-01", seed=0):
+    rng = np.random.default_rng(seed)
+    n = n_days * 24
+    idx = pd.date_range(start, periods=n, freq="1h", tz="UTC")
+    close = 100 * np.exp(np.cumsum(rng.normal(0, 0.005, n)))
+    open_ = close * (1 + rng.normal(0, 0.002, n))
+    hi = np.maximum(open_, close) * (1 + np.abs(rng.normal(0, 0.004, n)))  # high ≥ o,c
+    lo = np.minimum(open_, close) * (1 - np.abs(rng.normal(0, 0.004, n)))  # low ≤ o,c
+    return pd.DataFrame({
+        "open": open_, "high": hi, "low": lo, "close": close,
+        "volume": np.abs(rng.normal(1000, 200, n)),
+    }, index=idx)
+
+
+def test_resample_1h_to_1d_ohlcv_agg():
+    h = _hourly(3)
+    d = resample_ohlcv(h, "1h", "1d")
+    assert len(d) == 3
+    # 첫 일봉 = 그날 24봉 집계
+    day0 = h.iloc[:24]
+    assert d["open"].iloc[0] == pytest.approx(day0["open"].iloc[0])
+    assert d["high"].iloc[0] == pytest.approx(day0["high"].max())
+    assert d["low"].iloc[0] == pytest.approx(day0["low"].min())
+    assert d["close"].iloc[0] == pytest.approx(day0["close"].iloc[-1])
+    assert d["volume"].iloc[0] == pytest.approx(day0["volume"].sum())
+    assert (d.index.hour == 0).all()          # 00:00 UTC 그리드
+
+
+def test_resample_drops_partial_buckets():
+    # 마지막 부분일(12봉)은 완전 버킷 아님 → 드롭
+    h = _hourly(2).iloc[: 24 + 12]            # 2일 + 반나절
+    d = resample_ohlcv(h, "1h", "1d")
+    assert len(d) == 1                        # 완전한 1일만
+
+
+def test_resample_derived_1d_passes_audit():
+    # 파생 1d 는 감사 통과(off-grid/부분봉 corruption 없음) — I-001 핵심
+    h = _hourly(40)
+    d = resample_ohlcv(h, "1h", "1d")
+    assert not audit_continuity(d, "1d").has_corruption
+
+
+def test_resample_rejects_non_multiple_or_downscale():
+    h = _hourly(2)
+    with pytest.raises(ValueError):
+        resample_ohlcv(h, "1d", "1h")         # 하향 불가
+    with pytest.raises(ValueError):
+        resample_ohlcv(h, "1h", "7m")         # 미지원 TF

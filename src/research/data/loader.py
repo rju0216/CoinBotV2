@@ -88,3 +88,39 @@ def load_audited(
         )
     report.raise_if_corrupt()
     return df
+
+
+# 재표본용 pandas offset alias (TF_MS 키 ↔ freq 문자열 단일 매핑).
+_TF_FREQ = {"1m": "1min", "5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h", "1d": "1D"}
+
+
+def resample_ohlcv(
+    df: pd.DataFrame, source_timeframe: str, target_timeframe: str
+) -> pd.DataFrame:
+    """하위 TF OHLCV → 상위 TF 재표본 (**완전한 버킷만**). UTC 그리드 정렬.
+
+    **왜 (I-001)**: 캐시 상위 TF(1d) 는 off-grid·부분봉 corruption 을 가질 수 있고 그중
+    on-grid 값-손상은 ``audit`` 이 검출하지 못한다. 반면 하위 TF(1h) 는 감사-clean 이므로
+    거기서 상위를 파생하면 상위도 clean 이 된다(clean 구간에서 공식 상위봉과 정확 일치 검증).
+    "감사 통과만 하류로" 를 파생으로 강제하는 표준 경로 (regime·MTF 공용).
+
+    - agg: open=first / high=max / low=min / close=last / volume=sum.
+    - **완전한 버킷만**: 상위/하위 봉수 비(예: 1h→1d=24)를 채운 버킷만 남기고 부분(시작/끝
+      토막·결측 포함 버킷)은 드롭 — 부분 상위봉의 왜곡을 원천 차단.
+    """
+    for tf in (source_timeframe, target_timeframe):
+        if tf not in TF_MS or tf not in _TF_FREQ:
+            raise ValueError(f"미지원 timeframe: {tf} (지원: {list(TF_MS)})")
+    src_ms, tgt_ms = TF_MS[source_timeframe], TF_MS[target_timeframe]
+    if tgt_ms <= src_ms or tgt_ms % src_ms != 0:
+        raise ValueError(
+            f"target({target_timeframe})은 source({source_timeframe})의 정수배 상위여야 함"
+        )
+    expected = tgt_ms // src_ms  # 완전한 버킷당 하위봉 수
+    g = df.resample(_TF_FREQ[target_timeframe], label="left", closed="left")
+    out = g.agg({"open": "first", "high": "max", "low": "min",
+                 "close": "last", "volume": "sum"})
+    full = g.size() == expected            # 완전 버킷만 (부분·결측 드롭)
+    out = out[full]
+    out.index.name = df.index.name or "timestamp"
+    return out

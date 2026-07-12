@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from src.research.validation.metrics import (
     FoldPrediction,
@@ -34,6 +35,22 @@ def test_log_loss_perfect_vs_uniform():
     assert multiclass_log_loss(y, perfect, ["A", "B"]) < 1e-6
     uniform = pd.DataFrame({"A": [0.5, 0.5], "B": [0.5, 0.5]})
     assert multiclass_log_loss(y, uniform, ["A", "B"]) == np.log(2)
+
+
+def test_log_loss_nonsorted_labels_alignment():
+    # 회귀: 비정렬 labels(예: LABEL_CLASSES=('up','down','expire'))에서 proba-클래스
+    # 오정렬 버그 방지. sklearn 은 정렬 순서를 가정 → 정렬 안 하면 오답확률 참조.
+    labels = ["up", "down", "expire"]            # 비정렬(정렬시 down,expire,up)
+    y_true = ["up", "up", "down"]
+    # 각 행이 정답 클래스에 0.8 → 정답 log_loss = -ln(0.8)
+    proba = pd.DataFrame(
+        [[0.8, 0.1, 0.1], [0.8, 0.1, 0.1], [0.1, 0.8, 0.1]], columns=labels
+    )
+    assert multiclass_log_loss(y_true, proba, labels) == pytest.approx(-np.log(0.8))
+    # 순열 불변: labels 순서를 바꿔도(같은 proba 매핑) 동일 값
+    perm = ["expire", "up", "down"]
+    proba_perm = proba[perm]
+    assert multiclass_log_loss(y_true, proba_perm, perm) == pytest.approx(-np.log(0.8))
 
 
 def test_pinball_basic():

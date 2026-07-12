@@ -5,7 +5,7 @@
 > **참조만** 한다(중복 서술 금지). 이 문서는 개발 계획·학습 스케줄·리뷰어
 > 플래그·결정 로그(D-NNN)·잠재 이슈(I-NNN)·진행 기록표를 담는다.
 >
-> **현재 시점**: **Phase 0~2 완료**(검증 substrate·삼중배리어 라벨 N=24·1층 피처 X 8열). 다음 = **Phase 3**(2층 MLP+트리, 관문1).
+> **현재 시점**: **Phase 0~2 완료** + **Phase 3 R1 스모크 완료**(2층 트리·MLP 구현, **관문1 PASS** — mlp STRONG, §12-3). 다음 = **R2 창 순차탐색**(F-13·F-12 해소 후).
 
 ---
 
@@ -52,7 +52,7 @@
 | **0 검증 인프라** | walk-forward 하네스, **국면 태깅(규칙기반)**, 인과성/누수 테스트 스위트, z-score train-only, 지표계산(균형정확도·MCC·로그손실·semi-dev), 결과 정합성 검증(CLAUDE 10) | 소프트웨어 정합성 | — |
 | **1 라벨** ✅ | 삼중배리어 생성기(ATR·YZ, x·N, 인과) + **라벨분포 검증**(층1 학습가능성·층3 국면일관성) — **완료: N=24·atr/w96/x3.0 확정** | **후보1 라벨분포**(성과 안 봄) | 분포 게이트 **통과** |
 | **2 1층 피처** ✅ | 6축 피처(robust KF·ER/Hurst·변동성변화·상대거래량·semi-dev·종가위치), **기본창** — **완료: build_features→X 8열, 인과·행동 검증** | 소프트웨어 정합성(인과·정상성) | — |
-| **3 2층 MLP** | 공유트렁크 멀티태스크 MLP + 트리 벤치. 여기서 **창 순차탐색·λ·정규화·TF/MTF 확장** | **후보2 예측력** | **관문1 통계적엣지** |
+| **3 2층 MLP** 🔶 | 공유트렁크 멀티태스크 MLP + 트리 벤치. 여기서 **창 순차탐색·λ·정규화·TF/MTF 확장** — **R1 완료(관문1 PASS, 단일태스크 스모크)**, R2~R4 남음 | **후보2 예측력** | **관문1 통계적엣지** |
 | **4 멍청한 3층** | 방향·θ진입·고정사이즈·배리어청산 + 비용모델, **기존 엔진 경유** | **후보3 경제성** | **관문2 경제적엣지** |
 | **5 최종 3층** | 엣지 성격에 맞춘 형태(직접정책최적화 유력) | — | — |
 
@@ -63,7 +63,7 @@
   미커밋 Step 메모리 임시보존(CLAUDE 9), 비자명 변경 후 fresh-eyes(CLAUDE 14).
 
 **substrate 계약 (Phase 0 확정 → 하류 준수, 규칙 18)** — Phase 1~3 은 아래 인터페이스에 맞춘다:
-- **모델 콜러블** `fit(X,y)`/`predict(X)`/`predict_proba(X)→DataFrame[classes]`·`classes_`, 산출 `FoldPrediction` → **Phase 3** 트리벤치·MLP 가 구현(baseline 이 참조 구현)
+- **모델 콜러블** `fit(X,y)`/`predict(X)`/`predict_proba(X)→DataFrame[classes]`·`classes_`, 산출 `FoldPrediction` → **Phase 3** 트리벤치·MLP 가 구현(baseline 이 참조 구현) **(실현: `src/research/models` — `ProbaModel` 계약, `TreeBench`(lightgbm)·`SmallMLP`(torch, 트렁크/헤드 분리, R1 단일태스크). D-020~023)**
 - **라벨** = 클래스 Series(X.index 정렬), **N=label_horizon** 이 splitter purge/꼬리예약 구동 → **Phase 1** 삼중배리어가 이 형태 + N 공급 **(실현: `src/research/labeling` — `BarrierLabels`(labels·first_touch·label_horizon), `LABEL_CLASSES=("up","down","expire")`, N=24 확정)**
 - **피처** = X DataFrame, **정규화는 harness 소유**(폴드 train-only) → **Phase 2** 피처는 자기정규화 불필요, `BaseScaler` 교체(F-6) **(실현: `src/research/features` — `build_features`→X 8열 [vol_change·relative_volume·semi_dev·close_position·er·hurst·kf_slope·kf_uncertainty], 전부 OHLCV만·인과. F-6 해소: `RobustScaler`(median/MAD) 드롭인 제공, z vs robust 선택은 Phase 3)**
 - **regime** = 모델 TF(forward_fill) → Phase 3/4 국면집계(계약 F-8) · **실행** = `run_walk_forward` + `RunLedger`(비교계수 F-1) → Phase 3 R1~R5
@@ -111,7 +111,7 @@
 | 순번 | 시점 | 무엇을 | 규모 | 성격 |
 |---|---|---|---|---|
 | **R0 라벨분포** ✅ | Phase1 직후 | {ATR/YZ}×{창}×{x}×{N}, **분포만** 평가 | **128 config 실행** | **완료**: 51/128 통과 → **atr/w96/x3.0/N24 1개** 선택(§12-1) |
-| **R1 스모크** | Phase3 착수 | **1h·라벨1개·기본창·기본하이퍼**, 트리벤치+작은MLP | walk-forward 몇 판 | **첫 성과 비교=최소.** 첫 엣지 냄새 |
+| **R1 스모크** ✅ | Phase3 착수 | 1h·라벨1개·기본창·기본하이퍼, 트리벤치+작은MLP(5seed) | **8판(비교 2)** | **완료: 관문1 PASS**(mlp STRONG — ll<Prior·MCC0.13·BA0.41·일관성0.91). §12-3 |
 | **R2 창 순차탐색** | R1 통과 후 | 1h 고정, 피처 창 coordinate descent | **~30~60 판(곱→합)** | 예측력 선별. **계수·사전등록**(F-1) |
 | **R3 하이퍼 소그리드** | R2 후 | 1h, λ(낮게 2~3)×정규화(2~3)×깊이너비(2~3) | 소수 | 좁게 시작 |
 | **R4 TF/MTF 확장** | **1h 관문1 통과 후에만** | 4h·1d·15m 단독 + MTF 1~2조합 | TF당 튜닝 파이프 재실행, 제한 | 확증·강건성. **best-of-4 복권 금지**(F-2) |
@@ -121,7 +121,7 @@
 
 - **R1 관문1 순진 기준선** = **Prior/Uniform**(Phase 0 확정, `baselines.py`) + 트리벤치(Phase 3). 실행·비교계수는 `run_walk_forward`+`RunLedger`(Phase 0 완성).
 - **R2 전제**: **F-13(hurst 성능) 완화** 권장 — 창 순차탐색이 다수 config×폴드를 돌아 hurst 병목(실 56.9k봉 build 67.7s)이 증폭됨.
-- **R4 전제**: **I-001(1d 오프그리드) remediation 완료 필수** — MTF 가 1d 를 쓰므로 확장 전 해결(fix-before-MTF 게이트).
+- **R4 전제**: **I-001 remediation 완료** — R1 이 regime 에 1d 를 써 **선행 해소**(`resample_ohlcv` 1h→1d 파생, §12-3/I-001). MTF 도 이 파생 헬퍼 재사용.
 
 ---
 
@@ -154,7 +154,7 @@ CLAUDE.md 규칙 15의 C 등급은 아래 기둥을 약화·모순·재도입하
 | **F-7** | 겹치는 val 창(step<val_size) → per-regime 봉단위 귀속 **이중계수**. 현재 non-overlap 기본이라 미발현(문서화됨). | fresh-eyes | 열림(Phase3 rolling/overlap 시 dedup·가중) |
 | **F-8** | per-regime 귀속 계약: regime_tags는 **모델 TF 정렬** 필수(원시 상위TF 주면 대부분 드롭), n은 "귀속 가능 봉만"(NaN 태그 제외). 문서화됨. | fresh-eyes | 열림(Phase3 커버리지 경고 추가 고려) |
 | **F-9** | `forward_fill_completed`·`ZScoreNormalizer.transform`이 unique/complete 컬럼 무가드 전제. | fresh-eyes | 열림(Phase3 MTF 재사용 시 가드) |
-| **F-10** | `run_walk_forward`가 fold의 y NaN을 드롭 안 함(harness). 삼중배리어 라벨은 동시터치→NaN을 중간에 낼 수 있어(실측 ~0.08%) Phase3 모델 학습 시 NaN 클래스 유입 가능. R0(Phase1)는 분포만·모델 fit 안 함이라 미발현. | Phase1 seam | 열림(**Phase3 harness 통합 전** fold별 NaN 드롭 필요) |
+| **F-10** | `run_walk_forward`가 fold의 y NaN을 드롭 안 함(harness). 삼중배리어 라벨은 동시터치→NaN을 중간에 낼 수 있어(실측 ~0.08%) Phase3 모델 학습 시 NaN 클래스 유입 가능. R0(Phase1)는 분포만·모델 fit 안 함이라 미발현. | Phase1 seam | **해소(Phase3 R1 Step3.1)**: `run_walk_forward` 가 **정규화 前** train·val 각각 X∪y NaN 드롭 + 커버리지 로깅(`WalkForwardResult.coverage`). val NaN 채점 제외. 회귀 5. 실 R1 val 드롭 50봉 |
 | **F-11** | 라벨 참조가=close_i·스캔=후속 high/low(D-007)인데 엔진 진입은 현재봉 open(INFRA §4-3). 라벨-실행 미세 불일치 + 봉내 동시터치(현 NaN 제외)는 1m/15m 인트라바로 복원 가능. | Phase1 | 열림(**Phase4 플러그인 배선 시** 정합·인트라바 복원 검토) |
 | **F-12** | KF Q/R/dof 를 Phase3 에서 어떻게 인과적합하나 — (a)폴드 train-only MLE 재적합(정규화 동형) vs (b)창길이처럼 config 하이퍼 coordinate descent. 설계 §7 문구는 (a) 뉘앙스, R2 파이프라인은 (b) 정합. Phase2 는 고정 기본값이라 무관. | Phase2 Step2.3 | 열림(Phase3 R2 착수 전 확정) |
 | **F-13** | hurst(R/S) `rolling.apply(python)` 성능 — 실 56.9k봉 build_features 67.7s(hurst 병목). Phase3 R2 창 순차탐색(다수 config×폴드) 전 벡터화 필요. Phase2 스코프=정합성이라 미해결. | Phase2 Step2.2/2.4 | 열림(Phase3 R2 전 완화) |
@@ -186,6 +186,10 @@ CLAUDE.md 규칙 15 트리아지 적용. 등급 L/S/C, 건드린 기둥, 상태.
 | **D-017** | KF robust = Student-t 1-step IRLS 재가중, 단일 KF(IMM 보류). dof→∞ Gaussian 복원 | S | 6 | 확정 |
 | **D-018** | KF Q/R/dof = Phase2 고정 기본값(하이퍼), 튜닝 Phase3 R2(방식=F-12) | S | 2 | 확정 |
 | **D-019** | 피처 = OHLCV→X 순수함수(online 전방필터 폴드무관), 폴드로직 harness 소유(D-002) | S | 2 | 확정 |
+| **D-020** | MLP 프레임워크 = torch (2층 신경망) | L | — | 확정 |
+| **D-021** | 모델 모듈 = `src/research/models/`(`ProbaModel` 계약 base). baseline 과 동일 duck-typed 계약이나 학습모델 족 분리(argmax 소량 중복, Phase0 미변경) | S | 2,4 | 확정 |
+| **D-022** | 트리 벤치 = lightgbm 단일(xgboost 보류) | L | — | 확정 |
+| **D-023** | 트리·MLP 기본 하이퍼 = R1 placeholder(MLP 트렁크2×32·dropout0.1·Adam·시간순 early stop / tree 200·leaves31), 튜닝 R2/R3 | L | 5 | 확정 |
 
 ---
 
@@ -202,7 +206,11 @@ CLAUDE.md 규칙 15 트리아지 적용. 등급 L/S/C, 건드린 기둥, 상태.
 | 2026-07-11 | Phase 1 Step 1.5 R0 스윕 | 1h 128 config(성과 안 봄) → 51 통과 → **atr/w96/x3.0/N24 1개 확정**. F-5 해소(T·V·S). up/down 대칭 실측 | (미커밋) |
 | 2026-07-11 | Phase 1 종착 검증 | 통짜 full-stack(규칙17, 확정라벨 게이트통과 박제)+층3↔regime seam(규칙16) + fresh-eyes(규칙14) **CRITICAL/HIGH 0**, LOW#4 NaN가드 수정+회귀. **188 테스트 통과**. 교차Phase전파(규칙18): F-10/11·D-007~010 | (미커밋) |
 | 2026-07-12 | Phase 2 Step 2.1~2.3 구현 | `src/research/features/`: simple(4축)·trend_strength(ER/Hurst R/S)·kalman(robust KF). build_features→X 8열. 행동검증(스파이크/지속·불확실성비상수·dof→∞). 신규 42 test | (미커밋) |
-| 2026-07-12 | Phase 2 Step 2.4 통합·종착 | seam(X↔harness/splitter/normalize)·recursive KF 폴드슬라이싱 인과·정규화후 불확실성 생존. F-6 해소(진단→RobustScaler). fresh-eyes(규칙14) KF **CRITICAL/HIGH 0**. 실 full-stack smoke. F-13 등록. **244 통과** | (미커밋) |
+| 2026-07-12 | Phase 2 Step 2.4 통합·종착 | seam(X↔harness/splitter/normalize)·recursive KF 폴드슬라이싱 인과·정규화후 불확실성 생존. F-6 해소(진단→RobustScaler). fresh-eyes(규칙14) KF **CRITICAL/HIGH 0**. 실 full-stack smoke. F-13 등록. **244 통과** | 903bd14 |
+| 2026-07-12 | Phase 3 R1 Step 3.1~3.2 | `harness` F-10 NaN 위생(정규화前 드롭·커버리지) + `src/research/models/`(ProbaModel·TreeBench(lightgbm)·SmallMLP(torch, 단일태스크·다중seed)). 신규 harness+5·models+13 | (미커밋) |
+| 2026-07-12 | I-001 remediation(3.3 선행) | 손상 실범위 = 04-06~05-19 흩어진 14일 값손상(audit 미검출 클래스, 트래커보다 넓음). `resample_ohlcv`(1h→1d 완전버킷) 헬퍼로 regime 1d 파생. 파생 audit green·clean날 공식 일치. 신규 loader+4 | (미커밋) |
+| 2026-07-12 | I-002 해소 | `multiclass_log_loss` 비정렬 labels proba 오정렬(sklearn 정렬가정 위배, Phase0 잠복→R1 발각). labels 정렬 수정+회귀(비정렬 known-answer). blast radius=R1 ledger만 | (미커밋) |
+| 2026-07-12 | Phase 3 R1 Step 3.3 종착 | `experiments/r1_smoke`(사전등록 판정규칙 박제) 8판 실행 → **관문1 PASS**(mlp STRONG). 인과 self-check green·판정규칙 테스트+8. 규칙19 추가. **275 통과** | (미커밋) |
 
 ---
 
@@ -210,7 +218,8 @@ CLAUDE.md 규칙 15 트리아지 적용. 등급 L/S/C, 건드린 기둥, 상태.
 
 | ID | 내용 | 발생 | 상태 |
 |---|---|---|---|
-| **I-001** | 1d 캔들 **2026-04-08~15 구간 16:00 오프그리드 봉 5개**(24h 그리드가 16h+8h로 쪼개짐, 다운로드/병합 아티팩트). audit `has_corruption=True`로 하드페일(트립와이어 무장). 손상 국소(꼬리 ~2.5개월), 1h는 clean. | Step 0.1 | **연기 + fix-before-MTF 게이트**(Phase3 MTF 전 remediation 필수, R4 전제) |
+| **I-001** | 1d 캔들 손상 — audit 는 **off-grid 5봉**(04-08·09·10·12·14 16:00)만 검출했으나 **실범위는 04-06~05-19 흩어진 14일 값손상**(on-grid 부분봉 = audit **미검출** 클래스, Phase3 R1서 전수스캔으로 확정). 1h clean. | Step 0.1(범위확정 Phase3 R1) | **해소(Phase3 R1 3.3 선행)**: `resample_ohlcv`(loader)로 감사-clean 1h→1d 파생(완전버킷만·00:00그리드), regime·MTF 공용. 파생 1d audit green, clean날 공식 1d와 정확 일치 검증 |
+| **I-002** | `multiclass_log_loss` 가 비정렬 labels(`LABEL_CLASSES`=('up','down','expire'))에서 proba-클래스 오정렬 → sklearn(≥1.x) 사전순 정렬 가정 위배로 log_loss 오답(known-answer 0.223 정답 vs 버그 2.303). Phase0 잠복(정렬 라벨 테스트라 미발현), R1 첫 성과 채점서 발각. 첫 R1 DISCARD 원인. | Phase3 R1 | **해소**: labels 정렬 후 proba 정렬(값 순서불변). 회귀(비정렬+known-answer). 규칙19 적용 — blast radius=R1 ledger만(삭제·재생성), 라벨/R0/Phase0-2 무오염(분포전용·uniform ln3 순서불변). 수정 후 재실행 관문1 PASS |
 
 ---
 
@@ -314,6 +323,37 @@ kf_uncertainty std/robustScale≈5.0) → RobustScaler 제공. 선택은 Phase3.
 
 ---
 
+## 12-3. Phase 3 R1 결과·검증 요약 (완료)
+
+**성격**: Phase 3 첫 수직 슬라이스(D-001) — 처음으로 "예측력"을 측정. 1h·확정라벨·기본창·기본하이퍼 **고정, 탐색 없음**(R2+ 소관, 검증셋 과적합 방어).
+
+**구축**:
+- `src/research/models/` — `ProbaModel`(계약 base) · `TreeBench`(lightgbm 단일태스크 하한) · `SmallMLP`(torch, 트렁크/헤드 분리 → R3 멀티태스크·3층 웜스타트 이식, R1 단일태스크). 다중 seed 안정성.
+- `src/research/experiments/r1_smoke` — **사전등록 판정규칙 박제**(`PREREGISTERED_RULE`, 실행 前 잠금) + 러너(커밋·skip-guard).
+- `harness` F-10 NaN 위생 · `loader.resample_ohlcv`(I-001) · `metrics` log_loss 정렬(I-002).
+
+**실행**: 1h(56.9k봉)·삼중배리어 atr/w96/x3.0/N24·22폴드 walk-forward·z-score train-only·regime(파생 1d ff). Prior/Uniform(기준선) + Tree(1) + MLP(5 seed) = **8판, 비교예산 2 사전등록**.
+
+**관문1 = PASS** (사전등록 3조건: ll<Prior ∧ MCC>0 ∧ 일관성>과반. BA는 보고지표):
+
+| model | ll中 | MCC中 | BA中 | 일관성 | flag |
+|---|---|---|---|---|---|
+| uniform | 1.0986 | 0 | 0.333 | — | - |
+| prior | 1.0957 | 0 | 0.333 | — | - |
+| tree | 1.0936 | 0.105 | 0.400 | 0.50 | weak |
+| **mlp** | **1.0673** | **0.128** | **0.413** | **0.91** | **STRONG** |
+
+- MLP STRONG → **PASS**. 엣지 **실재하나 작음**(정답확률 +~1%p·MCC 약한 양상관·BA 우연+8%p ≈ 무지→완벽의 3~12%), **일관성 0.91**(20/22폴드)·seed 스프레드 타이트 → 노이즈 아님. MLP>Tree(R2 방향, 게이트 아님).
+- **해석 규율**: R1 = "엣지 냄새"이지 강엣지·경제성(관문2)·튜닝(R2) 아님. borderline 유보 규율 무발동(명백 STRONG). config 탐색은 R2(사전등록·좌표하강·국면재확인)로만 — ad hoc 금지(F-1).
+
+**발견·해소 (규칙 19 적용)**:
+- **I-001**(1d 손상 실범위 14일, audit 미검출): `resample_ohlcv` 파생으로 해소(§10).
+- **I-002**(log_loss 오정렬, Phase0 잠복→R1 발각): **첫 실행 DISCARD의 원인**. 수정 후 재실행 PASS. **사전등록 규칙 불변, metric만 교정** — MCC/BA(버그 무관·하드예측)가 처음부터 신호라 PASS를 독립 corroborate(수정 artifact 아님). 통짜 실행이 load-bearing 버그를 포착(규칙17 가치).
+
+**검증**(규칙17): **275 테스트 통과**(harness+5·models+13·r1_smoke+8·loader+4·metrics+1). 인과 self-check(build_features `assert_causal`) green. 러너 통짜 실행이 통합검증 겸함.
+
+---
+
 ## 다음 단계
 
-**Phase 3 착수**: 2층 공유트렁크 멀티태스크 MLP + 트리 벤치. Phase 2 **X=8열**(자기정규화 없음, harness 소유)·Phase 1 **라벨 N=24**·Phase 0 splitter/harness/정규화/baseline 완비 → **모델 콜러블**(fit/predict_proba, baseline 참조구현)만 꽂으면 관문1(통계적 엣지) 진입. **착수 전 해결**: F-10(harness fold y NaN 드롭)·F-13(hurst 벡터화)·F-12(KF Q/R/dof 인과적합 방식). R1 스모크(1h·라벨1개·기본창·기본하이퍼)부터.
+**Phase 3 R2 착수**: 창 순차탐색(coordinate descent) — "config 튜닝이 엣지를 강화하나"를 **규율 갖춰**(비교개수 사전등록 + 선택 창 국면분리 재확인, F-1) 정식 평가. **착수 전 해결**: **F-13**(hurst 벡터화 — 다수 config×폴드 병목)·**F-12**(KF Q/R/dof 인과적합 방식 (a)MLE재적합/(b)config하이퍼 확정). R1 스모크 완료(관문1 PASS, mlp STRONG — §12-3). R2 통과 후 R3(하이퍼)·R4(TF/MTF, best-of-N 금지 F-2).

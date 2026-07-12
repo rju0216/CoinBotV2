@@ -63,6 +63,9 @@ tests/                       # 백테 골격 회귀 테스트 (픽스처는 test
 >   `trend_strength`(ER·Hurst R/S)·`kalman`(robust KF slope+불확실성, Student-t 1-step 재가중)·
 >   `build`(`build_features`→**X 8열**). 전부 OHLCV만·인과. 정규화는 harness 소유
 >   (z-score 기본 / `RobustScaler` 드롭인, F-6).
+> - **Phase 3 R1**(2층 모델·관문1): `models/` — `base`(`ProbaModel` 계약)·`tree_bench`(lightgbm)·
+>   `mlp`(torch, 트렁크/헤드 분리, 단일태스크) + `experiments/r1_smoke`(관문1 스모크 러너·**사전등록
+>   판정규칙**). **관문1 PASS**(mlp STRONG). `loader.resample_ohlcv`(1h→1d 파생, I-001 해소).
 > - 상세·진행은 `docs/00_Work_Report/QuantModel_MasterPlan.md`, 의존성은 `requirements-ml.txt`.
 
 ## 3. 새 모델(전략) 추가 방법

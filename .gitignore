@@ -32,6 +32,10 @@ data/candles/*.csv
 
 # ML 모델 아티팩트 (학습 산출물, 크기 큼)
 models/
+# 단, 연구 모델 소스 코드 디렉터리는 추적 (broad 'models/' 가 잡으므로 예외).
+# .py 만 재포함 — __pycache__/*.pyc 는 *.pyc 규칙으로 계속 제외.
+!src/research/models/
+!src/research/models/*.py
 
 # 피처 캐시 (parquet, ML 학습 시 자동 생성)
 data/features/
@@ -40,6 +44,8 @@ data/features/
 data/*_scan/
 data/*_sweep/
 data/*_ablation/
+# 실험 러너 생성물 (ledger 등 — 재현 가능, 커밋 제외)
+data/research/
 
 # 1회용 탐사/측정 스크립트 (규칙 8-4: commit 제외, 결과만 보고서에)
 scripts/_tmp_*.py
