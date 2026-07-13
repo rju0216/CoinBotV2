@@ -144,3 +144,62 @@ def test_harness_seam_with_nan_and_normalize(factory):
     assert res.n_folds >= 2
     assert {"balanced_accuracy", "mcc", "log_loss"} <= set(res.report.per_fold.columns)
     assert int(res.coverage["train_dropped"].sum() + res.coverage["val_dropped"].sum()) >= 1
+
+
+# ---- R3.0: SmallMLP 멀티태스크 (도달시간 co-training) ----
+
+def _reach_for(y):
+    """도달시간 대용 회귀 타깃: up/down 은 [0.1,1.0], expire 는 NaN(검열 제외 마스킹)."""
+    rng = np.random.default_rng(1)
+    r = rng.uniform(0.1, 1.0, len(y))
+    r[y.to_numpy() == "expire"] = np.nan
+    return pd.Series(r, index=y.index)
+
+
+def test_mlp_multitask_contract():
+    # reach 제공 → 멀티태스크 fit, predict_proba 는 여전히 배리어 계약 준수
+    X, y = _signal_xy(400)
+    reach = _reach_for(y)
+    Xtr, ytr, Xte = X.iloc[:300], y.iloc[:300], X.iloc[300:]
+    m = SmallMLP(seed=0, params=_FAST, reach=reach).fit(Xtr, ytr)
+    proba = m.predict_proba(Xte)
+    assert list(proba.columns) == m.classes_
+    assert proba.index.equals(Xte.index)
+    assert np.allclose(proba.to_numpy().sum(axis=1), 1.0, atol=1e-5)
+
+
+def test_mlp_multitask_reproducible():
+    X, y = _signal_xy(400)
+    reach = _reach_for(y)
+    Xtr, ytr, Xte = X.iloc[:300], y.iloc[:300], X.iloc[300:]
+    p1 = SmallMLP(seed=0, params=_FAST, reach=reach).fit(Xtr, ytr).predict_proba(Xte)
+    p2 = SmallMLP(seed=0, params=_FAST, reach=reach).fit(Xtr, ytr).predict_proba(Xte)
+    pd.testing.assert_frame_equal(p1, p2)
+
+
+def test_mlp_multitask_differs_from_single_task():
+    # 멀티태스크(reach head + co-training)는 단일태스크와 다른 예측 → 헤드가 실제 작동
+    X, y = _signal_xy(400)
+    reach = _reach_for(y)
+    Xtr, ytr, Xte = X.iloc[:300], y.iloc[:300], X.iloc[300:]
+    single = SmallMLP(seed=0, params=_FAST).fit(Xtr, ytr).predict_proba(Xte)
+    multi = SmallMLP(seed=0, params=_FAST, reach=reach).fit(Xtr, ytr).predict_proba(Xte)
+    assert not np.allclose(single.to_numpy(), multi.to_numpy())
+
+
+def test_mlp_single_task_unchanged_by_reach_none():
+    # reach=None(기본) = 단일태스크 = R1 경로 (reach 헤드 미생성, 초기화 RNG 불변)
+    X, y = _signal_xy(400)
+    Xtr, ytr, Xte = X.iloc[:300], y.iloc[:300], X.iloc[300:]
+    a = SmallMLP(seed=0, params=_FAST).fit(Xtr, ytr).predict_proba(Xte)
+    b = SmallMLP(seed=0, params=_FAST, reach=None).fit(Xtr, ytr).predict_proba(Xte)
+    pd.testing.assert_frame_equal(a, b)
+
+
+def test_mlp_reach_all_nan_no_crash():
+    # reach 전량 NaN(검열 제외) → reach 손실 0 가드, 크래시 없음
+    X, y = _signal_xy(400)
+    reach = pd.Series(np.nan, index=y.index)
+    Xtr, ytr, Xte = X.iloc[:300], y.iloc[:300], X.iloc[300:]
+    m = SmallMLP(seed=0, params=_FAST, reach=reach).fit(Xtr, ytr)
+    assert m.predict_proba(Xte).shape[0] == len(Xte)

@@ -68,6 +68,9 @@ tests/                       # 백테 골격 회귀 테스트 (픽스처는 test
 >   판정규칙**). **관문1 PASS**(mlp STRONG). `loader.resample_ohlcv`(1h→1d 파생, I-001 해소).
 > - **Phase 3 R2**(창 순차탐색): `experiments/r2_window_search`(coordinate descent, MLP 선택+트리 참고)
 >   + `features.hurst` 벡터화(F-13, 75x). 결과 = **기본창 유지**(창 튜닝 무gain). MasterPlan §12-4.
+> - **Phase 3 R3**(모델 하이퍼): `models/mlp` 멀티태스크 헤드(reach·λ·expire마스킹, reach=None=단일태스크)
+>   + `experiments/r3_multitask`(멀티태스크·정규화)·`r3_arch_kf`(구조·KF). 결과 = **R1 config 유지**
+>   (멀티태스크·robust·용량↑·KF 무gain, **1h 튜닝저항 확정**). F-6 최종=z. §12-5. 다음=R4(TF/MTF).
 > - 상세·진행은 `docs/00_Work_Report/QuantModel_MasterPlan.md`, 의존성은 `requirements-ml.txt`.
 
 ## 3. 새 모델(전략) 추가 방법
