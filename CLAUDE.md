@@ -96,9 +96,9 @@
      (regime·splitter·metrics·baselines·harness·ledger)·causality(leakage)·normalize (Phase 0) +
      **labeling**(volatility·triple_barrier·distribution — 삼중배리어 라벨, **확정 atr/w96/x3.0/N24**, Phase 1) +
      **features**(simple·trend_strength·kalman·build — 1층 6축 → **X 8열**, robust KF·ER/Hurst, Phase 2) +
-     **models**(base `ProbaModel`·tree_bench lightgbm·mlp torch 멀티태스크헤드, 2층)·**experiments**
-     (r1_smoke 관문1 PASS·r2_window_search 창·r3_multitask 멀티태스크·r3_arch_kf 구조KF). **R1~R3 완료:
-     1h 튜닝저항 → R1 config 유지, 다음 R4(TF/MTF)**. 엔진과 분리.
+     **models**(base `ProbaModel`·tree_bench·mlp 멀티태스크헤드, 2층)·**experiments**(r1_smoke·
+     r2_window_search·r3_multitask·r3_arch_kf·**tf_expansion** TF/MTF). **R1~R3+R4.1 완료: 1h 튜닝저항,
+     R4.1서 15m이 1h보다 강엣지(확인대기). 다음=15m 확인** — `memory/phase3_R4_handoff.md` 참조. 엔진과 분리.
      상세는 `docs/00_Work_Report/QuantModel_MasterPlan.md`. 의존성은 `requirements-ml.txt`.
 6. **캔들 캐시 (data/, git untracked)**: `data/candles/*.csv`.
 
