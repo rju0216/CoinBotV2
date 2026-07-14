@@ -5,7 +5,7 @@
 > **참조만** 한다(중복 서술 금지). 이 문서는 개발 계획·학습 스케줄·리뷰어
 > 플래그·결정 로그(D-NNN)·잠재 이슈(I-NNN)·진행 기록표를 담는다.
 >
-> **현재 시점**: **Phase 0~3(R1~R3) 완료 + R4.1 단독TF 완료**. 1h 튜닝저항(§12-3~5). **R4.1: 15m이 1h보다 강엣지**(ll-margin +0.045·MCC 0.149·일관성 1.00·트리도 STRONG), 4h 약함·1d 데이터부족(§12-6). **다음 = 15m 확인**(F-2 국면일관성+라벨강건성) — 세션 핸드오프 `memory/phase3_R4_handoff.md`. **⚠️ 15m 지평 짧아(6h) 관문2 비용 관건**.
+> **현재 시점**: **Phase 0~3 완료 — 관문1(통계엣지) PASS**. 1h 튜닝저항(R1~R3, §12-3~5) → 다른 척도(R4). **R4 결론: 주 엣지 후보 = 15m + 1h 상위맥락**(§12-6). 단독 15m이 1h보다 강엣지·확인 CONFIRM(6국면·직교라벨), MTF 1h 소폭 material 강화(+0.0036, 4h 중복). **Phase 3 종착**. **다음 = Phase 4 관문2(경제성)** — **⚠️ 15m 지평 짧아(6h) 거래 잦음 → 관문2 비용이 진짜 관건**(통계엣지≠경제엣지).
 
 ---
 
@@ -52,7 +52,7 @@
 | **0 검증 인프라** | walk-forward 하네스, **국면 태깅(규칙기반)**, 인과성/누수 테스트 스위트, z-score train-only, 지표계산(균형정확도·MCC·로그손실·semi-dev), 결과 정합성 검증(CLAUDE 10) | 소프트웨어 정합성 | — |
 | **1 라벨** ✅ | 삼중배리어 생성기(ATR·YZ, x·N, 인과) + **라벨분포 검증**(층1 학습가능성·층3 국면일관성) — **완료: N=24·atr/w96/x3.0 확정** | **후보1 라벨분포**(성과 안 봄) | 분포 게이트 **통과** |
 | **2 1층 피처** ✅ | 6축 피처(robust KF·ER/Hurst·변동성변화·상대거래량·semi-dev·종가위치), **기본창** — **완료: build_features→X 8열, 인과·행동 검증** | 소프트웨어 정합성(인과·정상성) | — |
-| **3 2층 MLP** 🔶 | 공유트렁크 멀티태스크 MLP + 트리 벤치 — **R1·R2·R3 완료(관문1 PASS; 창·멀티태스크·정규화·구조·KF 무gain→R1 config 유지, 1h 튜닝저항)**, R4(TF/MTF) 남음 | **후보2 예측력** | **관문1 통계적엣지** |
+| **3 2층 MLP** ✅ | 공유트렁크 멀티태스크 MLP + 트리 벤치 — **R1~R4 완료(관문1 PASS)**. 1h 튜닝저항(창·멀티태스크·정규화·구조·KF 무gain, R1 config 유지) → R4서 **15m+1h 채택**(단독15m>1h·확인CONFIRM·MTF 1h 강화) | **후보2 예측력** | **관문1 통계적엣지 PASS** |
 | **4 멍청한 3층** | 방향·θ진입·고정사이즈·배리어청산 + 비용모델, **기존 엔진 경유** | **후보3 경제성** | **관문2 경제적엣지** |
 | **5 최종 3층** | 엣지 성격에 맞춘 형태(직접정책최적화 유력) | — | — |
 
@@ -114,7 +114,7 @@
 | **R1 스모크** ✅ | Phase3 착수 | 1h·라벨1개·기본창·기본하이퍼, 트리벤치+작은MLP(5seed) | **8판(비교 2)** | **완료: 관문1 PASS**(mlp STRONG — ll<Prior·MCC0.13·BA0.41·일관성0.91). §12-3 |
 | **R2 창 순차탐색** ✅ | R1 통과 후 | 1h 고정, 피처 창 coordinate descent(MLP 5seed 선택 + 트리 참고) | **19판(예산 60)** | **완료: 창 튜닝 무material gain**(Δll −0.0034 노이즈수준) → **기본창 유지**. §12-4 |
 | **R3 하이퍼 소그리드** ✅ | R2 후 | 1h, R3.1 멀티태스크(λ0.1/0.3)·정규화(z/robust) 5판 + R3.2 구조/KF 8판 | 13판 | **완료: 전부 무gain**(멀티태스크·robust·용량↑·KF 다 무개선/악화) → **R1 config 유지**. §12-5 |
-| **R4 TF/MTF 확장** | **1h 관문1 통과 후에만** | 4h·1d·15m 단독 + MTF 1~2조합 | TF당 튜닝 파이프 재실행, 제한 | 확증·강건성. **best-of-4 복권 금지**(F-2) |
+| **R4 TF/MTF 확장** ✅ | R1~R3 후 | 4h·1d·15m 단독 + MTF(15m+상위 완성봉) | 단독4 + MTF 3(사전등록) | **완료: 15m 채택**(단독15m>1h·확인CONFIRM 6국면·직교라벨 ROBUST) + **MTF 1h 강화**(+0.0036 material, 4h 중복). §12-6 |
 | **R5 경제성** | Phase4 | 멍청3층, 엔진 경유, θ 안정성 스윕 + 국면분리 | 생존자만 | 관문2 |
 
 **요지**: 처음부터 전TF×전조합 폭발 금지. 1h 에서 파이프라인 입증 후 확장.
@@ -145,19 +145,23 @@ CLAUDE.md 규칙 15의 C 등급은 아래 기둥을 약화·모순·재도입하
 
 | ID | 내용 | 발생 | 상태 |
 |---|---|---|---|
-| **F-1** | R2 창 순차탐색 = 홀드아웃 없는 검증셋 성과 선별 → **검증셋 과적합 위험**. 방어: 비교개수 사전등록 + 선택 창을 국면분리에서 재확인. | 계획 §5 | **R2 적용**(예산 사전등록 19/60 + 국면분리 재확인 5/6국면·14/22폴드 우세; 개선 미미→기본창 유지로 노이즈 미채택). 열림(R3/R4 동일 규율 지속) |
+| **F-1** | R2 창 순차탐색 = 홀드아웃 없는 검증셋 성과 선별 → **검증셋 과적합 위험**. 방어: 비교개수 사전등록 + 선택 창을 국면분리에서 재확인. | 계획 §5 | **R2~R4 적용**: 예산 사전등록(R2 19/60·R4_15m_confirm 2·R4_mtf 3) + 확인(선별↔확인 분리). R4: 라벨=분포 선정(성과 안 봄)·15m 국면일관+직교라벨 확인·MTF 임계초과 채택(max 고르기 아님). 열림(Phase4 동일 규율) |
 | **F-2** | 선별 2단 중첩(라벨=분포/TF=예측력). 다른 TF는 "4개 중 최고 뽑기(부풀림)" 아니라 **확증·강건성**으로. | 계획 §5 | 열림(Phase3 대비) |
 | **F-3** | 펀딩 데이터 부재 → 상수 근사가 실비용/엣지 왜곡 가능. Phase4 전 실펀딩 다운로드 옵션. | 계획 §0 | 열림(Phase4 대비) |
-| **F-4** | TF별 종료일 불일치 → MTF 결합 시 겹치는 구간 정렬 필수. | 계획 §0 | 열림(Phase3 MTF 대비) |
+| **F-4** | TF별 종료일 불일치 → MTF 결합 시 겹치는 구간 정렬 필수. | 계획 §0 | **해소(R4.2)**: 실측 1h·4h 종료일 ≥ 15m(tail 커버리지 손실 0). `build_mtf_features` 에 **tail 커버리지 가드**(상위TF 완성봉이 결정TF tail 미달 시 하드페일 — stale-fill=무한 forward-fill 방지, fresh-eyes MEDIUM①). 회귀 박제. |
 | **F-5** | purge/embargo = 라벨 지평 N에 결합(교차-Phase). splitter가 N을 파라미터로 받아야 하고, walk-forward T·V·S 도 피처/라벨 창에 번인 결합 → 수치는 Phase1~2 후 확정. | 계획 §11 | **해소(Phase1)**: **N=24 확정** → T·V·S = train_min 8760·val_size 2160·N 24·**22폴드**(step=val). embargo 0 유지 |
 | **F-6** | 설계 §7이 **z-score** 지정했으나 robust 대비 **논증 없음**(근거는 train-only 인과성뿐). 기둥6(팻테일) 견주면 robust(median/MAD)이 이상치에 강함. **방식**: Phase2에서 ①분포 진단 먼저(비교예산 무관)→②왜곡 유의시만 예측력 비교(F-1 계수). Step0.3 scaler는 `BaseScaler` 교체 인터페이스(robust 드롭인). | Step0.3 | **최종 해소(R3.1)**: 실 1h 예측력 비교 → robust 가 z 보다 **+0.0006 나쁨**(무gain) → **z-score 확정 채택**(팻테일 진단 유의했으나 예측력은 z 우세). Phase2 진단(초과첨도~73)+R3.1 예측력 판정 완결. |
 | **F-7** | 겹치는 val 창(step<val_size) → per-regime 봉단위 귀속 **이중계수**. 현재 non-overlap 기본이라 미발현(문서화됨). | fresh-eyes | 열림(Phase3 rolling/overlap 시 dedup·가중) |
 | **F-8** | per-regime 귀속 계약: regime_tags는 **모델 TF 정렬** 필수(원시 상위TF 주면 대부분 드롭), n은 "귀속 가능 봉만"(NaN 태그 제외). 문서화됨. | fresh-eyes | 열림(Phase3 커버리지 경고 추가 고려) |
-| **F-9** | `forward_fill_completed`·`ZScoreNormalizer.transform`이 unique/complete 컬럼 무가드 전제. | fresh-eyes | 열림(Phase3 MTF 재사용 시 가드) |
+| **F-9** | `forward_fill_completed`·`ZScoreNormalizer.transform`이 unique/complete 컬럼 무가드 전제. | fresh-eyes | **부분해소(R4.2)**: MTF 는 `build_mtf_features` 가 `mtf{tf}_` 접두어로 **unique 컬럼 보장**(충돌 방지). ZScoreNormalizer 의 complete 전제는 harness F-10 NaN 드롭이 선행 보장. 정규화기 자체 가드는 열림. |
 | **F-10** | `run_walk_forward`가 fold의 y NaN을 드롭 안 함(harness). 삼중배리어 라벨은 동시터치→NaN을 중간에 낼 수 있어(실측 ~0.08%) Phase3 모델 학습 시 NaN 클래스 유입 가능. R0(Phase1)는 분포만·모델 fit 안 함이라 미발현. | Phase1 seam | **해소(Phase3 R1 Step3.1)**: `run_walk_forward` 가 **정규화 前** train·val 각각 X∪y NaN 드롭 + 커버리지 로깅(`WalkForwardResult.coverage`). val NaN 채점 제외. 회귀 5. 실 R1 val 드롭 50봉 |
 | **F-11** | 라벨 참조가=close_i·스캔=후속 high/low(D-007)인데 엔진 진입은 현재봉 open(INFRA §4-3). 라벨-실행 미세 불일치 + 봉내 동시터치(현 NaN 제외)는 1m/15m 인트라바로 복원 가능. | Phase1 | 열림(**Phase4 플러그인 배선 시** 정합·인트라바 복원 검토) |
 | **F-12** | KF Q/R/dof 를 Phase3 에서 어떻게 인과적합하나 — (a)폴드 train-only MLE 재적합(정규화 동형) vs (b)창길이처럼 config 하이퍼 coordinate descent. 설계 §7 문구는 (a) 뉘앙스, R2 파이프라인은 (b) 정합. Phase2 는 고정 기본값이라 무관. | Phase2 Step2.3 | **해소(R2, D-025)**: **(b) config 하이퍼** 채택 — D-019(피처=폴드무관 순수함수·전역X, harness 슬라이스) **보존**. (a)는 폴드내 KF 재계산이라 D-019 붕괴. KF 실 튜닝은 **R3**. |
 | **F-13** | hurst(R/S) `rolling.apply(python)` 성능 — 실 56.9k봉 build_features 67.7s(hurst 병목). Phase3 R2 창 순차탐색(다수 config×폴드) 전 벡터화 필요. Phase2 스코프=정합성이라 미해결. | Phase2 Step2.2/2.4 | **해소(R2.0a)**: `sliding_window_view` 벡터화(sub-window R/S 전창 동시). 스칼라와 **수치 동치**(실 1h 56.9k 완전 일치·NaN포함), hurst 48.2s→0.64s(75x), build 67.7s→9.2s. NaN 창=pandas min_periods 매칭, 퇴화행만 폴백. 회귀 박제. |
+| **F-14** | (fresh-eyes R4.2) `classify_regime_consistency` 국소붕괴 임계 = **fold-median 전역 ll-margin** vs per_regime **pooled** margin — 집계방식 상이(~2% 스케일차). | fresh-eyes R4 | 열림. **미발현**(전 실행 부호반전 0 → collapse 게이트 미작동). Phase4 게이트 활성화 전 pooled 로 통일 검토. |
+| **F-15** | (fresh-eyes R4.2) `_per_regime_edge` `reversal_seed_frac` = `.ge(prior).mean` — 어떤 seed 가 국면 결여 시 NaN→False 로 반전 과소평가(안전방향 반대). | fresh-eyes R4 | 열림. **미발현**(Prior·전 seed 동일 국면집합, 계약상 결여 없음). 방어적 명시드롭 권장. |
+| **F-16** | (fresh-eyes R4.2) MTF X 는 상위TF 워밍업만큼 선두 NaN 이 baseline 보다 많아 fold-0 유효표본 상이 → "오직 피처만 변경" 격리 미세 위반. | fresh-eyes R4 | 열림(LOW). prior 자기정규화(동일 지지)로 대부분 상쇄·선두 국한. |
+| **F-17** | (fresh-eyes R4.2) `run_mtf_role1` 이 `baseline_ll_margin` 외부주입 — 동일 라벨/splitter/seed 계산 보장이 코드에 없음(footgun). | fresh-eyes R4 | 열림(LOW). 현 실행은 동일 config baseline(문서 계약). Phase4 재사용 시 주의. |
 
 ---
 
@@ -194,6 +198,9 @@ CLAUDE.md 규칙 15 트리아지 적용. 등급 L/S/C, 건드린 기둥, 상태.
 | **D-025** | F-12 해소 = KF Q/R/dof **config 하이퍼**(coordinate descent 축)로, 폴드 MLE 재적합(D-019 붕괴) 기각. KF 튜닝은 R3 | S | 2,4 | 확정 |
 | **D-026** | R2 결론 = 창 튜닝 무material gain(Δll −0.0034 노이즈수준, 국면 5/6·폴드 14/22 약우세) → **기본창 유지**(선택창 미채택). 1h 엣지 약함은 튜닝부족 아닌 실제 신호강도(기둥5 장식금지) | S | 5,3 | 확정 |
 | **D-027** | R3 결론 = 멀티태스크·정규화(R3.1)·구조·KF(R3.2) 전부 무gain(용량↑=단조악화, 나머지 노이즈) → **R1 config 유지**(단일태스크·z·d2w32·KF기본). **1h 엣지 튜닝 저항적 확정**(5지렛대 전수). 멀티태스크 헤드 코드는 보존(Phase5 도달시간 청산·웜스타트 경로). 다음 지렛대=R4 다른 TF | S | 5,3,7 | 확정 |
+| **D-028** | R4 단독TF 결론 = **15m 채택**(1h 튜닝저항 → 다른 시간척도가 답). 단독 15m이 1h보다 강엣지(+0.045>+0.028) + **확인 CONFIRM**(6국면 전부 양마진·5seed 무반전 / 직교라벨 12h·w96 ROBUST). 4h 약함·1d 데이터부족(2370봉). 라벨=TF별 분포게이트 선정(성과 안 봄) | C | 8,5 | 확정 |
+| **D-029** | R4.2 MTF 역할1 = **15m+1h 채택**(상위 1h 완성봉 맥락이 15m 엣지 material·국면일관 강화 +0.0036). **4h 중복**(단독 노이즈·1h위 +0.0005 노이즈) → parsimony 로 제외(규칙 best=1h+4h이나 4h 우위=노이즈, 장식금지·R3.2 정합). 역할2(진입게이트)는 Phase4. MTF 이득은 주라벨서만 측정 | C | 5,3,8 | 확정 |
+| **D-030** | `forward_fill_completed` 를 `validation/regime.py` → **`data/loader.py` 승격**(TF정렬 공용 헬퍼, regime·MTF 2사용처 → features→validation 상향의존 회피, docstring 사전약속 이행). 전수스윕 잔존 0 | S | 2,4 | 확정 |
 
 ---
 
@@ -221,7 +228,9 @@ CLAUDE.md 규칙 15 트리아지 적용. 등급 L/S/C, 건드린 기둥, 상태.
 | 2026-07-13 | R2.4 국면분리 재확인·종착 | 선택창 국면 5/6·폴드 14/22 우세이나 미미(down\|low 악화)·노이즈수준 → **기본창 유지**(D-026). 문서 종합 갱신·§12-4 | 9774639 |
 | 2026-07-13 | R3.0~R3.1 | 멀티태스크 헤드(reach·λ·expire마스킹, reach=None=R1바이트동일) + `r3_multitask` 러너. 실행: 멀티태스크(λ0.1/0.3)·robust 전부 무gain(+0.0006~0.0009) → 단일태스크·z. F-6 최종=z. 신규 models+5·r3+2 | (미커밋) |
 | 2026-07-14 | R3.2 구조·KF + 종착 | `r3_arch_kf` 8판 사전등록: 용량↑ 단조악화(d3w64 +0.0025)·KF 노이즈(±0.0004) → **R1 config 유지**(D-027). 1h 튜닝저항 확정. 신규 r3_arch_kf+2. 문서·§12-5 | 5824cdf |
-| 2026-07-14 | R4.0~R4.1 단독TF | `tf_expansion`: TF스케일 splitter(시간고정 1yr/3mo 봉환산)·per-TF 라벨 분포게이트·`run_tf_gate1`. **15m PASS 강엣지(1h 초과)**·4h PASS 약함·1d 데이터부족. 신규 tf+2. 세션전환→핸드오프 메모리 | (미커밋) |
+| 2026-07-14 | R4.0~R4.1 단독TF | `tf_expansion`: TF스케일 splitter(시간고정 1yr/3mo 봉환산)·per-TF 라벨 분포게이트·`run_tf_gate1`. **15m PASS 강엣지(1h 초과)**·4h PASS 약함·1d 데이터부족. 신규 tf+2. 세션전환→핸드오프 메모리 | e9e879b |
+| 2026-07-15 | R4.1 15m 확인 | `tf_confirm`(사전등록 규칙)·`run_tf_gate1` per_regime 노출. **축① 국면일관 CONFIRM**(6국면 양마진·5seed 무반전)·**축② 라벨강건 ROBUST**(직교 12h·w96). winner's curse 해소 → 15m 확정(D-028). 신규 tf_confirm+단위14·seam2 | (미커밋) |
+| 2026-07-15 | R4.2 MTF 역할1 + R4 종착 | `forward_fill_completed`→loader 승격(D-030)·`features/mtf`·`tf_mtf`·`run_tf_gate1` X주입. **mtf_1h +0.0036 material·CONFIRM**·4h 중복 → **15m+1h 채택**(D-029). fresh-eyes(CRIT/HIGH 0, F-4가드 수정·F-14~17 등록). **317 통과**. §12-6·§5·D-028~030 | (미커밋) |
 
 ---
 
@@ -400,11 +409,11 @@ kf_uncertainty std/robustScale≈5.0) → RobustScaler 제공. 선택은 Phase3.
 
 ---
 
-## 12-6. Phase 3 R4.1 단독 TF 결과 (진행 중 — 확인 대기)
+## 12-6. Phase 3 R4 결과 (완료 — 관문1 PASS, 15m+1h 채택)
 
-**인프라**(`experiments/tf_expansion`): 시간→봉 환산(`bars`, 갭0 정확)·TF스케일 `splitter_for`(splitter 코드 무변경, train 1yr/val 3mo 봉환산)·`load_tf`(1d 파생·갭가드)·per-TF 라벨 분포게이트(`sweep_labels_for_tf`)·`run_tf_gate1`(단독TF 관문1, R1 판정규칙 재사용). 결정 1-가·3-가. **라벨=분포로 선정, 성과로 안 고름**(F-1).
+**인프라**: `experiments/tf_expansion`(시간→봉 `bars`·TF스케일 `splitter_for`·`load_tf`·per-TF 분포게이트 `sweep_labels_for_tf`·`run_tf_gate1` 단독TF 관문1, `df`/`X` 주입·`_per_regime_edge` 국면진단) + `tf_confirm`(15m 확인 사전등록 규칙·`classify_regime_consistency`/`classify_label_robustness`/`combine`) + `features/mtf.build_mtf_features`(결정TF X + 상위TF 완성봉 concat, mtf{tf}_ 접두어, F-4 tail 가드) + `tf_mtf`(`MTF_MATERIAL_RULE`·`classify_mtf`·`run_mtf_role1`). `forward_fill_completed` → `data/loader.py` 승격(D-030).
 
-**단독 TF 관문1**(각 TF 라벨은 분포게이트로 1h 균형 근접 선정):
+### R4.1 단독 TF 관문1 (각 TF 라벨은 분포게이트로 1h 균형 근접 선정, 성과 안 봄 F-1)
 
 | TF | 라벨 | 관문1 | ll-margin | MCC | BA | 일관성 |
 |---|---|---|---|---|---|---|
@@ -413,14 +422,35 @@ kf_uncertainty std/robustScale≈5.0) → RobustScaler 제공. 선택은 Phase3.
 | 1d | — | **불가**(데이터부족 2370봉, minMinor<100) | | | | |
 | **15m** | atr/w24/N24(6h) | **PASS** | **+0.0450** | **0.149** | **0.424** | **1.00** |
 
-- **15m이 1h보다 전 지표 강함**(역할2 성과). 트리도 STRONG(226k봉 풍부)·MLP 22/22폴드 → 두 모델 합의. 4h 약함, 1d 데이터한계.
-- **⚠️ 미확정**: winner's curse(시도TF 중 최고) → F-2 **국면일관성+라벨강건성 확인 필요**. 15m 지평 짧아(6h) 거래 잦음 → **관문2 비용이 진짜 관건**(통계엣지≠경제엣지).
+**15m이 1h보다 전 지표 강함**(역할2). 트리 STRONG(226k봉)·MLP 22/22폴드. 4h 약함·1d 데이터한계. → 15m 채택(D-028).
 
-**다음(새 세션)**: 15m 확인 → 생존 시 주 후보. 상세 = `memory/phase3_R4_handoff.md`.
+### R4.1 15m 확인 (F-2 pick-and-confirm, 사전등록 규칙 `tf_confirm`)
+
+- **축① 국면일관성 = CONFIRM**: 주라벨 6국면 **전부 양마진**(0.032~0.056)·**5seed 전부 Prior 우세**(reversal 0) — 1h(0.91)보다 깨끗. 킬규칙(D-006, seed과반 반전만 붕괴, 노이즈 허용).
+- **축② 라벨강건성 = ROBUST**: 직교 대체라벨 12h/w24(N48) +0.0493·6h/w96 +0.0296 **둘 다 PASS+양마진**. 분포-유효 지평은 6h·12h뿐(1d↑ 방향극단 탈락).
+- → winner's curse 대부분 해소, 15m 확정.
+
+### R4.2 MTF 역할1 (상위맥락이 15m 엣지 강화하나, 사전등록 `tf_mtf`, baseline 15m단독 +0.0450, NOISE_FLOOR 0.002)
+
+| config | 관문1 | ll-margin | Δ vs baseline | material | 국면 |
+|---|---|---|---|---|---|
+| **mtf_1h** | PASS | +0.0486 | **+0.0036** | ✅ | CONFIRM |
+| mtf_4h | PASS | +0.0457 | +0.0007 | ❌(노이즈) | — |
+| **mtf_1h4h** | PASS | +0.0491 | +0.0041 | ✅ | CONFIRM |
+
+- **1h 상위맥락이 15m 엣지를 material·국면일관 강화**(+0.0036). **4h는 중복**(단독 노이즈·1h위 +0.0005 노이즈). 규칙상 best=1h+4h이나 4h 우위가 노이즈 → **parsimony로 15m+1h 채택**(D-029, 장식금지·R3.2 정합). 역할2(진입게이트)는 Phase4.
+- **규모·범위 정직**: MTF 이득 소폭(~8% 상대)·실재·국면일관. **주라벨(6h/w24)에서만 측정**(라벨교차 미확인).
+
+**R4 결론**: 관문1 PASS. **주 엣지 후보 = 15m + 1h 맥락**(16열). 검증 = **317 테스트 통과** + seam 통합(MTF full-stack) + fresh-eyes 재스캔(CRIT/HIGH 0, MEDIUM① F-4가드 수정, ②·LOW F-14~17 등록).
 
 ---
 
 ## 다음 단계
 
-**15m 확인((가))** → (조건부)MTF → R4 종착 → Phase 3 종착(관문1 결론). 원래 R4 계획:
-**TF/MTF 확장** — 진짜 다른 지렛대(1h가 튜닝저항이므로). ① **역할1** 1h 약엣지가 다른 TF에서 유지되나(확증·강건성) + ② **역할2** 어느 시간척도에 **더 강한 엣지**가 있나(추가 탐색, 1h 약해서). **4h·1d·15m 단독** + **MTF 조합**(하위 결정TF + 상위 완성봉 forward_fill, `resample_ohlcv` 재사용). **게이트 충족**: 관문1 통과(R1)·I-001 해소. **규율(F-2)**: 최댓값을 그냥 믿지 말고 — **6~8 매크로 국면 공유·홀드아웃 없음**이라 부풀림 못 되돌림 → 고른 TF/MTF를 **국면일관·안정·관문2 생존으로 확인**해 채택(pick-and-confirm). 확인 생존 강엣지 있으면 주 엣지 전환, 없으면 1h로 관문2.
+**Phase 3(관문1) 종착 완료 — PASS.** 주 엣지 후보 = **15m + 1h 상위맥락**(결정TF 15m·16열 피처세트·라벨 atr/w24/N24=6h).
+
+**다음 = Phase 4 (관문2 경제적엣지)**: 멍청3층 플러그인 배선(방향·θ진입·고정사이즈·배리어청산 + 비용모델, 기존 엔진 경유) → 15m+1h 엣지가 **비용 차감 후 생존하나**.
+- **⚠️ 핵심 관건 = 비용**: 15m 지평 6h로 **거래 잦음** → 관문2 비용이 진짜 시험(통계엣지≠경제엣지). 통계엣지는 강하나 경제성은 미지.
+- **MTF 역할2(진입게이트)**: 상위맥락으로 진입 필터 → 거래빈도↓·비용↓ (Phase 4서 목적있게 도입, 역할1과 별개).
+- **전제·플래그**: F-3(실펀딩 다운로드 옵션)·F-11(라벨-실행 정합·인트라바 복원)·F-14(collapse 임계 통일, 게이트 활성화 시) Phase 4 착수 전 검토.
+- MTF 이득은 주라벨에서만 측정 — 필요 시 라벨교차 재확인(F-1 예산 별도).

@@ -19,13 +19,17 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.research.data.loader import csv_filename, load_audited, load_ohlcv
+from src.research.data.loader import (
+    csv_filename,
+    forward_fill_completed,
+    load_audited,
+    load_ohlcv,
+)
 from src.research.labeling.distribution import evaluate_layer1, evaluate_layer3
 from src.research.labeling.triple_barrier import LabelParams, compute_triple_barrier
 from src.research.validation.regime import (
     TREND_COL,
     RegimeParams,
-    forward_fill_completed,
     tag_regimes,
 )
 from src.research.validation.splitter import WalkForwardSplitter

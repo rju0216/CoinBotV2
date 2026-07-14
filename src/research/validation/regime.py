@@ -20,8 +20,6 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from src.data.historical import TF_MS
-
 # regime 출력 네임스페이스 (feature 방화벽의 계약): 모든 출력 컬럼이 이 접두어로
 # 시작한다. Phase 2 feature 조립부는 이 접두어 컬럼을 전부 배제한다(회귀 테스트).
 REGIME_PREFIX = "regime"
@@ -134,43 +132,4 @@ def tag_regimes(
     return out
 
 
-def forward_fill_completed(
-    higher: pd.Series | pd.DataFrame,
-    lower_index: pd.DatetimeIndex,
-    higher_timeframe: str,
-) -> pd.Series | pd.DataFrame:
-    """상위 TF 값을 **완성된 봉만** 하위 index 에 인과적으로 매핑.
-
-    상위 봉의 timestamp 는 봉 **시작**시각이므로, 그 봉은 (시작 + interval) 시점에야
-    완성된다. 하위 시각 t 에는 완성시각 <= t 인 가장 최근 상위 봉 값만 쓸 수 있다
-    (진행 중 봉 배제 — 미래 누수 방지, 설계 §9 / 기둥 2).
-
-    Phase 3 멀티타임프레임 결합과 공유될 헬퍼(현재 regime 전용, 2번째 사용처에서
-    공용 위치로 승격 예정 — 선제 추상화 회피).
-    """
-    if higher_timeframe not in TF_MS:
-        raise ValueError(f"미지원 timeframe: {higher_timeframe}")
-    interval = pd.Timedelta(milliseconds=TF_MS[higher_timeframe])
-
-    is_series = isinstance(higher, pd.Series)
-    hi = higher.to_frame(name="_v") if is_series else higher.copy()
-    hi = hi.sort_index()
-    completion = hi.index + interval  # 각 상위 봉의 완성시각
-
-    right = hi.reset_index(drop=True)
-    right["_completion"] = completion
-    right = right.sort_values("_completion")
-
-    left = pd.DataFrame({"_ts": pd.DatetimeIndex(lower_index)}).sort_values("_ts")
-    merged = pd.merge_asof(
-        left, right, left_on="_ts", right_on="_completion", direction="backward"
-    )
-    merged = merged.set_index("_ts")
-    merged.index.name = getattr(lower_index, "name", None) or "timestamp"
-    value_cols = [c for c in merged.columns if c != "_completion"]
-    result = merged[value_cols]
-    # 원래 lower_index 순서로 정렬
-    result = result.reindex(pd.DatetimeIndex(lower_index))
-    if is_series:
-        return result["_v"].rename(higher.name)
-    return result
+# forward_fill_completed 는 data/loader.py 로 승격됨(TF정렬 공용 헬퍼, MTF·regime 공용).

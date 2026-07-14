@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from src.research.data.loader import forward_fill_completed
 from src.research.validation.regime import (
     LABEL_COL,
     REGIME_PREFIX,
@@ -12,7 +13,6 @@ from src.research.validation.regime import (
     VOL_COL,
     RegimeParams,
     _apply_min_duration,
-    forward_fill_completed,
     tag_regimes,
 )
 

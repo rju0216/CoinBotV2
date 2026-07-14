@@ -124,3 +124,46 @@ def resample_ohlcv(
     out = out[full]
     out.index.name = df.index.name or "timestamp"
     return out
+
+
+def forward_fill_completed(
+    higher: pd.Series | pd.DataFrame,
+    lower_index: pd.DatetimeIndex,
+    higher_timeframe: str,
+) -> pd.Series | pd.DataFrame:
+    """상위 TF 값을 **완성된 봉만** 하위 index 에 인과적으로 매핑 (TF정렬 공용 헬퍼).
+
+    상위 봉의 timestamp 는 봉 **시작**시각이므로, 그 봉은 (시작 + interval) 시점에야
+    완성된다. 하위 시각 t 에는 완성시각 <= t 인 가장 최근 상위 봉 값만 쓸 수 있다
+    (진행 중 봉 배제 — 미래 누수 방지, 설계 §9 / 기둥 2).
+
+    공용 사용처: ① regime(1d→모델TF 국면 ff, 분석축) ② MTF(상위TF 완성봉 피처를
+    결정TF X 에 concat, R4.2). regime.py 에서 data 층으로 승격(features→validation 상향의존
+    회피, resample_ohlcv 와 같은 TF정렬 집).
+    """
+    if higher_timeframe not in TF_MS:
+        raise ValueError(f"미지원 timeframe: {higher_timeframe}")
+    interval = pd.Timedelta(milliseconds=TF_MS[higher_timeframe])
+
+    is_series = isinstance(higher, pd.Series)
+    hi = higher.to_frame(name="_v") if is_series else higher.copy()
+    hi = hi.sort_index()
+    completion = hi.index + interval  # 각 상위 봉의 완성시각
+
+    right = hi.reset_index(drop=True)
+    right["_completion"] = completion
+    right = right.sort_values("_completion")
+
+    left = pd.DataFrame({"_ts": pd.DatetimeIndex(lower_index)}).sort_values("_ts")
+    merged = pd.merge_asof(
+        left, right, left_on="_ts", right_on="_completion", direction="backward"
+    )
+    merged = merged.set_index("_ts")
+    merged.index.name = getattr(lower_index, "name", None) or "timestamp"
+    value_cols = [c for c in merged.columns if c != "_completion"]
+    result = merged[value_cols]
+    # 원래 lower_index 순서로 정렬
+    result = result.reindex(pd.DatetimeIndex(lower_index))
+    if is_series:
+        return result["_v"].rename(higher.name)
+    return result

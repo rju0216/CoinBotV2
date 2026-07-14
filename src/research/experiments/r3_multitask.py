@@ -21,7 +21,12 @@ import numpy as np
 import pandas as pd
 
 from src.research.data.audit import audit_continuity
-from src.research.data.loader import csv_filename, load_audited, resample_ohlcv
+from src.research.data.loader import (
+    csv_filename,
+    forward_fill_completed,
+    load_audited,
+    resample_ohlcv,
+)
 from src.research.features.build import build_features
 from src.research.labeling.triple_barrier import LABEL_CLASSES, LabelParams, compute_triple_barrier
 from src.research.models import SmallMLP
@@ -29,7 +34,7 @@ from src.research.normalize import RobustScaler, ZScoreNormalizer
 from src.research.validation.baselines import PriorBaseline, UniformBaseline
 from src.research.validation.harness import run_walk_forward
 from src.research.validation.ledger import RunLedger
-from src.research.validation.regime import LABEL_COL, forward_fill_completed, tag_regimes
+from src.research.validation.regime import LABEL_COL, tag_regimes
 from src.research.validation.splitter import WalkForwardSplitter
 
 SYMBOL = "BTC/USDT:USDT"

@@ -17,6 +17,7 @@ from src.research.data.audit import AuditError
 from src.research.data.loader import (
     OHLCV_COLUMNS,
     csv_filename,
+    forward_fill_completed,
     load_audited,
     load_ohlcv,
 )
@@ -28,7 +29,6 @@ from src.research.validation.metrics import FoldPrediction, aggregate_metrics
 from src.research.validation.regime import (
     LABEL_COL,
     RegimeParams,
-    forward_fill_completed,
     tag_regimes,
 )
 from src.research.validation.splitter import WalkForwardSplitter

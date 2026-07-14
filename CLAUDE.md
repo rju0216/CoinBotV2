@@ -95,11 +95,13 @@
    - `src/research/` — **모델 개발 오프라인 substrate**: data(로더·audit)·validation
      (regime·splitter·metrics·baselines·harness·ledger)·causality(leakage)·normalize (Phase 0) +
      **labeling**(volatility·triple_barrier·distribution — 삼중배리어 라벨, **확정 atr/w96/x3.0/N24**, Phase 1) +
-     **features**(simple·trend_strength·kalman·build — 1층 6축 → **X 8열**, robust KF·ER/Hurst, Phase 2) +
+     **features**(simple·trend_strength·kalman·build — 1층 6축 → **X 8열**, robust KF·ER/Hurst, Phase 2 +
+     **mtf**(build_mtf_features — 결정TF X + 상위TF 완성봉 concat, R4.2)) +
      **models**(base `ProbaModel`·tree_bench·mlp 멀티태스크헤드, 2층)·**experiments**(r1_smoke·
-     r2_window_search·r3_multitask·r3_arch_kf·**tf_expansion** TF/MTF). **R1~R3+R4.1 완료: 1h 튜닝저항,
-     R4.1서 15m이 1h보다 강엣지(확인대기). 다음=15m 확인** — `memory/phase3_R4_handoff.md` 참조. 엔진과 분리.
-     상세는 `docs/00_Work_Report/QuantModel_MasterPlan.md`. 의존성은 `requirements-ml.txt`.
+     r2_window_search·r3_multitask·r3_arch_kf·**tf_expansion**(단독TF)·**tf_confirm**(15m 확인)·**tf_mtf**(MTF)).
+     **R1~R4 완료 — 관문1(통계엣지) PASS. 주 엣지 = 15m + 1h 상위맥락**(단독15m>1h·확인CONFIRM·MTF 1h 강화·4h 중복).
+     **다음 = Phase 4 관문2(경제성) — ⚠️ 15m 6h지평 거래빈도 비용이 관건.** 엔진과 분리.
+     상세는 `docs/00_Work_Report/QuantModel_MasterPlan.md`(§12-6·D-028~030). 의존성은 `requirements-ml.txt`.
 6. **캔들 캐시 (data/, git untracked)**: `data/candles/*.csv`.
 
 ---

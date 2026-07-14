@@ -19,7 +19,7 @@ import pandas as pd
 
 from src.data.historical import TF_MS
 from src.research.data.audit import audit_continuity
-from src.research.data.loader import load_audited, resample_ohlcv
+from src.research.data.loader import forward_fill_completed, load_audited, resample_ohlcv
 from src.research.experiments.r1_smoke import (
     ModelEval,
     _consistency_vs_prior,
@@ -38,7 +38,7 @@ from src.research.normalize import ZScoreNormalizer
 from src.research.validation.baselines import PriorBaseline, UniformBaseline
 from src.research.validation.harness import run_walk_forward
 from src.research.validation.ledger import RunLedger
-from src.research.validation.regime import LABEL_COL, forward_fill_completed, tag_regimes
+from src.research.validation.regime import LABEL_COL, tag_regimes
 from src.research.validation.splitter import WalkForwardSplitter
 
 SYMBOL = "BTC/USDT:USDT"
@@ -133,6 +133,30 @@ def _regime_tags_for(tf: str, index: pd.Index, candle_dir: str) -> pd.Series:
     return tags.reindex(index)
 
 
+def _per_regime_edge(prior_res, mlp_runs) -> pd.DataFrame:
+    """국면별 엣지 진단 (R4.1 15m 확인축①): Prior_ll − MLP(seed중앙)_ll 마진 + seed 반전비율.
+
+    계약(F-8): regime_tags 는 모델-TF 정렬 전제 → Prior·MLP 동일 val·tags 이므로 국면
+    인덱스 동일. **Prior 국면 인덱스 기준 정렬**(seam 리스크: 한쪽에만 존재하는 국면 오정렬).
+    반환 cols: n(귀속봉)·prior_ll·mlp_ll_median·margin(양수=엣지 유지)·reversal_seed_frac
+    (seed 중 그 국면에서 MLP 가 Prior 보다 나쁜 비율 — 노이즈면 갈림, 자기보정).
+    """
+    prior_pr = prior_res.report.per_regime
+    prior_ll = prior_pr["log_loss"]
+    idx = prior_ll.index
+    seed_mat = pd.DataFrame(
+        {i: r.report.per_regime["log_loss"].reindex(idx) for i, r in enumerate(mlp_runs)}
+    )
+    mlp_median = seed_mat.median(axis=1)
+    return pd.DataFrame({
+        "n": prior_pr["n"].reindex(idx),
+        "prior_ll": prior_ll,
+        "mlp_ll_median": mlp_median,
+        "margin": prior_ll - mlp_median,
+        "reversal_seed_frac": seed_mat.ge(prior_ll, axis=0).mean(axis=1),
+    })
+
+
 @dataclass
 class TFGate1Result:
     tf: str
@@ -141,18 +165,28 @@ class TFGate1Result:
     evals: dict            # name -> ModelEval
     prior_ll: float
     ll_margin: float       # prior_ll - mlp_ll (엣지 크기, TF 간 비교)
+    per_regime: pd.DataFrame | None = None   # 국면별 엣지 진단 (확인축①, _per_regime_edge)
 
 
 def run_tf_gate1(tf: str, candle_dir: str = "data/candles", ledger_path: str | None = None,
                  mlp_seeds=MLP_SEEDS, label: LabelParams | None = None,
-                 split: dict | None = None) -> TFGate1Result | None:
-    """단독 TF 관문1 (R1과 동일 규칙). 1h 대비 엣지 강도 비교용 지표 반환."""
-    if not os.path.exists(os.path.join(candle_dir,
-                          SYMBOL.replace("/", "_").replace(":", "_") + f"_{tf}.csv")) and tf != "1d":
-        return None
+                 split: dict | None = None,
+                 df: pd.DataFrame | None = None,
+                 X: pd.DataFrame | None = None) -> TFGate1Result | None:
+    """단독 TF 관문1 (R1과 동일 규칙). 1h 대비 엣지 강도 비교용 지표 반환.
+
+    df 주입 시 load_tf 를 건너뛴다(seam 테스트 소슬라이스). X 주입 시 build_features 대신
+    그 피처를 쓴다(MTF: 결정TF X + 상위TF 완성봉 concat; y·regime 은 df·X.index 로 정합).
+    미주입 시 캐시 부재면 None(skip-guard).
+    """
+    if df is None:
+        if not os.path.exists(os.path.join(candle_dir,
+                              SYMBOL.replace("/", "_").replace(":", "_") + f"_{tf}.csv")) and tf != "1d":
+            return None
+        df = load_tf(tf, candle_dir)
     label = label or TF_LABELS[tf]
-    df = load_tf(tf, candle_dir)
-    X = build_features(df)                              # 기본창(R2), 봉기준
+    if X is None:
+        X = build_features(df)                          # 기본창(R2), 봉기준
     y = compute_triple_barrier(df, label).labels
     sp = (WalkForwardSplitter(label_horizon=label.horizon, **split) if split
           else splitter_for(tf, label.horizon))
@@ -196,7 +230,8 @@ def run_tf_gate1(tf: str, candle_dir: str = "data/candles", ledger_path: str | N
                    campaign=camp, is_comparison=True)
 
     return TFGate1Result(tf=tf, verdict=verdict, reason=reason, evals=evals,
-                         prior_ll=prior_ll, ll_margin=prior_ll - mlp_ev.ll_median)
+                         prior_ll=prior_ll, ll_margin=prior_ll - mlp_ev.ll_median,
+                         per_regime=_per_regime_edge(prior_res, mlp_runs))
 
 
 def _print_tf_report(r: TFGate1Result) -> None:

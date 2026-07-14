@@ -70,7 +70,14 @@ tests/                       # 백테 골격 회귀 테스트 (픽스처는 test
 >   + `features.hurst` 벡터화(F-13, 75x). 결과 = **기본창 유지**(창 튜닝 무gain). MasterPlan §12-4.
 > - **Phase 3 R3**(모델 하이퍼): `models/mlp` 멀티태스크 헤드(reach·λ·expire마스킹, reach=None=단일태스크)
 >   + `experiments/r3_multitask`(멀티태스크·정규화)·`r3_arch_kf`(구조·KF). 결과 = **R1 config 유지**
->   (멀티태스크·robust·용량↑·KF 무gain, **1h 튜닝저항 확정**). F-6 최종=z. §12-5. 다음=R4(TF/MTF).
+>   (멀티태스크·robust·용량↑·KF 무gain, **1h 튜닝저항 확정**). F-6 최종=z. §12-5.
+> - **Phase 3 R4**(TF/MTF·관문1 종착): `experiments/tf_expansion`(TF스케일 splitter·per-TF 분포게이트·
+>   `run_tf_gate1` 단독TF 관문1, `df`/`X` 주입·`_per_regime_edge`) + `tf_confirm`(15m 확인 사전등록
+>   규칙: 국면일관성·라벨강건성·combine) + `features/mtf.build_mtf_features`(결정TF X + 상위TF **완성봉**
+>   피처 concat, `mtf{tf}_` 접두어, F-4 tail 가드) + `tf_mtf`(MTF material 판정·러너).
+>   `data/loader.forward_fill_completed`(완성봉 인과 TF정렬, regime.py 에서 승격 D-030).
+>   **결과 = 관문1 PASS, 주 엣지 = 15m + 1h 상위맥락**(단독15m>1h·확인CONFIRM·MTF 1h 강화·4h 중복). §12-6.
+> - **다음 = Phase 4**(관문2 경제성): 플러그인 배선 + 비용모델. **15m 6h지평 거래빈도 비용이 관건**.
 > - 상세·진행은 `docs/00_Work_Report/QuantModel_MasterPlan.md`, 의존성은 `requirements-ml.txt`.
 
 ## 3. 새 모델(전략) 추가 방법
