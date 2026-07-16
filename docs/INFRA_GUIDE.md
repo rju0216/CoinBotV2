@@ -77,7 +77,12 @@ tests/                       # 백테 골격 회귀 테스트 (픽스처는 test
 >   피처 concat, `mtf{tf}_` 접두어, F-4 tail 가드) + `tf_mtf`(MTF material 판정·러너).
 >   `data/loader.forward_fill_completed`(완성봉 인과 TF정렬, regime.py 에서 승격 D-030).
 >   **결과 = 관문1 PASS, 주 엣지 = 15m + 1h 상위맥락**(단독15m>1h·확인CONFIRM·MTF 1h 강화·4h 중복). §12-6.
-> - **다음 = Phase 4**(관문2 경제성): 플러그인 배선 + 비용모델. **15m 6h지평 거래빈도 비용이 관건**.
+> - **Phase 4**(관문2 경제성·**종착 FAIL-on-cost**): `experiments/oos_export`(채택 15m+1h OOS 예측 박제·
+>   barrier_frac·mtf1h_kf_slope 파생) + **`src/strategy/plugins/dumb_l3.py`**(멍청3층: 박제조회→θ방향→
+>   실진입가 배리어→고정notional→N봉 만기, **엔진 수정0**) + 엔진 `_slice_candles` **O(n²)→O(log n) 수정**
+>   (D-031, 전체OOS 1m ~39h→~8분, 동작보존). **결과 = 엣지 실재(gross+126%)하나 거래당엣지≪비용(1/5)
+>   → net 음, 관문2 FAIL**(§12-7). 진단: churn=비용 절반. **다음 = Phase 5**(정책 최적화: 홀딩→비대칭/
+>   trailing→maker 시나리오→(조건부)지평 재개).
 > - 상세·진행은 `docs/00_Work_Report/QuantModel_MasterPlan.md`, 의존성은 `requirements-ml.txt`.
 
 ## 3. 새 모델(전략) 추가 방법

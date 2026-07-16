@@ -37,3 +37,19 @@ strategies:
 #   risk_per_trade_pct: 0.01
 #   max_drawdown_pct: 0.35
 #   <전략 고유 파라미터>: ...
+
+# ---- dumb_l3 (Phase 4 멍청3층 — 관문2 경제성 검증용, 현재 비활성) ----
+# 배선 재현성 위해 문서화. 활성화하려면 strategies.active 에 "dumb_l3" 추가.
+# 관문2 결과 = FAIL-on-cost(엣지 실재하나 거래당엣지≪비용). 상세 MasterPlan §12-7·D-033.
+# 예측은 오프라인 박제 아티팩트(oos_export)에서 조회 → θ 방향 → 실진입가 배리어 → 만기 청산.
+# ⚠️ 체결해상: fill_tf="1m" 로 1m master(intrabar stop-out 정밀, I-004). 없으면 15m(낙관편향).
+dumb_l3:
+  artifact_path: "data/research/phase4/oos_predictions_15m_mtf1h.parquet"
+  pred_source: "ens"                   # ens(5seed 앙상블) | s0..s4
+  theta: 0.40                          # 진입 게이트: max(p_up,p_down) >= theta
+  notional: 10000.0                    # 고정 달러 노출(비복리)
+  horizon_bars: 24                     # 만기 청산 봉 수(=라벨 N, 6h@15m)
+  fill_tf: "1m"                        # 체결 해상 TF(1m 권장, I-004). null=15m master
+  mtf_gate: false                      # MTF 역할2: 신호방향·1h추세(mtf1h_kf_slope) 부호 일치시만
+  require_dir_gt_expire: false
+  allow_reverse: false                 # 라벨 충실: 배리어/만기까지 보유

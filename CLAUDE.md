@@ -98,10 +98,12 @@
      **features**(simple·trend_strength·kalman·build — 1층 6축 → **X 8열**, robust KF·ER/Hurst, Phase 2 +
      **mtf**(build_mtf_features — 결정TF X + 상위TF 완성봉 concat, R4.2)) +
      **models**(base `ProbaModel`·tree_bench·mlp 멀티태스크헤드, 2층)·**experiments**(r1_smoke·
-     r2_window_search·r3_multitask·r3_arch_kf·**tf_expansion**(단독TF)·**tf_confirm**(15m 확인)·**tf_mtf**(MTF)).
-     **R1~R4 완료 — 관문1(통계엣지) PASS. 주 엣지 = 15m + 1h 상위맥락**(단독15m>1h·확인CONFIRM·MTF 1h 강화·4h 중복).
-     **다음 = Phase 4 관문2(경제성) — ⚠️ 15m 6h지평 거래빈도 비용이 관건.** 엔진과 분리.
-     상세는 `docs/00_Work_Report/QuantModel_MasterPlan.md`(§12-6·D-028~030). 의존성은 `requirements-ml.txt`.
+     r2_window_search·r3_multitask·r3_arch_kf·**tf_expansion**(단독TF)·**tf_confirm**(15m 확인)·**tf_mtf**(MTF)·
+     **oos_export**(Phase4 OOS 예측 박제)). **관문1(통계엣지) PASS**(15m+1h, §12-6).
+     **Phase 4 관문2(경제성) 종착 = FAIL-on-cost**: 엣지 실재(gross+126%)나 거래당엣지≪비용(1/5)→net 음
+     (§12-7·D-033). 멍청3층 = `src/strategy/plugins/dumb_l3.py`(엔진 경유). 엔진 `_slice_candles` O(n²)수정(D-031).
+     **다음 = Phase 5(정책 최적화)**: 홀딩/persistence 첫실험(churn=비용절반)→비대칭/trailing→maker 시나리오→(조건부)지평 재개.
+     상세는 `docs/00_Work_Report/QuantModel_MasterPlan.md`(§12-7·D-031~033·I-004). 의존성은 `requirements-ml.txt`.
 6. **캔들 캐시 (data/, git untracked)**: `data/candles/*.csv`.
 
 ---

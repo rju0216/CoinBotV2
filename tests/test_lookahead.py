@@ -45,6 +45,28 @@ def _config() -> dict:
     return {"strategies": {"active": []}}
 
 
+def test_slice_searchsorted_equivalent_to_boolean_mask():
+    """D-031: searchsorted 슬라이스가 부울마스크(df.index < ts)와 결과 동일 (동작 보존).
+
+    경계: ts 가 봉 정각·봉 사이·전체 이전/이후. 인덱스 정렬 전제(엔진 계약)에서 등가.
+    """
+    eng = BacktestEngine(_config(), "2024-01-01", "2024-01-02")
+    df = _candles(20)
+    eng.inject_candles({"15m": df})
+    ts_cases = [
+        df.index[0],                              # 첫 봉 정각 → 앞이 빔
+        df.index[10],                             # 중간 봉 정각
+        df.index[-1],                             # 마지막 봉 정각
+        df.index[5] + pd.Timedelta(minutes=7),    # 봉 사이
+        df.index[0] - pd.Timedelta(minutes=1),    # 전체 이전 → 빔
+        df.index[-1] + pd.Timedelta(minutes=1),   # 전체 이후 → 전부
+    ]
+    for ts in ts_cases:
+        got = eng._slice_candles(ts)["15m"]
+        expected = df[df.index < ts]
+        pd.testing.assert_frame_equal(got, expected)
+
+
 def test_slice_excludes_current_and_future_bars():
     eng = BacktestEngine(_config(), "2024-01-01", "2024-01-02")
     df = _candles(20)

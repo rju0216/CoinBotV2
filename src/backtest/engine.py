@@ -640,12 +640,22 @@ class BacktestEngine:
     def _slice_candles(self, ts) -> dict[str, pd.DataFrame]:
         """ts 시점 직전까지의 캔들 반환 (lookahead 제거).
 
-        `df[df.index < ts]` 로 진행 중 봉을 배제 — ts 시점엔 그 봉이 아직 마감 전이라
+        진행 중 봉(index == ts)과 그 이후를 배제 — ts 시점엔 그 봉이 아직 마감 전이라
         close 가 확정되지 않았으므로, 그 값이 피처로 새면 미래 정보 누출이 된다.
+
+        구현: 인덱스는 시간순 정렬(온-그리드 감사 데이터·시간순 주입 계약)이므로
+        ``searchsorted(ts, "left")`` = ts '미만' 봉 수. ``iloc[:pos]`` 슬라이스(뷰)는
+        ``df[df.index < ts]`` 부울마스크와 **결과 동일**하나 봉당 O(log n)이라 전체
+        백테가 O(n²)→O(n log n) (긴/촘촘한 1m 백테 실행시간 급감, D-031). 등가성은
+        test_lookahead 의 회귀로 박제.
         """
         result: dict[str, pd.DataFrame] = {}
         for tf, df in self.candles_per_tf.items():
-            result[tf] = df if df.empty else df[df.index < ts]
+            if df.empty:
+                result[tf] = df
+            else:
+                pos = df.index.searchsorted(ts, side="left")
+                result[tf] = df.iloc[:pos]
         return result
 
     # ---- 결과 ----

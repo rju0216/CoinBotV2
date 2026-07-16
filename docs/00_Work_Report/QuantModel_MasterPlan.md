@@ -5,7 +5,7 @@
 > **참조만** 한다(중복 서술 금지). 이 문서는 개발 계획·학습 스케줄·리뷰어
 > 플래그·결정 로그(D-NNN)·잠재 이슈(I-NNN)·진행 기록표를 담는다.
 >
-> **현재 시점**: **Phase 0~3 완료 — 관문1(통계엣지) PASS**. 1h 튜닝저항(R1~R3, §12-3~5) → 다른 척도(R4). **R4 결론: 주 엣지 후보 = 15m + 1h 상위맥락**(§12-6). 단독 15m이 1h보다 강엣지·확인 CONFIRM(6국면·직교라벨), MTF 1h 소폭 material 강화(+0.0036, 4h 중복). **Phase 3 종착**. **다음 = Phase 4 관문2(경제성)** — **⚠️ 15m 지평 짧아(6h) 거래 잦음 → 관문2 비용이 진짜 관건**(통계엣지≠경제엣지).
+> **현재 시점**: **Phase 0~4 완료**. 관문1(통계엣지) PASS(§12-6, 15m+1h). **Phase 4 관문2(경제성) 종착 = FAIL-on-cost**(§12-7, D-033): 엣지 실재(gross +126%)하나 **거래당 엣지(0.02%)가 왕복비용(0.1%)의 1/5** → 전 진입지렛대(θ·MTF게이트) net 음. 배선(D-032)·엔진 O(n²)수정(D-031)·1m 필수(I-004) 확정. **다음 = Phase 5**(정책 최적화): 홀딩/persistence 첫 실험(churn=비용 절반 진단) → 비대칭/trailing → maker 비용시나리오 → (조건부)지평 재개.
 
 ---
 
@@ -15,7 +15,7 @@
 |---|---|---|
 | BTC 퍼프 캔들 | 15m/1h/4h/1d 모두 **2020~2026.6 (~6.5년)** 보유 (1h 56.9k행, 1m도 있음) | 2020폭락·21불·22베어·23회복·24불 포함 → 독립 매크로 국면 확보 |
 | 의존성 | **torch 2.11(CUDA)·sklearn·lightgbm·xgboost 이미 설치** | 2층 MLP + 트리 벤치 **신규 의존성 0** |
-| 펀딩 데이터 | **없음** | 비용모델 펀딩 = 설계대로 "보수적 상수"(또는 후속 다운로드) → F-3 |
+| 펀딩 데이터 | **없음** | Phase4 = funding 0 baseline + 상수펀딩(~0.01%/8h) 민감도(trades 후처리, D-c). 판정 무영향(비용은 수수료가 지배) → F-3 해소 |
 | 기타 종목 | ETH/SOL/XRP/DOGE 4h 존재 | 국면검증 이후 멀티심볼 강건성 재활용 가능(보너스) |
 | TF별 종료일 | 1h=6/16, 4h=6/28, 1d=6/23 **불일치** | MTF 결합 시 겹치는 구간 정렬 필요 → F-4 |
 
@@ -53,7 +53,7 @@
 | **1 라벨** ✅ | 삼중배리어 생성기(ATR·YZ, x·N, 인과) + **라벨분포 검증**(층1 학습가능성·층3 국면일관성) — **완료: N=24·atr/w96/x3.0 확정** | **후보1 라벨분포**(성과 안 봄) | 분포 게이트 **통과** |
 | **2 1층 피처** ✅ | 6축 피처(robust KF·ER/Hurst·변동성변화·상대거래량·semi-dev·종가위치), **기본창** — **완료: build_features→X 8열, 인과·행동 검증** | 소프트웨어 정합성(인과·정상성) | — |
 | **3 2층 MLP** ✅ | 공유트렁크 멀티태스크 MLP + 트리 벤치 — **R1~R4 완료(관문1 PASS)**. 1h 튜닝저항(창·멀티태스크·정규화·구조·KF 무gain, R1 config 유지) → R4서 **15m+1h 채택**(단독15m>1h·확인CONFIRM·MTF 1h 강화) | **후보2 예측력** | **관문1 통계적엣지 PASS** |
-| **4 멍청한 3층** | 방향·θ진입·고정사이즈·배리어청산 + 비용모델, **기존 엔진 경유** | **후보3 경제성** | **관문2 경제적엣지** |
+| **4 멍청한 3층** ✅ | 방향·θ진입·고정사이즈·배리어청산 + 비용모델, **기존 엔진 경유** — **완료: 관문2 FAIL-on-cost**(§12-7). 엣지 실재(gross+126%)나 거래당엣지≪비용(1/5) → net 음. plugins/dumb_l3·oos_export·엔진 O(n²)수정(D-031) | **후보3 경제성** | **관문2 FAIL** |
 | **5 최종 3층** | 엣지 성격에 맞춘 형태(직접정책최적화 유력) | — | — |
 
 - **Phase 1~3 은 엔진 무관 순수 오프라인 연구 코드**(관문1 = 라벨 대비 예측 평가, 엔진 불필요).
@@ -115,7 +115,7 @@
 | **R2 창 순차탐색** ✅ | R1 통과 후 | 1h 고정, 피처 창 coordinate descent(MLP 5seed 선택 + 트리 참고) | **19판(예산 60)** | **완료: 창 튜닝 무material gain**(Δll −0.0034 노이즈수준) → **기본창 유지**. §12-4 |
 | **R3 하이퍼 소그리드** ✅ | R2 후 | 1h, R3.1 멀티태스크(λ0.1/0.3)·정규화(z/robust) 5판 + R3.2 구조/KF 8판 | 13판 | **완료: 전부 무gain**(멀티태스크·robust·용량↑·KF 다 무개선/악화) → **R1 config 유지**. §12-5 |
 | **R4 TF/MTF 확장** ✅ | R1~R3 후 | 4h·1d·15m 단독 + MTF(15m+상위 완성봉) | 단독4 + MTF 3(사전등록) | **완료: 15m 채택**(단독15m>1h·확인CONFIRM 6국면·직교라벨 ROBUST) + **MTF 1h 강화**(+0.0036 material, 4h 중복). §12-6 |
-| **R5 경제성** | Phase4 | 멍청3층, 엔진 경유, θ 안정성 스윕 + 국면분리 | 생존자만 | 관문2 |
+| **R5 경제성** ✅ | Phase4 | 멍청3층, 엔진 경유. 전체 OOS 1m baseline(θ0.40) + 사전등록 θ{.35~.50}×MTF게이트{off,on} 8-config 스윕 | **채택 0** | **관문2 FAIL-on-cost**(§12-7) |
 
 **요지**: 처음부터 전TF×전조합 폭발 금지. 1h 에서 파이프라인 입증 후 확장.
 
@@ -147,7 +147,7 @@ CLAUDE.md 규칙 15의 C 등급은 아래 기둥을 약화·모순·재도입하
 |---|---|---|---|
 | **F-1** | R2 창 순차탐색 = 홀드아웃 없는 검증셋 성과 선별 → **검증셋 과적합 위험**. 방어: 비교개수 사전등록 + 선택 창을 국면분리에서 재확인. | 계획 §5 | **R2~R4 적용**: 예산 사전등록(R2 19/60·R4_15m_confirm 2·R4_mtf 3) + 확인(선별↔확인 분리). R4: 라벨=분포 선정(성과 안 봄)·15m 국면일관+직교라벨 확인·MTF 임계초과 채택(max 고르기 아님). 열림(Phase4 동일 규율) |
 | **F-2** | 선별 2단 중첩(라벨=분포/TF=예측력). 다른 TF는 "4개 중 최고 뽑기(부풀림)" 아니라 **확증·강건성**으로. | 계획 §5 | 열림(Phase3 대비) |
-| **F-3** | 펀딩 데이터 부재 → 상수 근사가 실비용/엣지 왜곡 가능. Phase4 전 실펀딩 다운로드 옵션. | 계획 §0 | 열림(Phase4 대비) |
+| **F-3** | 펀딩 데이터 부재 → 상수 근사가 실비용/엣지 왜곡 가능. Phase4 전 실펀딩 다운로드 옵션. | 계획 §0 | **해소(Phase4, D-c)**: funding 0 baseline + 상수펀딩(~0.01%/8h 항상-비용) 민감도(trades 후처리, 엔진무손). 6h지평서 펀딩 1차영향 작고 **비용은 수수료가 지배**(net 판정 무영향) → 실펀딩 불요. 판정 뒤집는 지점이면 격상(현 미발생) |
 | **F-4** | TF별 종료일 불일치 → MTF 결합 시 겹치는 구간 정렬 필수. | 계획 §0 | **해소(R4.2)**: 실측 1h·4h 종료일 ≥ 15m(tail 커버리지 손실 0). `build_mtf_features` 에 **tail 커버리지 가드**(상위TF 완성봉이 결정TF tail 미달 시 하드페일 — stale-fill=무한 forward-fill 방지, fresh-eyes MEDIUM①). 회귀 박제. |
 | **F-5** | purge/embargo = 라벨 지평 N에 결합(교차-Phase). splitter가 N을 파라미터로 받아야 하고, walk-forward T·V·S 도 피처/라벨 창에 번인 결합 → 수치는 Phase1~2 후 확정. | 계획 §11 | **해소(Phase1)**: **N=24 확정** → T·V·S = train_min 8760·val_size 2160·N 24·**22폴드**(step=val). embargo 0 유지 |
 | **F-6** | 설계 §7이 **z-score** 지정했으나 robust 대비 **논증 없음**(근거는 train-only 인과성뿐). 기둥6(팻테일) 견주면 robust(median/MAD)이 이상치에 강함. **방식**: Phase2에서 ①분포 진단 먼저(비교예산 무관)→②왜곡 유의시만 예측력 비교(F-1 계수). Step0.3 scaler는 `BaseScaler` 교체 인터페이스(robust 드롭인). | Step0.3 | **최종 해소(R3.1)**: 실 1h 예측력 비교 → robust 가 z 보다 **+0.0006 나쁨**(무gain) → **z-score 확정 채택**(팻테일 진단 유의했으나 예측력은 z 우세). Phase2 진단(초과첨도~73)+R3.1 예측력 판정 완결. |
@@ -155,10 +155,10 @@ CLAUDE.md 규칙 15의 C 등급은 아래 기둥을 약화·모순·재도입하
 | **F-8** | per-regime 귀속 계약: regime_tags는 **모델 TF 정렬** 필수(원시 상위TF 주면 대부분 드롭), n은 "귀속 가능 봉만"(NaN 태그 제외). 문서화됨. | fresh-eyes | 열림(Phase3 커버리지 경고 추가 고려) |
 | **F-9** | `forward_fill_completed`·`ZScoreNormalizer.transform`이 unique/complete 컬럼 무가드 전제. | fresh-eyes | **부분해소(R4.2)**: MTF 는 `build_mtf_features` 가 `mtf{tf}_` 접두어로 **unique 컬럼 보장**(충돌 방지). ZScoreNormalizer 의 complete 전제는 harness F-10 NaN 드롭이 선행 보장. 정규화기 자체 가드는 열림. |
 | **F-10** | `run_walk_forward`가 fold의 y NaN을 드롭 안 함(harness). 삼중배리어 라벨은 동시터치→NaN을 중간에 낼 수 있어(실측 ~0.08%) Phase3 모델 학습 시 NaN 클래스 유입 가능. R0(Phase1)는 분포만·모델 fit 안 함이라 미발현. | Phase1 seam | **해소(Phase3 R1 Step3.1)**: `run_walk_forward` 가 **정규화 前** train·val 각각 X∪y NaN 드롭 + 커버리지 로깅(`WalkForwardResult.coverage`). val NaN 채점 제외. 회귀 5. 실 R1 val 드롭 50봉 |
-| **F-11** | 라벨 참조가=close_i·스캔=후속 high/low(D-007)인데 엔진 진입은 현재봉 open(INFRA §4-3). 라벨-실행 미세 불일치 + 봉내 동시터치(현 NaN 제외)는 1m/15m 인트라바로 복원 가능. | Phase1 | 열림(**Phase4 플러그인 배선 시** 정합·인트라바 복원 검토) |
+| **F-11** | 라벨 참조가=close_i·스캔=후속 high/low(D-007)인데 엔진 진입은 현재봉 open(INFRA §4-3). 라벨-실행 미세 불일치 + 봉내 동시터치(현 NaN 제외)는 1m/15m 인트라바로 복원 가능. | Phase1 | **해소(Phase4)**: 배리어를 **실진입가(open) 앵커**로 재계산(D-b①, barrier_frac=라벨 x·σ 재사용). 동시터치는 **1m master 체결해상**(D-b②)으로 복원 → **I-004 발견**(15m master는 intrabar stop-out 불가시=낙관편향, 1m 필수). seam 통합테스트로 진입타이밍·정합 박제(§12-7) |
 | **F-12** | KF Q/R/dof 를 Phase3 에서 어떻게 인과적합하나 — (a)폴드 train-only MLE 재적합(정규화 동형) vs (b)창길이처럼 config 하이퍼 coordinate descent. 설계 §7 문구는 (a) 뉘앙스, R2 파이프라인은 (b) 정합. Phase2 는 고정 기본값이라 무관. | Phase2 Step2.3 | **해소(R2, D-025)**: **(b) config 하이퍼** 채택 — D-019(피처=폴드무관 순수함수·전역X, harness 슬라이스) **보존**. (a)는 폴드내 KF 재계산이라 D-019 붕괴. KF 실 튜닝은 **R3**. |
 | **F-13** | hurst(R/S) `rolling.apply(python)` 성능 — 실 56.9k봉 build_features 67.7s(hurst 병목). Phase3 R2 창 순차탐색(다수 config×폴드) 전 벡터화 필요. Phase2 스코프=정합성이라 미해결. | Phase2 Step2.2/2.4 | **해소(R2.0a)**: `sliding_window_view` 벡터화(sub-window R/S 전창 동시). 스칼라와 **수치 동치**(실 1h 56.9k 완전 일치·NaN포함), hurst 48.2s→0.64s(75x), build 67.7s→9.2s. NaN 창=pandas min_periods 매칭, 퇴화행만 폴백. 회귀 박제. |
-| **F-14** | (fresh-eyes R4.2) `classify_regime_consistency` 국소붕괴 임계 = **fold-median 전역 ll-margin** vs per_regime **pooled** margin — 집계방식 상이(~2% 스케일차). | fresh-eyes R4 | 열림. **미발현**(전 실행 부호반전 0 → collapse 게이트 미작동). Phase4 게이트 활성화 전 pooled 로 통일 검토. |
+| **F-14** | (fresh-eyes R4.2) `classify_regime_consistency` 국소붕괴 임계 = **fold-median 전역 ll-margin** vs per_regime **pooled** margin — 집계방식 상이(~2% 스케일차). | fresh-eyes R4 | 열림(LOW). **미발현 지속**. Phase4 MTF 역할2 게이트는 **가격 부호(mtf1h_kf_slope) 게이트**로 도입(ll-margin collapse 게이트 미사용) → F-14 무관. 향후 국면-collapse 게이트 활성화 시 pooled 통일 검토. |
 | **F-15** | (fresh-eyes R4.2) `_per_regime_edge` `reversal_seed_frac` = `.ge(prior).mean` — 어떤 seed 가 국면 결여 시 NaN→False 로 반전 과소평가(안전방향 반대). | fresh-eyes R4 | 열림. **미발현**(Prior·전 seed 동일 국면집합, 계약상 결여 없음). 방어적 명시드롭 권장. |
 | **F-16** | (fresh-eyes R4.2) MTF X 는 상위TF 워밍업만큼 선두 NaN 이 baseline 보다 많아 fold-0 유효표본 상이 → "오직 피처만 변경" 격리 미세 위반. | fresh-eyes R4 | 열림(LOW). prior 자기정규화(동일 지지)로 대부분 상쇄·선두 국한. |
 | **F-17** | (fresh-eyes R4.2) `run_mtf_role1` 이 `baseline_ll_margin` 외부주입 — 동일 라벨/splitter/seed 계산 보장이 코드에 없음(footgun). | fresh-eyes R4 | 열림(LOW). 현 실행은 동일 config baseline(문서 계약). Phase4 재사용 시 주의. |
@@ -201,6 +201,9 @@ CLAUDE.md 규칙 15 트리아지 적용. 등급 L/S/C, 건드린 기둥, 상태.
 | **D-028** | R4 단독TF 결론 = **15m 채택**(1h 튜닝저항 → 다른 시간척도가 답). 단독 15m이 1h보다 강엣지(+0.045>+0.028) + **확인 CONFIRM**(6국면 전부 양마진·5seed 무반전 / 직교라벨 12h·w96 ROBUST). 4h 약함·1d 데이터부족(2370봉). 라벨=TF별 분포게이트 선정(성과 안 봄) | C | 8,5 | 확정 |
 | **D-029** | R4.2 MTF 역할1 = **15m+1h 채택**(상위 1h 완성봉 맥락이 15m 엣지 material·국면일관 강화 +0.0036). **4h 중복**(단독 노이즈·1h위 +0.0005 노이즈) → parsimony 로 제외(규칙 best=1h+4h이나 4h 우위=노이즈, 장식금지·R3.2 정합). 역할2(진입게이트)는 Phase4. MTF 이득은 주라벨서만 측정 | C | 5,3,8 | 확정 |
 | **D-030** | `forward_fill_completed` 를 `validation/regime.py` → **`data/loader.py` 승격**(TF정렬 공용 헬퍼, regime·MTF 2사용처 → features→validation 상향의존 회피, docstring 사전약속 이행). 전수스윕 잔존 0 | S | 2,4 | 확정 |
+| **D-031** | (Phase4) `_slice_candles` 매봉 부울마스크 O(n) → 전체 O(n²)(실측: 전체OOS 1m ~39h). **`searchsorted+iloc` O(log n) 수정** — 정렬인덱스라 결과 동일(등가성 회귀+330통과+end-to-end 233거래·−3099.72 재현). 전체OOS 1m ~8분. **"engine 수정0"은 플러그인 추상화 규칙이지 성능버그 방치 아님**(규칙19 근본수정) | S | 2 | 확정 |
+| **D-032** | (Phase4 배선) **OOS 예측 박제 리플레이**(D-a, gate1 통과 예측 그대로 재생=선별↔확인 분리) · **실진입가 배리어 앵커**(D-b①, F-11) · **1m master 체결해상**(D-b②, I-004) · **funding 상수 민감도**(D-c). 사이징=고정 notional(비복리, 비용분석 해석가능) | S,C | 2,3,8 | 확정 |
+| **D-033** | (Phase4 종착) **관문2 판정 = FAIL-on-cost**. 엣지 실재(gross+126%, 전 국면·연도 대부분 양)하나 **거래당 엣지 ~0.02% ≪ 왕복비용 0.1%**(1/5). θ스윕{.35~.50}×MTF게이트{off,on} 채택0(net>0은 θ.50뿐이나 72거래·2/6국면음=winner's curse 탈락). **진입-지렛대(θ·게이트·사이드아웃) 전멸.** churn=비용 절반(진단). **다음=Phase5**(홀딩/persistence 첫실험→비대칭/trailing→maker 시나리오→(조건부)지평 재개). 로드맵 지렛대 한정 금지(새 insight 능동탐색) | C | 5,3,8 | 확정 |
 
 ---
 
@@ -230,7 +233,12 @@ CLAUDE.md 규칙 15 트리아지 적용. 등급 L/S/C, 건드린 기둥, 상태.
 | 2026-07-14 | R3.2 구조·KF + 종착 | `r3_arch_kf` 8판 사전등록: 용량↑ 단조악화(d3w64 +0.0025)·KF 노이즈(±0.0004) → **R1 config 유지**(D-027). 1h 튜닝저항 확정. 신규 r3_arch_kf+2. 문서·§12-5 | 5824cdf |
 | 2026-07-14 | R4.0~R4.1 단독TF | `tf_expansion`: TF스케일 splitter(시간고정 1yr/3mo 봉환산)·per-TF 라벨 분포게이트·`run_tf_gate1`. **15m PASS 강엣지(1h 초과)**·4h PASS 약함·1d 데이터부족. 신규 tf+2. 세션전환→핸드오프 메모리 | e9e879b |
 | 2026-07-15 | R4.1 15m 확인 | `tf_confirm`(사전등록 규칙)·`run_tf_gate1` per_regime 노출. **축① 국면일관 CONFIRM**(6국면 양마진·5seed 무반전)·**축② 라벨강건 ROBUST**(직교 12h·w96). winner's curse 해소 → 15m 확정(D-028). 신규 tf_confirm+단위14·seam2 | (미커밋) |
-| 2026-07-15 | R4.2 MTF 역할1 + R4 종착 | `forward_fill_completed`→loader 승격(D-030)·`features/mtf`·`tf_mtf`·`run_tf_gate1` X주입. **mtf_1h +0.0036 material·CONFIRM**·4h 중복 → **15m+1h 채택**(D-029). fresh-eyes(CRIT/HIGH 0, F-4가드 수정·F-14~17 등록). **317 통과**. §12-6·§5·D-028~030 | (미커밋) |
+| 2026-07-15 | R4.2 MTF 역할1 + R4 종착 | `forward_fill_completed`→loader 승격(D-030)·`features/mtf`·`tf_mtf`·`run_tf_gate1` X주입. **mtf_1h +0.0036 material·CONFIRM**·4h 중복 → **15m+1h 채택**(D-029). fresh-eyes(CRIT/HIGH 0, F-4가드 수정·F-14~17 등록). **317 통과**. §12-6·§5·D-028~030 | c9ff96c |
+| 2026-07-15 | Phase4 Step4.0 OOS 박제 | `experiments/oos_export`: 채택 15m+1h를 gate1 동일컴포넌트로 5seed walk-forward → OOS proba 박제(D-a). **재현 ll-margin +0.0486=문서 일치**. barrier_frac·mtf1h_kf_slope 파생. 아티팩트 189,734행 | (미커밋) |
+| 2026-07-15 | Phase4 Step4.1 플러그인 | `plugins/dumb_l3`(엔진 수정0): 박제조회→θ방향→실진입가 배리어(D-b①)→고정notional→N봉 만기. 단위8+seam4 커밋테스트. 스모크·회귀 | (미커밋) |
+| 2026-07-15 | Phase4 Step4.2 seam + D-031 | seam 정합(Σpnl==equity·라벨매칭 97/99%) + **I-004 발견**(15m master 낙관편향, 1m 필수) + **D-031**(엔진 O(n²)→O(log n), 등가성회귀). 전체OOS 1m ~39h→~8분 | (미커밋) |
+| 2026-07-16 | Phase4 Step4.3 관문2 채점 | baseline 전체OOS 1m: **gross+126%/net−501%/수수료 5×gross**. 정합성 전수검증(독립재계산 0오차)+독립감사(버그0). 사전등록 8-config 스윕 **채택0**. → **관문2 FAIL-on-cost**(D-033) | (미커밋) |
+| 2026-07-16 | Phase4 종착: 보고서 통합 | 교차-Phase 전파(규칙18): §12-7·D-031~033·I-004·F-3/11 해소·Phase5 로드맵. dumb_l3 비활성 섹션(default.yaml). INFRA·CLAUDE 갱신 | (미커밋) |
 
 ---
 
@@ -240,6 +248,7 @@ CLAUDE.md 규칙 15 트리아지 적용. 등급 L/S/C, 건드린 기둥, 상태.
 |---|---|---|---|
 | **I-001** | 1d 캔들 손상 — audit 는 **off-grid 5봉**(04-08·09·10·12·14 16:00)만 검출했으나 **실범위는 04-06~05-19 흩어진 14일 값손상**(on-grid 부분봉 = audit **미검출** 클래스, Phase3 R1서 전수스캔으로 확정). 1h clean. | Step 0.1(범위확정 Phase3 R1) | **해소(Phase3 R1 3.3 선행)**: `resample_ohlcv`(loader)로 감사-clean 1h→1d 파생(완전버킷만·00:00그리드), regime·MTF 공용. 파생 1d audit green, clean날 공식 1d와 정확 일치 검증 |
 | **I-002** | `multiclass_log_loss` 가 비정렬 labels(`LABEL_CLASSES`=('up','down','expire'))에서 proba-클래스 오정렬 → sklearn(≥1.x) 사전순 정렬 가정 위배로 log_loss 오답(known-answer 0.223 정답 vs 버그 2.303). Phase0 잠복(정렬 라벨 테스트라 미발현), R1 첫 성과 채점서 발각. 첫 R1 DISCARD 원인. | Phase3 R1 | **해소**: labels 정렬 후 proba 정렬(값 순서불변). 회귀(비정렬+known-answer). 규칙19 적용 — blast radius=R1 ledger만(삭제·재생성), 라벨/R0/Phase0-2 무오염(분포전용·uniform ln3 순서불변). 수정 후 재실행 관문1 PASS |
+| **I-004** | (Phase4 Step4.2) 백테 엔진은 봉당 **SL/TP검사→진입** 순서라 **15m master는 진입봉 자신의 15분간 청산검사 불가**(intrabar stop-out 불가시) → **낙관 편향**. 실측 spread: 2021H1 15m master +$133 vs 1m master −$3100(부호반전). `sl_first`는 드문 동시터치만 처리, 15m 보수화 못함. | Phase3~4 seam | **해소(Phase4)**: **관문2 판정은 1m 체결해상 필수**(15m 프록시 불가). D-031(엔진 O(n²)수정)으로 전체OOS 1m 실행가능화(~8분) → **전체OOS 1m으로 채점**. 커밋 seam 테스트로 진입타이밍·정합 박제 |
 
 ---
 
@@ -445,12 +454,39 @@ kf_uncertainty std/robustScale≈5.0) → RobustScaler 제공. 선택은 Phase3.
 
 ---
 
+## 12-7. Phase 4 결과 (완료 — 관문2 FAIL-on-cost)
+
+**인프라**: `experiments/oos_export`(채택 15m+1h OOS 예측 박제·barrier_frac·mtf1h_kf_slope 파생) + `plugins/dumb_l3`(멍청3층: 박제조회→θ방향→실진입가 배리어→고정notional→N봉 만기, **엔진 수정0**) + 엔진 `_slice_candles` O(n²)→O(log n)(D-031). 결정 D-032(배선)·D-033(판정).
+
+### Step 4.0 OOS 예측 박제 (D-a)
+- gate1과 **동일 컴포넌트**(build_mtf_features·splitter_for·ZScoreNormalizer·SmallMLP·5seed)로 walk-forward → 폴드별 OOS proba concat. **재현 검증: ll-margin +0.0486 = 문서 mtf_1h 일치**(오염0). 아티팩트 189,734행(2020-12~2026-05, 22폴드).
+
+### Step 4.2 seam 정합 + I-004 + D-031
+- **seam PASS**: 정합성(Σpnl==잔고==equity)·라벨매칭(15m 97.3%·1m 99.1%)·진입타이밍(예측봉 t→t+1 open, lookahead0). 커밋 회귀(seam 4·단위 8·등가성 1).
+- **I-004**: 15m master는 intrabar stop-out 불가시=낙관편향(2021H1 +$133 vs 1m −$3100). → **1m 체결해상 필수.**
+- **D-031**: 엔진 O(n²)→O(log n). 전체OOS 1m ~39h→~8분(동작보존 회귀).
+
+### Step 4.3 관문2 채점 (baseline + 사전등록 스윕)
+- **baseline**(전체OOS 1m·θ0.40·앙상블): 6,274거래 **gross +12,606(+126%) / 수수료 62,742 / net −50,135(−501%)**. **cost/|gross|=4.98**. 거래당 gross +$2.01 vs 고정비용 $10. 국면별 gross 4/6 양·net 6/6 음. 신호포착 16.9%(단일슬롯).
+- **정합성 전수검증**: 사이징·수수료공식·**net==독립재계산gross−fees(0오차)**·항등식(gross%−fees%=net%). **독립 감사(fresh-eyes) 정확성버그0** — 모든 단순화(정확체결·슬리피지0·펀딩0)가 낙관편향 → 실제 더 나쁠뿐.
+- **사전등록 스윕**(θ{.35,.40,.45,.50}×MTF게이트{off,on}, F-1): **채택 0**. net>0은 θ=0.50뿐(both)이나 **72/68거래·2/6국면 음 = winner's curse**로 탈락. MTF게이트(1h추세 부호) 무효(net/거래 개선 못함). breakeven θ≈0.47~0.50(표본 급감).
+- **churn 진단**: 71.8% 같은방향 연속·즉시재진입 3,043 = **총수수료의 49%**($30k). 방향런 평균 3.6. → Phase5 홀딩 동기.
+
+**판정(D-033)**: **관문2 FAIL-on-cost.** 통계엣지는 실재(gross 전 구간 양)하나 **거래당 엣지(0.02%) ≪ 왕복비용(0.1%)** → 유의표본 주는 어떤 빈도서도 net 음. **배율(레버리지)은 비율 불변이라 구제 불가**(fee·gross·net 다 notional 선형). 진입-지렛대(θ·MTF게이트·사이드아웃) 전멸.
+
+---
+
 ## 다음 단계
 
-**Phase 3(관문1) 종착 완료 — PASS.** 주 엣지 후보 = **15m + 1h 상위맥락**(결정TF 15m·16열 피처세트·라벨 atr/w24/N24=6h).
+**Phase 4(관문2) 종착 완료 — FAIL-on-cost**(§12-7·D-033). 15m/6h 엣지는 통계적으로 실재하나(gross +126%) 거래당 엣지(0.02%)가 왕복비용(0.1%)의 1/5라 **비용 차감 후 net 음**. 값싼 진입-지렛대(θ·MTF게이트·사이드아웃) 전멸.
 
-**다음 = Phase 4 (관문2 경제적엣지)**: 멍청3층 플러그인 배선(방향·θ진입·고정사이즈·배리어청산 + 비용모델, 기존 엔진 경유) → 15m+1h 엣지가 **비용 차감 후 생존하나**.
-- **⚠️ 핵심 관건 = 비용**: 15m 지평 6h로 **거래 잦음** → 관문2 비용이 진짜 시험(통계엣지≠경제엣지). 통계엣지는 강하나 경제성은 미지.
-- **MTF 역할2(진입게이트)**: 상위맥락으로 진입 필터 → 거래빈도↓·비용↓ (Phase 4서 목적있게 도입, 역할1과 별개).
-- **전제·플래그**: F-3(실펀딩 다운로드 옵션)·F-11(라벨-실행 정합·인트라바 복원)·F-14(collapse 임계 통일, 게이트 활성화 시) Phase 4 착수 전 검토.
-- MTF 이득은 주라벨에서만 측정 — 필요 시 라벨교차 재확인(F-1 예산 별도).
+**다음 = Phase 5 (정책 최적화)** — 로드맵. 원칙: **싸고 동기 명확한 것 먼저, 앞 Phase 재개(비쌈)는 마지막. 목록 지렛대에 갇히지 말고 진행 중 새 insight 능동탐색(D-033).**
+1. **정책 최적화(현 15m/6h 엣지 위)** — 청산/사이징. 싸다(plugin param, ~8분/run, 엔진 무손).
+   - **첫 실험 = (A) 홀딩/persistence**: 같은 방향이면 배리어마다 청산 안 하고 런 끝까지 보유(reverse로 청산)·TP제거(승자 태우기)·SL유지·timeout제거. churn 진단(비용 절반)이 지목. **관건 = churn 제거 + gross 상승이 net을 (+)로 끌어올리나**(수수료만 아끼면 상한 −$20k라 gross 상승 필수).
+   - 이어서: 비대칭 배리어·trailing·conviction 사이징 (소수 사전등록, F-1).
+2. **비용 시나리오(maker·펀딩·슬리피지)** — 최선 정책에 적용. maker는 새 phase 아닌 비용모델 파라미터(fee÷2~5 낙관, 단 손절 maker불가·비체결·adverse selection → 체결모델 신설 필요).
+3. **(조건부) 지평 재개(Phase 1)** — 1·2로 못 살리면 "6h 엣지 경제성 사망" 확정 → **더 긴 지평의 새 엣지를 관문1부터 재검증**하는 별도 브랜치. 가장 비쌈, 명시 분기 결정으로만.
+
+**결정 트리**: Phase5 정책→살아나나? {예→비용시나리오로 확정→관문2 PASS / 아니오→지평 재개 브랜치}. Phase5도 무한 정책탐색(F-1) 금지 — 소수 사전등록 후 판정.
+
+**컨셉 무결성 note**: (A) 홀딩은 배리어청산을 바꾸므로 **Phase 5**(멍청3층 아님). Phase4 FAIL 결론(멍청 monetization=비용 사망)은 깨끗이 보존.
