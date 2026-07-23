@@ -37,8 +37,9 @@ from src.research.experiments.tf_expansion import (
     splitter_for,
 )
 from src.research.experiments.tf_mtf import DECISION_TF, PRIMARY_LABEL
+from src.research.features.build import build_features
 from src.research.features.mtf import build_mtf_features
-from src.research.labeling.triple_barrier import LABEL_CLASSES, compute_triple_barrier
+from src.research.labeling.triple_barrier import LABEL_CLASSES, LabelParams, compute_triple_barrier
 from src.research.models import SmallMLP
 from src.research.normalize import ZScoreNormalizer
 from src.research.validation.baselines import PriorBaseline
@@ -77,6 +78,27 @@ def build_adopted_xy(candle_dir: str = "data/candles"):
     return dec, X, y, sp, tags, barrier_frac
 
 
+def build_frontier_xy(decision_tf: str, label: LabelParams, higher_tfs=(),
+                      candle_dir: str = "data/candles"):
+    """일반화 (P1, Phase5 지평 프론티어): 임의 (decision_tf, label, higher_tfs) 의 (dec,X,y,sp,tags,bf).
+
+    higher_tfs 비면 **build_features(단독TF, gate1 과 동일)**, 있으면 build_mtf_features.
+    barrier_frac·splitter·regime_tags 는 채택 경로(build_adopted_xy)와 동일 규율.
+    higher_tfs=("1h",)+PRIMARY_LABEL 이면 build_adopted_xy 와 동치(등가성 테스트로 박제)."""
+    dec = load_tf(decision_tf, candle_dir)
+    if higher_tfs:
+        higher = [(tf, load_tf(tf, candle_dir)) for tf in higher_tfs]
+        X = build_mtf_features(dec, higher)
+    else:
+        X = build_features(dec)
+    bl = compute_triple_barrier(dec, label)
+    y = bl.labels
+    barrier_frac = (bl.upper / dec["close"] - 1.0).rename("barrier_frac")
+    sp = splitter_for(decision_tf, label.horizon)
+    tags = _regime_tags_for(decision_tf, X.index, candle_dir)
+    return dec, X, y, sp, tags, barrier_frac
+
+
 def _oos_proba(fold_preds) -> pd.DataFrame:
     """폴드별 y_proba concat → 연속 OOS proba (CLASS_ORDER 정렬, 누락 클래스 0)."""
     frames = [fp.y_proba.reindex(columns=CLASS_ORDER, fill_value=0.0) for fp in fold_preds]
@@ -94,12 +116,17 @@ def export_oos_predictions(
     candle_dir: str = "data/candles",
     mlp_seeds=MLP_SEEDS,
     out_dir: str | None = ARTIFACT_DIR,
+    artifact_name: str = ARTIFACT_NAME,
+    repro_target: float | None = DOC_LL_MARGIN,
+    repro_tol: float = REPRO_TOL,
+    config_meta: dict | None = None,
     X=None, y=None, splitter=None, regime_tags=None, barrier_frac=None,
 ) -> OOSExportResult:
-    """채택 config 를 5seed walk-forward → OOS 예측 박제 + gate1 ll-margin 재현 검증.
+    """채택/임의 config 를 5seed walk-forward → OOS 예측 박제 + gate1 ll-margin 재현 검증.
 
-    X/y/splitter/regime_tags/barrier_frac 주입 시 build 를 건너뜀(seam 테스트 소슬라이스).
-    out_dir=None 이면 persist 안 함(검증 전용)."""
+    X/y/splitter/regime_tags/barrier_frac 주입 시 build 를 건너뜀(seam 테스트·프론티어).
+    repro_target = 이 config 의 gate1 ll-margin(기본=채택 문서값 0.0486). 불일치 시 하드페일.
+    artifact_name = config별 파일명. out_dir=None 이면 persist 안 함(검증 전용)."""
     if X is None:
         _, X, y, splitter, regime_tags, barrier_frac = build_adopted_xy(candle_dir)
     labels = list(LABEL_CLASSES)
@@ -125,12 +152,13 @@ def export_oos_predictions(
     mlp_ll_median = float(np.median(seed_ll))
     ll_margin = prior_ll - mlp_ll_median
 
-    # ---- 재현 검증 (CLAUDE 19): 박제가 gate1 문서값과 일치? ----
-    repro_ok = abs(ll_margin - DOC_LL_MARGIN) <= REPRO_TOL
+    # ---- 재현 검증 (CLAUDE 19): 박제가 gate1 ll-margin 과 일치? ----
+    # repro_target=None → 탐색 모드(사전 gate1 값 없음, 재현할 기준 없음)로 스킵.
+    repro_ok = True if repro_target is None else abs(ll_margin - repro_target) <= repro_tol
     if not repro_ok:
         raise ValueError(
-            f"재현 실패: OOS ll-margin {ll_margin:+.4f} vs 문서 mtf_1h {DOC_LL_MARGIN:+.4f} "
-            f"(허용 {REPRO_TOL}). 박제 예측이 gate1 과 다름 — 하류 배선 차단(오염 방지)."
+            f"재현 실패: OOS ll-margin {ll_margin:+.4f} vs gate1 목표 {repro_target:+.4f} "
+            f"(허용 {repro_tol}). 박제 예측이 gate1 과 다름 — 하류 배선 차단(오염 방지)."
         )
 
     # ---- 아티팩트 조립 ----
@@ -158,18 +186,18 @@ def export_oos_predictions(
     if X is not None and "mtf1h_kf_slope" in getattr(X, "columns", []):
         artifact["mtf1h_kf_slope"] = X["mtf1h_kf_slope"].reindex(idx)
 
+    cfg_meta = config_meta or {
+        "decision_tf": DECISION_TF, "higher_tfs": list(ADOPTED_HIGHER_TFS),
+        "label": {"estimator": PRIMARY_LABEL.estimator, "window": PRIMARY_LABEL.window,
+                  "x": PRIMARY_LABEL.x, "horizon": PRIMARY_LABEL.horizon},
+    }
     meta = {
-        "config": {
-            "decision_tf": DECISION_TF, "higher_tfs": list(ADOPTED_HIGHER_TFS),
-            "label": {"estimator": PRIMARY_LABEL.estimator, "window": PRIMARY_LABEL.window,
-                      "x": PRIMARY_LABEL.x, "horizon": PRIMARY_LABEL.horizon},
-            "n_features": int(X.shape[1]), "mlp_seeds": list(mlp_seeds),
-            "class_order": CLASS_ORDER,
-        },
+        "config": {**cfg_meta, "n_features": int(X.shape[1]),
+                   "mlp_seeds": list(mlp_seeds), "class_order": CLASS_ORDER},
         "reproduction": {
             "prior_ll": prior_ll, "mlp_ll_median": mlp_ll_median,
-            "ll_margin": ll_margin, "doc_ll_margin": DOC_LL_MARGIN,
-            "seed_ll": seed_ll, "repro_ok": bool(repro_ok), "tol": REPRO_TOL,
+            "ll_margin": ll_margin, "repro_target": repro_target,
+            "seed_ll": seed_ll, "repro_ok": bool(repro_ok), "tol": repro_tol,
         },
         "coverage": {
             "n_oos_rows": int(len(idx)),
@@ -186,13 +214,37 @@ def export_oos_predictions(
 
     if out_dir is not None:
         os.makedirs(out_dir, exist_ok=True)
-        pq = os.path.join(out_dir, ARTIFACT_NAME + ".parquet")
+        pq = os.path.join(out_dir, artifact_name + ".parquet")
         artifact.to_parquet(pq)
-        with open(os.path.join(out_dir, ARTIFACT_NAME + "_meta.json"), "w", encoding="utf-8") as f:
+        with open(os.path.join(out_dir, artifact_name + "_meta.json"), "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
         meta["artifact_path"] = pq
 
     return OOSExportResult(artifact=artifact, meta=meta)
+
+
+def export_frontier(decision_tf: str, label: LabelParams, repro_target: float,
+                    higher_tfs=(), repro_tol: float = REPRO_TOL,
+                    artifact_name: str | None = None, out_dir: str | None = ARTIFACT_DIR,
+                    candle_dir: str = "data/candles", mlp_seeds=MLP_SEEDS) -> OOSExportResult:
+    """일반화 편의 래퍼 (P1): 임의 config 의 OOS 박제. repro_target = 그 config 의 gate1 ll-margin.
+
+    artifact_name 미지정 시 config 파생명. build_frontier_xy 로 X/y/bf 구성 후 export_oos_predictions."""
+    _, X, y, sp, tags, bf = build_frontier_xy(decision_tf, label, higher_tfs, candle_dir)
+    name = artifact_name or (
+        f"oos_{decision_tf}_N{label.horizon}_w{label.window}_x{label.x}"
+        + ("_mtf" + "".join(higher_tfs) if higher_tfs else "")
+    )
+    cfg_meta = {
+        "decision_tf": decision_tf, "higher_tfs": list(higher_tfs),
+        "label": {"estimator": label.estimator, "window": label.window,
+                  "x": label.x, "horizon": label.horizon},
+    }
+    return export_oos_predictions(
+        candle_dir=candle_dir, mlp_seeds=mlp_seeds, out_dir=out_dir, artifact_name=name,
+        repro_target=repro_target, repro_tol=repro_tol, config_meta=cfg_meta,
+        X=X, y=y, splitter=sp, regime_tags=tags, barrier_frac=bf,
+    )
 
 
 def _print(res: OOSExportResult) -> None:
@@ -200,7 +252,7 @@ def _print(res: OOSExportResult) -> None:
     print("=" * 68)
     print("[Step 4.0] OOS 예측 박제 (채택 15m+1h, 관문2 입력)")
     r = m["reproduction"]
-    print(f"  재현: ll-margin {r['ll_margin']:+.4f} vs 문서 {r['doc_ll_margin']:+.4f} "
+    print(f"  재현: ll-margin {r['ll_margin']:+.4f} vs 목표 {r['repro_target']:+.4f} "
           f"→ {'OK' if r['repro_ok'] else 'FAIL'}  (prior_ll={r['prior_ll']:.4f}, "
           f"mlp_ll_med={r['mlp_ll_median']:.4f})")
     print(f"  seed_ll={[round(x,4) for x in r['seed_ll']]}")

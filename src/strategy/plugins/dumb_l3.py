@@ -18,6 +18,13 @@ LONG → TP=위벽·SL=아래벽 / SHORT → 방향만 뒤집힘(벽 대칭). �
 **사이징**: 고정 notional (복리·리스크기반 없음 → 비용분석 해석가능, Phase4 스코프).
 **진입게이트**: θ 가 주 필터. MTF 역할2(1h 정렬 게이트)는 Step 4.3 도입.
 **reverse**: 기본 False (라벨 충실 — 각 거래는 배리어/만기까지, 조기청산 없음).
+
+**Phase 5.A 홀딩 지렛대**: no_tp(TP 벽 제거·승자 태우기)·no_timeout(만기청산 제거·런 유지).
+allow_reverse 와 조합해 청산정책만 변경(엔진 무손, 박제 엣지 불변). 5셀 사다리:
+A(F,F,F)=baseline·B(no_timeout)·C(no_tp)·E(reverse만)·D(no_tp+no_timeout+reverse)=full holding.
+
+**Phase 5 지평 프론티어**: decision_tf(결정 TF 파라미터화 — 15m 외 1h/4h 지평 monetize)·
+sizing="conviction"(고신뢰 거래 자본 집중, 비율불변 아님). horizon_bars 는 각 지평 N.
 """
 
 from __future__ import annotations
@@ -49,8 +56,12 @@ class DumbL3(StrategyModule):
 
     def __init__(self, params: dict) -> None:
         super().__init__(params)
+        # P2 (Phase5 지평 프론티어): 결정 TF 파라미터화 — 15m 외 지평(1h/4h) monetize 지원.
+        # 신호는 이 TF 봉마감에만 발화. required_timeframes 를 [decision_tf](+fill_tf) 로 재구성.
+        self.entry_timeframe = str(self.params.get("decision_tf", "15m"))
+        self.required_timeframes = [self.entry_timeframe]
         # D-b②: fill_tf 지정 시 그 TF 를 master 로 편입(더 작은 TF → 체결 해상 정밀).
-        # 신호는 여전히 15m 봉마감에만 발화(entry_timeframe). None=15m master(sl_first 바닥).
+        # None=결정TF master(sl_first 바닥).
         fill_tf = self.params.get("fill_tf")
         if fill_tf and fill_tf not in self.required_timeframes:
             self.required_timeframes = [*self.required_timeframes, fill_tf]
@@ -61,6 +72,15 @@ class DumbL3(StrategyModule):
         self.notional = float(self.params.get("notional", 10_000.0))
         self.horizon_bars = int(self.params.get("horizon_bars", 24))
         self.allow_reverse = bool(self.params.get("allow_reverse", False))
+        # Phase 5.A 홀딩/persistence 정책 지렛대 (청산정책만 변경, 엔진 무손).
+        # no_tp: TP 벽 제거(승자 태우기). no_timeout: 만기청산 제거(런 유지).
+        # 둘 다 True + allow_reverse True = full holding(청산구 = SL/reverse).
+        self.no_tp = bool(self.params.get("no_tp", False))
+        self.no_timeout = bool(self.params.get("no_timeout", False))
+        # P3 (Phase5): conviction 사이징 — 고신뢰 거래에 자본 집중(비율불변 아님, D-033 대비).
+        # "fixed"=고정 notional / "conviction"=신뢰도(θ→1)를 (1→max_mult) 배로 선형 스케일.
+        self.sizing = str(self.params.get("sizing", "fixed"))
+        self.conviction_max_mult = float(self.params.get("conviction_max_mult", 3.0))
         # MTF 역할2 진입게이트(사전등록): 신호방향과 1h추세(mtf1h_kf_slope) 부호 일치시만 진입.
         self.mtf_gate = bool(self.params.get("mtf_gate", False))
 
@@ -136,6 +156,8 @@ class DumbL3(StrategyModule):
 
     def compute_take_profit(self, ctx: StrategyContext, signal: Signal,
                             stop_loss: float | None) -> float | None:
+        if self.no_tp:                               # Phase 5.A: TP 벽 제거(승자 태우기)
+            return None
         w = signal.meta.get("barrier_frac")
         if w is None:
             return None
@@ -146,7 +168,13 @@ class DumbL3(StrategyModule):
                               stop_loss: float | None) -> float:
         if ctx.current_price <= 0:
             return 0.0
-        return self.notional / ctx.current_price     # 고정 notional (복리·리스크사이징 없음)
+        notional = self.notional
+        if self.sizing == "conviction":
+            # 사전등록(F-1): 신뢰도 p_dir 를 [θ,1] → [1, max_mult] 선형. 고신뢰=큰 사이즈.
+            frac = (float(signal.confidence) - self.theta) / max(1e-9, 1.0 - self.theta)
+            frac = min(1.0, max(0.0, frac))
+            notional = self.notional * (1.0 + (self.conviction_max_mult - 1.0) * frac)
+        return notional / ctx.current_price          # 고정 notional (복리·리스크사이징 없음)
 
     def should_reverse(self, ctx: StrategyContext, position: Position,
                        new_signal: Signal) -> bool:
@@ -162,6 +190,8 @@ class DumbL3(StrategyModule):
 
     def should_force_exit(self, ctx: StrategyContext, position: Position) -> ExitDecision | None:
         """만기 청산 = 진입 후 N봉 경과(라벨 expire 대응)."""
+        if self.no_timeout:                          # Phase 5.A: 만기청산 제거(런 유지)
+            return None
         if ctx.now - position.entry_time >= self._timeout:
             return ExitDecision(reason=ExitReason.FORCE_EXIT, note="expire_timeout")
         return None

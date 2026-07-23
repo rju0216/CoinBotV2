@@ -99,11 +99,12 @@
      **mtf**(build_mtf_features — 결정TF X + 상위TF 완성봉 concat, R4.2)) +
      **models**(base `ProbaModel`·tree_bench·mlp 멀티태스크헤드, 2층)·**experiments**(r1_smoke·
      r2_window_search·r3_multitask·r3_arch_kf·**tf_expansion**(단독TF)·**tf_confirm**(15m 확인)·**tf_mtf**(MTF)·
-     **oos_export**(Phase4 OOS 예측 박제)). **관문1(통계엣지) PASS**(15m+1h, §12-6).
-     **Phase 4 관문2(경제성) 종착 = FAIL-on-cost**: 엣지 실재(gross+126%)나 거래당엣지≪비용(1/5)→net 음
-     (§12-7·D-033). 멍청3층 = `src/strategy/plugins/dumb_l3.py`(엔진 경유). 엔진 `_slice_candles` O(n²)수정(D-031).
-     **다음 = Phase 5(정책 최적화)**: 홀딩/persistence 첫실험(churn=비용절반)→비대칭/trailing→maker 시나리오→(조건부)지평 재개.
-     상세는 `docs/00_Work_Report/QuantModel_MasterPlan.md`(§12-7·D-031~033·I-004). 의존성은 `requirements-ml.txt`.
+     **oos_export**(OOS 예측 박제·**일반화** export_frontier/build_frontier_xy, Phase4~5)). **관문1 PASS**(15m+1h, §12-6).
+     **관문2(경제성) = FAIL-on-cost 유효**(§12-7·12-8). **Phase 5**(정책→지평 프론티어) 소진: 홀딩 무효(D-034)·
+     지평×배리어×x 프론티어 유일양성 4h/{3,4,5일}/x3도 **fresh-eyes = 2024 아티팩트·비정상**(D-035, 코드결함0)·
+     config 원장 CARRY/PARK(D-036, kill0). 멍청3층 = `src/strategy/plugins/dumb_l3.py`(파라미터화 decision_tf·no_tp·conviction).
+     **다음 = Phase 6 최적화3층**(CARRY 후보 위 정책학습, **시간안정성 바** ex-2024+최근OOS) → Phase 7 현실·교차강건·관문3.
+     상세는 `docs/00_Work_Report/QuantModel_MasterPlan.md`(§12-8·D-034~036·I-005~006). 의존성은 `requirements-ml.txt`.
 6. **캔들 캐시 (data/, git untracked)**: `data/candles/*.csv`.
 
 ---

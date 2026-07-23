@@ -81,8 +81,12 @@ tests/                       # 백테 골격 회귀 테스트 (픽스처는 test
 >   barrier_frac·mtf1h_kf_slope 파생) + **`src/strategy/plugins/dumb_l3.py`**(멍청3층: 박제조회→θ방향→
 >   실진입가 배리어→고정notional→N봉 만기, **엔진 수정0**) + 엔진 `_slice_candles` **O(n²)→O(log n) 수정**
 >   (D-031, 전체OOS 1m ~39h→~8분, 동작보존). **결과 = 엣지 실재(gross+126%)하나 거래당엣지≪비용(1/5)
->   → net 음, 관문2 FAIL**(§12-7). 진단: churn=비용 절반. **다음 = Phase 5**(정책 최적화: 홀딩→비대칭/
->   trailing→maker 시나리오→(조건부)지평 재개).
+>   → net 음, 관문2 FAIL**(§12-7). 진단: churn=비용 절반.
+> - **Phase 5**(정책→지평 프론티어·**관문2 FAIL 유효**): `dumb_l3` 파라미터화(no_tp·no_timeout·decision_tf·
+>   conviction 사이징) + `oos_export` **일반화**(`export_frontier`·`build_frontier_xy`·임의 TF×N×window×x 박제,
+>   등가성 seam 테스트). 홀딩 정책 무효(D-034)·프론티어 유일양성 4h/{3,4,5일}/x3도 **fresh-eyes = 2024 아티팩트·
+>   비정상**(D-035, 코드결함0)·config 원장 CARRY/PARK(D-036, **완전 kill 0**)·regime vol축 ex-post(I-005). §12-8.
+>   **다음 = Phase 6 최적화3층**(CARRY 후보 위 정책학습, 시간안정성 바) → Phase 7 현실·교차강건·관문3.
 > - 상세·진행은 `docs/00_Work_Report/QuantModel_MasterPlan.md`, 의존성은 `requirements-ml.txt`.
 
 ## 3. 새 모델(전략) 추가 방법
