@@ -38,7 +38,7 @@ from src.research.normalize import ZScoreNormalizer
 from src.research.validation.baselines import PriorBaseline, UniformBaseline
 from src.research.validation.harness import run_walk_forward
 from src.research.validation.ledger import RunLedger
-from src.research.validation.regime import LABEL_COL, tag_regimes
+from src.research.validation.regime import LABEL_COL, causal_tag_regimes, tag_regimes
 from src.research.validation.splitter import WalkForwardSplitter
 
 SYMBOL = "BTC/USDT:USDT"
@@ -131,6 +131,21 @@ def _regime_tags_for(tf: str, index: pd.Index, candle_dir: str) -> pd.Series:
     if isinstance(tags, pd.DataFrame):
         tags = tags.iloc[:, 0]
     return tags.reindex(index)
+
+
+def causal_regime_frame_for(tf: str, index: pd.Index, candle_dir: str) -> pd.DataFrame:
+    """1d(파생) **인과** 국면(causal_tag_regimes) 프레임을 결정TF index 로 완성봉 ff (Phase 6).
+
+    ``_regime_tags_for`` 의 인과·프레임 버전 — tag_regimes(분석·전구간 quantile) 대신
+    causal_tag_regimes(rolling vol) 사용. 정책층 매매필터 입력용. **trend/vol 을 분리** 반환해
+    (regime_trend/regime_vol/regime) 트렌드 게이트가 vol 워밍업에 묶이지 않게 한다.
+    정렬(forward_fill_completed)·vol 문턱 둘 다 인과 → 전 경로 lookahead=0 (test_regime_causal 박제)."""
+    d1d = resample_ohlcv(load_audited(SYMBOL, "1h", candle_dir), "1h", "1d")
+    reg = causal_tag_regimes(d1d)  # regime_trend / regime_vol / regime
+    if tf == "1d":
+        return reg.reindex(index)
+    aligned = forward_fill_completed(reg, index, "1d")
+    return aligned.reindex(index)
 
 
 def _per_regime_edge(prior_res, mlp_runs) -> pd.DataFrame:

@@ -90,6 +90,21 @@ def _apply_min_duration(states: pd.Series, min_duration: int) -> pd.Series:
     return out
 
 
+def _trend_states(close: pd.Series, p: RegimeParams) -> pd.Series:
+    """추세 상태 시리즈(up/flat/down + 히스테리시스). **인과** — 과거 MA slope 만 사용,
+    ``_apply_min_duration`` 은 소급 relabel 하지 않음(전환은 확정 시점부터). tag_regimes(분석)
+    과 causal_tag_regimes(정책) 공용 — vol 축만 두 함수가 다르다(DRY)."""
+    ma = close.rolling(p.ma_len).mean()
+    ma_prev = ma.shift(p.slope_k)
+    slope = (ma - ma_prev) / ma_prev  # 분모 인과: 과거 MA
+    trend_raw = pd.Series(index=close.index, dtype=object)
+    trend_raw[slope > p.deadband] = "up"
+    trend_raw[slope < -p.deadband] = "down"
+    trend_raw[(slope >= -p.deadband) & (slope <= p.deadband)] = "flat"
+    # slope NaN(워밍업) → NaN 유지
+    return _apply_min_duration(trend_raw, p.min_duration)
+
+
 def tag_regimes(
     df: pd.DataFrame, params: RegimeParams | None = None
 ) -> pd.DataFrame:
@@ -101,16 +116,8 @@ def tag_regimes(
     p = params or RegimeParams()
     close = df["close"].astype(float)
 
-    # --- 추세: 장기 MA 의 slope_k 봉 변화율 + 데드밴드 ---
-    ma = close.rolling(p.ma_len).mean()
-    ma_prev = ma.shift(p.slope_k)
-    slope = (ma - ma_prev) / ma_prev  # 분모 인과: 과거 MA
-    trend_raw = pd.Series(index=df.index, dtype=object)
-    trend_raw[slope > p.deadband] = "up"
-    trend_raw[slope < -p.deadband] = "down"
-    trend_raw[(slope >= -p.deadband) & (slope <= p.deadband)] = "flat"
-    # slope NaN(워밍업) → NaN 유지
-    trend = _apply_min_duration(trend_raw, p.min_duration)
+    # --- 추세: 공유 _trend_states (인과 MA slope + 히스테리시스) ---
+    trend = _trend_states(close, p)
 
     # --- 변동성: 로그수익률 실현변동성 → 사후 백분위 문턱(분석 전용) ---
     logret = np.log(close / close.shift(1))
@@ -125,6 +132,55 @@ def tag_regimes(
     out[TREND_COL] = trend
     out[VOL_COL] = vol
     # 결합 라벨: 둘 다 유효할 때만
+    both = trend.notna() & vol.notna()
+    label = pd.Series(index=df.index, dtype=object)
+    label[both] = trend[both].astype(str) + "|" + vol[both].astype(str)
+    out[LABEL_COL] = label
+    return out
+
+
+# Phase 6 causal 국면 (정책층 매매필터용). 사전등록·무튜닝 값.
+CAUSAL_VOL_WINDOW_BARS = 365   # rolling 백분위 창(일봉 기준 1년). 2026-07 확정, 채점 중 불변.
+
+
+def causal_tag_regimes(
+    df: pd.DataFrame,
+    params: RegimeParams | None = None,
+    vol_window_bars: int = CAUSAL_VOL_WINDOW_BARS,
+) -> pd.DataFrame:
+    """OHLCV(권장 1d) → **인과** 국면 태그 (Phase 6 정책층 매매필터용, I-005 해소).
+
+    ``tag_regimes`` 와의 유일한 차이 = **vol 문턱**. tag_regimes 는 전구간 백분위(사후·
+    분석전용)를 쓰지만, 이 함수는 **rolling(vol_window_bars) 백분위**로 과거 창만 사용해
+    lookahead 를 제거한다. 추세축은 공유 ``_trend_states`` (이미 인과). ``assert_causal``
+    (절단불변+미래교란) 통과가 계약이다.
+
+    ★방화벽★: 이 출력은 **정책층(3층) 진입게이트 입력**이지 **feature(모델 입력)가 아니다.**
+    분석전용 tag_regimes 와 달리 매매에 실제로 쓰이므로 인과가 필수. feature 파이프라인엔
+    절대 유입 금지(모델 재fit 아님 — 얼린 예측 위 정책 소비, 기둥3).
+
+    vol_window_bars: rolling 백분위 창(봉). 일봉 365=1년(사전등록·무튜닝).
+    반환: tag_regimes 와 동일 스키마(regime_trend/regime_vol/regime), 워밍업 NaN.
+    """
+    p = params or RegimeParams()
+    close = df["close"].astype(float)
+
+    # --- 추세: 공유 _trend_states (인과) ---
+    trend = _trend_states(close, p)
+
+    # --- 변동성: 실현변동성 → **rolling 백분위 문턱**(인과, 과거 창만) ---
+    logret = np.log(close / close.shift(1))
+    rv = logret.rolling(p.vol_len).std()
+    thr = rv.rolling(vol_window_bars, min_periods=vol_window_bars).quantile(p.vol_hi_pct)
+    vol = pd.Series(index=df.index, dtype=object)
+    valid = rv.notna() & thr.notna()
+    vol[valid & (rv > thr)] = "high"
+    vol[valid & (rv <= thr)] = "low"
+    # rv/thr NaN(워밍업) → vol NaN 유지
+
+    out = pd.DataFrame(index=df.index)
+    out[TREND_COL] = trend
+    out[VOL_COL] = vol
     both = trend.notna() & vol.notna()
     label = pd.Series(index=df.index, dtype=object)
     label[both] = trend[both].astype(str) + "|" + vol[both].astype(str)

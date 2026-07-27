@@ -83,11 +83,20 @@ class DumbL3(StrategyModule):
         self.conviction_max_mult = float(self.params.get("conviction_max_mult", 3.0))
         # MTF 역할2 진입게이트(사전등록): 신호방향과 1h추세(mtf1h_kf_slope) 부호 일치시만 진입.
         self.mtf_gate = bool(self.params.get("mtf_gate", False))
+        # Phase 6 causal 국면 진입게이트 (I-005 인과 국면 소비 — 아티팩트 causal_regime_* 열).
+        # trend_gate: 트렌드 거스르는 진입 차단(롱 in down / 숏 in up). 트렌드베타 실패모드 정조준.
+        # avoid_vol: 지정 vol 국면("high"|"low") 회피. 둘 다 원리고정(RegimeParams·rolling1yr)·무튜닝.
+        self.trend_gate = bool(self.params.get("trend_gate", False))
+        self.avoid_vol = self.params.get("avoid_vol")   # None | "high" | "low"
 
         pred = pd.read_parquet(self.artifact_path)
         need = [f"{self.pred_source}_{c}" for c in ("up", "down", "expire")] + ["barrier_frac"]
         if self.mtf_gate:
             need.append("mtf1h_kf_slope")
+        if self.trend_gate:
+            need.append("causal_regime_trend")
+        if self.avoid_vol is not None:
+            need.append("causal_regime_vol")
         missing = [c for c in need if c not in pred.columns]
         if missing:
             raise ValueError(f"아티팩트 {self.artifact_path} 에 열 부재: {missing} "
@@ -141,6 +150,18 @@ class DumbL3(StrategyModule):
         if self.mtf_gate:                            # MTF 역할2: 1h 추세 부호 일치시만
             slope = float(row["mtf1h_kf_slope"])
             if (side == SignalSide.LONG and slope <= 0) or (side == SignalSide.SHORT and slope >= 0):
+                return Signal(SignalSide.HOLD)
+        if self.trend_gate:                          # Phase6: causal 트렌드 거스르면 차단
+            tr = row.get("causal_regime_trend")
+            if tr is None or (isinstance(tr, float) and pd.isna(tr)):
+                return Signal(SignalSide.HOLD)       # 국면 미상(워밍업) → 보수적 무거래
+            if (side == SignalSide.LONG and tr == "down") or (side == SignalSide.SHORT and tr == "up"):
+                return Signal(SignalSide.HOLD)
+        if self.avoid_vol is not None:               # Phase6: 지정 vol 국면 회피
+            vl = row.get("causal_regime_vol")
+            if vl is None or (isinstance(vl, float) and pd.isna(vl)):
+                return Signal(SignalSide.HOLD)
+            if vl == self.avoid_vol:
                 return Signal(SignalSide.HOLD)
         bf = row.get("barrier_frac")
         return Signal(side, confidence=p_dir,
