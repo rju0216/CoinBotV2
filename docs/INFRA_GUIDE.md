@@ -19,13 +19,20 @@
   `FeeModel.calc_pnl` 단일 공식으로 정산한다 (외부 브로커·거래소 없음, 순수 인메모리).
 
 ```
-HistoricalDataLoader(캔들) → 마스터 TF 순회 → (보유) SL/TP 캔들 체결 검사
-   → (보유) update_stop_loss / should_force_exit 훅
+HistoricalDataLoader(캔들) → 마스터 TF 순회 → (보유 트랜치별) SL/TP 캔들 체결 검사
+   → (보유 트랜치별) update_stop_loss / should_force_exit 훅
    → 봉 경계 TF 별 evaluate_strategies_on_bar
-       → (슬롯 빔) generate_signal → allow_entry·compute_stop_loss/take_profit·
-         compute_position_size (전부 모델) → Position 등록
-       → (슬롯 참) should_reverse 로 청산·재진입
-   → 청산 시 FeeModel 정산 → 인메모리 trades/equity 기록
+       → (용량 남음) generate_signal → allow_entry·compute_stop_loss/take_profit·
+         compute_position_size (전부 모델) → 트랜치 등록. 용량 남는 한 다음 전략도 시도
+         (전략당 봉마다 최대 1 트랜치)
+       → (용량 소진) should_reverse 로 청산·재진입 — **max_slots=1 에서만 평가**
+   → 청산 시 FeeModel 정산 → 인메모리 trades/equity(+mtm) 기록
+
+**용량(N-트랜치, Phase6 D-037)**: `config/default.yaml` 의 `backtest.max_slots`(기본 1).
+>1 이면 트랜치마다 **독립 진입가·SL/TP·만기**를 갖고 손익은 가산적이다. 선형 perp 에서
+거래소 넷팅(평균단가 1포지션)과 **손익이 정확히 동일**하므로 실거래 재현 가능(봇이 트랜치
+장부를 들고 reduce-only 부분청산). `max_slots=1` 은 기존 단일슬롯과 **완전 동일**(등가성 회귀 박제).
+사이징(총노출 N등분 여부)은 **모델 소유** — 엔진은 용량만 안다.
 종료 시 잔여 포지션 ENGINE_SHUTDOWN 강제 청산 → write_reports 3종 출력
 ```
 
@@ -40,17 +47,24 @@ src/
 ├── strategy/
 │   ├── base.py       # StrategyModule 추상 (필수 6 + 선택 훅)
 │   ├── registry.py   # @register_strategy + auto-discovery + 활성화
-│   └── plugins/      # ★ 신규 전략 파일을 여기에 (현재 비어 있음)
+│   └── plugins/      # ★ 신규 전략 파일을 여기에
+│                     #   현재: dumb_l3(멍청3층) / adaptive_l3(청산레버)
+│                     #         econ_l3(EV·만기 게이트) / econ_l3_ensemble(지평 슬리브 3)
 ├── accounting/
 │   ├── fee_model.py       # 수수료·PnL 단일 공식 (calc_pnl)
 │   └── account_tracker.py # equity/peak/daily_pnl 계측 (정책 enforcement 없음)
 ├── data/historical.py  # 백테 캔들 로더 (CSV 캐시 + OKX 공개 API 병합, 동기)
 └── utils/           # config_loader (순수 yaml) / logger
 
-config/default.yaml          # 인프라 공통 설정 + (비어 있는) 전략 섹션 자리
+config/default.yaml          # 인프라 공통 설정(fees·backtest.max_slots·data) + 전략 섹션 자리
+                             #   ※ 연구용 3층 플러그인(econ_l3·adaptive_l3·슬리브)은 러너가
+                             #     spec 을 주입하므로 YAML 섹션을 두지 않는다(이중 출처 방지)
 src/main.py                  # CLI (backtest)
 scripts/download_history.py  # 캔들 다운로드
 tests/                       # 백테 골격 회귀 테스트 (픽스처는 tests/strategy_stub.py)
+                             #   Phase6 추가: test_econ_l3 / test_engine_multislot /
+                             #   test_phase6_fullstack(통짜 통합·N>1 6불변식) /
+                             #   research/test_regime_causal / research/test_policy_eval
 ```
 
 > **`src/research/` (모델 개발 오프라인 substrate)**: 위 백테 골격과 **별개**로, 새 퀀트
@@ -86,7 +100,16 @@ tests/                       # 백테 골격 회귀 테스트 (픽스처는 test
 >   conviction 사이징) + `oos_export` **일반화**(`export_frontier`·`build_frontier_xy`·임의 TF×N×window×x 박제,
 >   등가성 seam 테스트). 홀딩 정책 무효(D-034)·프론티어 유일양성 4h/{3,4,5일}/x3도 **fresh-eyes = 2024 아티팩트·
 >   비정상**(D-035, 코드결함0)·config 원장 CARRY/PARK(D-036, **완전 kill 0**)·regime vol축 ex-post(I-005). §12-8.
->   **다음 = Phase 6 최적화3층**(CARRY 후보 위 정책학습, 시간안정성 바) → Phase 7 현실·교차강건·관문3.
+> - **Phase 6**(최적화3층·**종착: layer-3 소진**): `experiments/policy_eval`(정책 하네스 — 1m fill·실펀딩·
+>   연도별·**N 불변 bp 지표**·점유·MDD·슬리피지 허용치·손익 항등식 하드체크) + `validation/regime.causal_tag_regimes`
+>   (**I-005 해소**, vol 축 rolling 1yr) + **`plugins/econ_l3`**(EV 게이트 = `w×(p_up−p_down) ≥ k×실비용`,
+>   만기게이트·로버스트 선별) + `plugins/econ_l3_ensemble`(지평 슬리브 3) + `plugins/adaptive_l3`(청산레버,
+>   trade_id 상태격리) + **엔진 N-트랜치 확장**(D-037 — `backtest.max_slots`, 위 §2 참조).
+>   **결과**: 단일슬롯이 신호의 85~90%를 버려 판정이 표집에 지배되고 있었음 → 포화 재측정 시 형제 config
+>   부호반전 소멸. **93셀 중 ex-2024 양수는 D2/D7 뿐**(4h_4d × EV·만기게이트), 층1 통과 0.
+>   **D2 를 다음 Phase baseline 으로 박제**(D-042), **완전 kill 0 유지·PARK 정량 재소환 조건**(D-043). §12-9.
+>   **다음 = layer 0~2 개선(예측 편향 모니터·피처 대칭성·헤드분리·캘리브레이션·파생데이터) → layer-3 재측정**
+>   → Phase 7 현실·교차강건·관문3(트랜치 실집행·슬리피지 1순위 게이트 추가).
 > - 상세·진행은 `docs/00_Work_Report/QuantModel_MasterPlan.md`, 의존성은 `requirements-ml.txt`.
 
 ## 3. 새 모델(전략) 추가 방법

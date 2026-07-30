@@ -50,9 +50,11 @@ def _ctx_multi(idx, price, position, now):
                            position=position, is_slot_occupied=True, params={}, now=now)
 
 
-def _pos(entry=100_000.0, side=PositionSide.LONG, sl=98_000.0, tp=102_000.0, t=None):
+def _pos(entry=100_000.0, side=PositionSide.LONG, sl=98_000.0, tp=102_000.0, t=None,
+         trade_id=1):
     return Position(side=side, size=0.1, entry_price=entry, entry_time=t,
-                    strategy_name="adaptive_l3", stop_loss=sl, take_profit=tp)
+                    strategy_name="adaptive_l3", stop_loss=sl, take_profit=tp,
+                    trade_id=trade_id)
 
 
 def test_default_matches_dumb_sl(art):
@@ -89,7 +91,7 @@ def test_e4_breakeven_arms_at_1R(art):
                     "breakeven": True, "breakeven_r": 1.0})
     pos = _pos(entry=100_000.0, sl=98_000.0, t=idx[0])   # R=2000, BE 트리거=102000
     p.on_position_opened(pos)
-    assert p._be_trigger == pytest.approx(102_000.0)
+    assert p._st(pos)["be_trigger"] == pytest.approx(102_000.0)
     # 이익 미달 → SL 유지
     assert p.update_stop_loss(_ctx(idx[1], price=101_000.0, position=pos), pos) is None
     # 1R 도달 → SL 진입가로
@@ -103,7 +105,7 @@ def test_e4_breakeven_short(art):
     p = AdaptiveL3({"artifact_path": path, "decision_tf": "4h", "theta": 0.40, "breakeven": True})
     pos = _pos(entry=100_000.0, side=PositionSide.SHORT, sl=102_000.0, tp=98_000.0, t=idx[0])
     p.on_position_opened(pos)          # R=2000, SHORT 트리거=98000
-    assert p._be_trigger == pytest.approx(98_000.0)
+    assert p._st(pos)["be_trigger"] == pytest.approx(98_000.0)
     assert p.update_stop_loss(_ctx(idx[1], price=98_000.0, position=pos), pos) == pytest.approx(100_000.0)
 
 
@@ -147,6 +149,26 @@ def test_e1_timeout_backstop_kept(art):
     p.on_position_opened(pos)
     dec = p.should_force_exit(_ctx(idx[2], position=pos, now=idx[2]), pos)  # 8h 경과 > 1봉
     assert dec is not None and dec.note == "expire_timeout"
+
+
+def test_tranche_state_is_isolated_per_trade_id(art):
+    """★N-트랜치 가드★ 두 트랜치의 breakeven 상태가 서로 오염되지 않는다."""
+    path, idx = art
+    p = AdaptiveL3({"artifact_path": path, "decision_tf": "4h", "theta": 0.40,
+                    "breakeven": True, "breakeven_r": 1.0})
+    a = _pos(entry=100_000.0, sl=98_000.0, t=idx[0], trade_id=1)   # 트리거 102000
+    b = _pos(entry=110_000.0, sl=107_800.0, t=idx[0], trade_id=2)  # 트리거 112200
+    p.on_position_opened(a)
+    p.on_position_opened(b)
+    assert p._st(a)["be_trigger"] == pytest.approx(102_000.0)
+    assert p._st(b)["be_trigger"] == pytest.approx(112_200.0)
+    # a 만 armed 되어도 b 는 영향 없음
+    assert p.update_stop_loss(_ctx(idx[1], price=102_000.0, position=a), a) == pytest.approx(100_000.0)
+    assert p._st(a)["be_armed"] is True and p._st(b)["be_armed"] is False
+    assert p.update_stop_loss(_ctx(idx[1], price=102_000.0, position=b), b) is None
+    # 청산 시 상태 회수(누수 방지)
+    p.on_position_closed(a, 0.0)
+    assert 1 not in p._state and 2 in p._state
 
 
 def test_default_no_forced_exit_before_timeout(art):

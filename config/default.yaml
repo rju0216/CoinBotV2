@@ -12,6 +12,12 @@ accounting:
 
 backtest:
   initial_balance: 10000.0
+  max_slots: 1                       # 동시 보유 트랜치 수 (1 = 단일슬롯 기본).
+                                     # >1 이면 각 트랜치가 독립 진입가·SL/TP·만기를 갖고
+                                     # 손익은 가산적(선형 perp 넷팅과 동일). 사이징(총노출
+                                     # N등분 여부)은 전략 소유 — 엔진은 용량만 안다.
+                                     # reverse 는 max_slots=1 에서만 평가(allow_reverse 와
+                                     # 동시 사용 시 구성 단계에서 하드페일).
 
 data:
   history_bars: 300                  # 백테 시작 전 indicator warmup 캔들 수
@@ -24,6 +30,9 @@ logging:
   backup_count: 5
 
 strategies:
+  # ※ 연구용 3층 플러그인(econ_l3·adaptive_l3·econ_l3_ensemble 슬리브)은 러너가 spec 을
+  #    주입하므로 여기에 섹션을 두지 않는다 — YAML 기본값과 러너 spec 이 이중 출처가 되면
+  #    드리프트 위험(Phase6 fresh-eyes 지적). dumb_l3 만 과거 배선 잔재로 섹션 보유.
   active: []                          # 뼈대 상태 — 전략 이름을 추가해야 매매 발생.
                                       # 새 전략: src/strategy/plugins/<name>.py 작성 +
                                       # 아래에 <name>: 섹션 추가 + 이 리스트에 "<name>" 추가.

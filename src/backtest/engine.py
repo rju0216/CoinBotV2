@@ -11,6 +11,14 @@
   3) 봉 경계 TF 별 evaluate_strategies_on_bar (진입 또는 reverse)
 종료 시 잔여 포지션은 ENGINE_SHUTDOWN 사유로 강제 청산.
 
+**용량 = N-트랜치 (Phase 6 (라), config ``backtest.max_slots``, 기본 1)**
+슬롯을 N개까지 열어 각 트랜치가 **독립 진입가·SL/TP·만기**를 갖는다. 트랜치는 서로
+간섭하지 않고 손익은 가산적이다 — 선형 perp 에서 거래소 넷팅(평균단가 1포지션)과
+**손익이 정확히 동일**하므로 실거래 재현 가능(트랜치 장부는 봇이 보유, 청산은 reduce-only).
+``max_slots=1`` 이면 기존 단일슬롯 동작과 **완전 동일**(가역·비파괴, 등가성 회귀로 박제).
+사이징(총노출 N등분 여부)은 **모델 소유** — 엔진은 용량만 안다.
+reverse 는 ``max_slots=1`` 에서만 평가된다(N>1 + allow_reverse 는 구성 시 하드에러).
+
 lookahead 차단: `_slice_candles(ts)` 가 ts '미만' 캔들만 전달 → 진행 중 봉의 close 가
 피처에 새지 않는다. 결과적으로 `ctx.candles[tf].iloc[-1]` 은 항상 직전 마감 봉.
 """
@@ -79,18 +87,43 @@ class BacktestEngine:
             (config.get("backtest", {}) or {}).get("initial_balance", 10000.0)
         )
 
-        # 배타적 경합 — 전역 슬롯 1개 (동시에 한 포지션만 보유)
-        self._position: Position | None = None
+        # 배타적 경합 — 전역 슬롯 max_slots 개 (기본 1 = 기존 단일슬롯 동작).
+        bt_cfg = config.get("backtest", {}) or {}
+        self.max_slots = int(bt_cfg.get("max_slots", 1))
+        if self.max_slots < 1:
+            raise ValueError(f"backtest.max_slots 는 1 이상이어야 함: {self.max_slots}")
+        self._positions: list[Position] = []
+        if self.max_slots > 1:
+            # reverse 는 단일슬롯 전제 로직 → N>1 에서 조용히 무시되지 않도록 하드페일.
+            reversing = [s.name for s in self.strategies
+                         if getattr(s, "allow_reverse", False)]
+            if reversing:
+                raise ValueError(
+                    f"max_slots>1 과 allow_reverse 는 함께 쓸 수 없음: {reversing} "
+                    "(reverse 는 단일슬롯에서만 평가된다)"
+                )
 
         self.candles_per_tf: dict[str, pd.DataFrame] = {}
         self.equity_curve: list[tuple[datetime, float]] = []
+        # 미실현 포함 mark-to-market 곡선(가산적 부가 산출 — equity_curve 는 불변).
+        # 트랜치가 여러 개 열린 구간의 낙폭은 실현잔고 곡선에 안 보이므로 MDD 계측용.
+        self.equity_curve_mtm: list[tuple[datetime, float]] = []
         self._next_trade_id = 0
         self._open_trades: dict[int, dict[str, Any]] = {}
         self.trades: list[dict[str, Any]] = []
 
     @property
     def position(self) -> Position | None:
-        return self._position
+        """가장 오래된(첫) 트랜치. max_slots=1 이면 기존 의미와 동일."""
+        return self._positions[0] if self._positions else None
+
+    @property
+    def positions(self) -> list[Position]:
+        return list(self._positions)
+
+    @property
+    def has_capacity(self) -> bool:
+        return len(self._positions) < self.max_slots
 
     @staticmethod
     def _parse_dt(value: str | datetime) -> datetime:
@@ -158,23 +191,24 @@ class BacktestEngine:
             open_ = float(candle["open"])
             now = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
 
-            # SL/TP — 봉 내 hit 여부는 high/low 로 판정 (거래소 체결 시뮬)
-            if self._position is not None:
-                fill = self.check_candle_sl_tp(self._position, high, low)
+            # SL/TP — 봉 내 hit 여부는 high/low 로 판정 (거래소 체결 시뮬).
+            # 트랜치별 독립 판정 (손익 가산적 → 순회 순서 무관).
+            for pos in list(self._positions):
+                fill = self.check_candle_sl_tp(pos, high, low)
                 if fill is not None:
                     exit_price, reason = fill
-                    self.close_position(exit_price, reason, now=now)
+                    self.close_position(pos, exit_price, reason, now=now)
 
             # ts 시점엔 직전 봉까지의 데이터로 평가 + open 가격으로 진입.
             # _slice_candles 는 ts 미만 슬라이스 (lookahead 제거).
             candles_slice = self._slice_candles(ts)
 
-            if self._position is not None:
+            for pos in list(self._positions):
                 exit_decision = self.check_strategy_exits(
-                    candles_slice, open_, self.balance, now
+                    pos, candles_slice, open_, self.balance, now
                 )
                 if exit_decision is not None:
-                    self.close_position(open_, exit_decision.reason, now=now)
+                    self.close_position(pos, open_, exit_decision.reason, now=now)
 
             for tf in self.timeframes:
                 if self._is_tf_boundary(now, tf):
@@ -183,8 +217,11 @@ class BacktestEngine:
                     )
 
             self.equity_curve.append((now, self.balance))
+            self.equity_curve_mtm.append(
+                (now, self._mark_to_market(float(candle["close"])))
+            )
 
-        if self._position is not None:
+        if self._positions:
             last_ts = master_df.index[-1]
             last_close = float(master_df["close"].iloc[-1])
             last_now = (
@@ -192,10 +229,12 @@ class BacktestEngine:
                 if hasattr(last_ts, "to_pydatetime")
                 else last_ts
             )
-            self.close_position(
-                last_close, ExitReason.ENGINE_SHUTDOWN, now=last_now
-            )
+            for pos in list(self._positions):
+                self.close_position(
+                    pos, last_close, ExitReason.ENGINE_SHUTDOWN, now=last_now
+                )
             self.equity_curve.append((last_now, self.balance))
+            self.equity_curve_mtm.append((last_now, self.balance))
 
         logger.info(
             "Backtest complete: balance=%.2f, trades=%d",
@@ -215,20 +254,23 @@ class BacktestEngine:
         current_price: float,
         balance: float,
         now: datetime,
+        position: Position | None = None,
     ) -> StrategyContext:
-        # 슬롯이 이 전략 소유면 해당 Position 노출, 아니면 None
-        own_position = (
-            self._position
-            if self._position is not None
-            and self._position.strategy_name == strategy.name
-            else None
-        )
+        """position 지정 시 그 트랜치에 바인딩(훅 경로), 미지정 시 이 전략 소유 최신 트랜치.
+
+        ``is_slot_occupied`` = **용량 소진 여부** (max_slots=1 이면 기존 의미와 동일)."""
+        own_position = position
+        if own_position is None:
+            for pos in reversed(self._positions):
+                if pos.strategy_name == strategy.name:
+                    own_position = pos
+                    break
         return StrategyContext(
             candles=dict(candles_per_tf),
             current_price=current_price,
             balance=balance,
             position=own_position,
-            is_slot_occupied=self._position is not None,
+            is_slot_occupied=not self.has_capacity,
             params=strategy.params,
             now=now,
             account=self._build_account_state(balance, current_price),
@@ -238,14 +280,7 @@ class BacktestEngine:
         self, balance: float, current_price: float
     ) -> AccountState:
         """allow_entry / compute_position_size 가 참조할 계좌 텔레메트리 (계측치)."""
-        unrealized = 0.0
-        pos = self._position
-        if pos is not None and current_price > 0:
-            if pos.side == PositionSide.LONG:
-                unrealized = (current_price - pos.entry_price) * pos.size
-            elif pos.side == PositionSide.SHORT:
-                unrealized = (pos.entry_price - current_price) * pos.size
-        equity = balance + unrealized
+        equity = balance + self._unrealized(current_price)
         tracker = self.account_tracker
         return AccountState(
             balance=balance,
@@ -255,6 +290,22 @@ class BacktestEngine:
             initial_balance=tracker.initial_balance,
             drawdown_pct=tracker.drawdown_pct(equity),
         )
+
+    def _unrealized(self, current_price: float) -> float:
+        """열린 트랜치 전체의 미실현 손익 합 (수수료 미차감 — 계측치)."""
+        if current_price <= 0:
+            return 0.0
+        total = 0.0
+        for pos in self._positions:
+            if pos.side == PositionSide.LONG:
+                total += (current_price - pos.entry_price) * pos.size
+            elif pos.side == PositionSide.SHORT:
+                total += (pos.entry_price - current_price) * pos.size
+        return total
+
+    def _mark_to_market(self, price: float) -> float:
+        """실현 잔고 + 미실현 = mark-to-market 자본 (equity_curve_mtm 용)."""
+        return self.balance + self._unrealized(price)
 
     # ---- 봉 마감 dispatch ----
 
@@ -269,9 +320,10 @@ class BacktestEngine:
         """봉 마감 시 전략 평가.
 
         1) 관련 TF 전략에 on_bar_close 훅 dispatch
-        2) 슬롯이 비었으면 entry_timeframe 일치 전략을 우선순위로 generate_signal,
-           첫 actionable 신호로 진입 시도
-        3) 슬롯이 차있으면 보유 전략의 should_reverse 로 청산·재진입 결정
+        2) 용량이 남으면 entry_timeframe 일치 전략을 우선순위로 generate_signal,
+           첫 actionable 신호로 진입 시도 (봉당 최대 1 트랜치)
+        3) 용량 소진 시 보유 전략의 should_reverse 로 청산·재진입 결정
+           — **max_slots=1 에서만.** N>1 은 reverse 미평가(구성 시 하드페일로 방어).
         """
         # 자정 경계 인식 시 daily_pnl reset
         self.account_tracker.maybe_reset_for_new_day(now)
@@ -287,9 +339,13 @@ class BacktestEngine:
                 )
                 strategy.on_bar_close(ctx, bar_close_tf)
 
-        # 2) 슬롯 빔 → 진입 시도
-        if self._position is None:
+        # 2) 용량 남음 → 진입 시도. **전략당 최대 1 트랜치**, 용량이 남는 한 다음 전략도 시도.
+        #    (max_slots=1 이면 첫 진입으로 용량이 소진돼 break — 기존 "첫 성공 시 return"과 동일.
+        #     max_slots>1 이면 지평 앙상블처럼 여러 전략이 같은 봉에서 각자 1 트랜치를 연다.)
+        if self.has_capacity:
             for strategy in self.strategies:
+                if not self.has_capacity:
+                    break
                 if strategy.entry_timeframe != bar_close_tf:
                     continue
                 ctx = self._build_ctx(
@@ -298,12 +354,14 @@ class BacktestEngine:
                 signal = strategy.generate_signal(ctx)
                 if not signal.is_actionable:
                     continue
-                if self.try_enter(strategy, signal, ctx, now):
-                    return  # 첫 진입 성공 시 종료
+                self.try_enter(strategy, signal, ctx, now)
             return
 
-        # 3) 슬롯 참 → 보유(owner) 전략이 reverse 여부 결정 (정책=모델 소유).
-        held_strategy = self.strategy_by_name.get(self._position.strategy_name)
+        # 3) 용량 소진 → reverse 판정 (단일슬롯 전제 로직).
+        if self.max_slots != 1:
+            return
+        held_position = self._positions[0]
+        held_strategy = self.strategy_by_name.get(held_position.strategy_name)
         if held_strategy is not None:
             for strategy in self.strategies:
                 if strategy.entry_timeframe != bar_close_tf:
@@ -317,12 +375,16 @@ class BacktestEngine:
                 held_ctx = self._build_ctx(
                     held_strategy, candles_per_tf, current_price, balance, now
                 )
-                if held_strategy.should_reverse(held_ctx, self._position, signal):
+                if held_strategy.should_reverse(held_ctx, held_position, signal):
                     self.close_position(
-                        current_price, ExitReason.REVERSE_SIGNAL, now=now
+                        held_position, current_price, ExitReason.REVERSE_SIGNAL,
+                        now=now,
                     )
-                    if self.try_enter(strategy, signal, ctx, now):
-                        return
+                    # ★I-011★ 청산된 뒤에는 루프를 계속하면 안 된다 — held_position 은
+                    # 이미 닫혔으므로 다음 전략에 대해 should_reverse 를 재평가하면
+                    # 죽은 포지션 기준 판정 + 이중 진입이 된다. 재진입 성패와 무관하게 종료.
+                    self.try_enter(strategy, signal, ctx, now)
+                    return
 
     # ---- 진입 ----
 
@@ -333,7 +395,7 @@ class BacktestEngine:
         ctx: StrategyContext,
         now: datetime,
     ) -> bool:
-        if self._position is not None:
+        if not self.has_capacity:
             return False
 
         # 진입 게이트(리스크 정책) — 모델 소유
@@ -367,7 +429,7 @@ class BacktestEngine:
             now=now,
         )
 
-        self._position = Position(
+        position = Position(
             side=position_side,
             size=size,
             entry_price=entry_price,
@@ -378,9 +440,10 @@ class BacktestEngine:
             trade_id=trade_id,
             status=PositionStatus.OPEN,
         )
+        self._positions.append(position)
 
         try:
-            strategy.on_position_opened(self._position)
+            strategy.on_position_opened(position)
         except Exception as e:
             logger.error(
                 "on_position_opened hook error in %s: %s", strategy.name, e,
@@ -400,14 +463,18 @@ class BacktestEngine:
 
     def close_position(
         self,
+        position: Position,
         exit_price: float,
         reason: ExitReason,
         funding_fee: float = 0.0,
         now: datetime | None = None,
     ) -> None:
-        if self._position is None:
+        """지정 트랜치 하나만 청산 (나머지 트랜치는 그대로 유지).
+
+        Position 은 dataclass(값 비교)이므로 **동일성(is)** 으로 대조·제거한다."""
+        if position is None or not any(p is position for p in self._positions):
             return
-        pos = self._position
+        pos = position
         now = now or datetime.now(timezone.utc)
 
         # 수수료·PnL 정산 — FeeModel 단일 공식. 왕복 수수료를 balance 에서 차감.
@@ -453,7 +520,7 @@ class BacktestEngine:
             pos.strategy_name, pos.side.value, exit_price, reason.value,
             net_pnl, fees,
         )
-        self._position = None
+        self._positions = [p for p in self._positions if p is not pos]
 
     # ---- 캔들 기반 SL/TP 체결 시뮬 ----
 
@@ -500,29 +567,30 @@ class BacktestEngine:
 
     def check_strategy_exits(
         self,
+        position: Position,
         candles_per_tf: dict[str, pd.DataFrame],
         current_price: float,
         balance: float,
         now: datetime,
     ) -> ExitDecision | None:
-        """보유 중 봉 마감 시 호출.
+        """보유 중 봉 마감 시 **트랜치별로** 호출.
 
         1) update_stop_loss 결과로 position.stop_loss 갱신 (None 반환=유지)
         2) should_force_exit 가 ExitDecision 반환 시 그 값 리턴 (엔진이 청산 트리거)
         """
-        if self._position is None:
+        if position is None:
             return None
-        strategy = self.strategy_by_name.get(self._position.strategy_name)
+        strategy = self.strategy_by_name.get(position.strategy_name)
         if strategy is None:
             return None
 
         ctx = self._build_ctx(
-            strategy, candles_per_tf, current_price, balance, now
+            strategy, candles_per_tf, current_price, balance, now, position=position
         )
         try:
-            new_sl = strategy.update_stop_loss(ctx, self._position)
+            new_sl = strategy.update_stop_loss(ctx, position)
             if new_sl is not None:
-                self._position.stop_loss = float(new_sl)
+                position.stop_loss = float(new_sl)
         except Exception as e:
             logger.error(
                 "update_stop_loss hook error in %s: %s", strategy.name, e,
@@ -530,7 +598,7 @@ class BacktestEngine:
             )
 
         try:
-            return strategy.should_force_exit(ctx, self._position)
+            return strategy.should_force_exit(ctx, position)
         except Exception as e:
             logger.error(
                 "should_force_exit hook error in %s: %s", strategy.name, e,

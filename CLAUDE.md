@@ -47,7 +47,8 @@
 8. **구조 점검 단계**: 비자명한 작업의 상세 계획 수립 후, 사용자 결정·구현 착수 직전에 다음 4가지를 자체 점검하고 발견 사항을 계획에 반영한다:
    - **DRY**: 동일 패턴이 N개 파일에 중복되지 않는가? helper/추상화로 단일 출처화 가능한가?
    - **캡슐화**: 한 레이어의 관심사가 다른 레이어(예: plugin 추론 로직)로 누출되지 않는가?
-   - **미래 확장성**: 현재 가정(예: 단일 포지션 슬롯, entry_tf 봉마감 평가)에 잠긴 "지금만 작동" 코드를 만들지 않는가?
+   - **미래 확장성**: 현재 가정(예: entry_tf 봉마감 평가)에 잠긴 "지금만 작동" 코드를 만들지 않는가?
+     (※ "단일 포지션 슬롯" 가정은 Phase6 D-037 로 **해제** — 엔진은 `backtest.max_slots` N-트랜치 지원)
    - **1회용 코드 분리**: 탐사용/측정용 스크립트(profiling, 한 번 돌리고 폐기)는 commit 제외, 결과 텍스트만 작업 보고서에 보존.
 9. **Phase 내부 Step 임시 보존**: Phase가 여러 Step으로 분할된 경우, 각 Step 종착 시 결과·핵심 수치를 메모리 파일(`~/.claude/.../memory/phase_<id>_step<n>.md`)에 즉시 기록한다. Phase 종착 시 모든 Step 결과를 작업 보고서에 일괄 통합하고 커밋한 직후 임시 메모리 파일을 삭제한다. 목적: compact/세션 단절 시 컨텍스트 손실 방지. **모든 Step에 일관 적용** — 작업 시간(짧음/긺) 무관. "짧으니까 면제" 같은 임의 판단 금지 — 사용자가 명시적으로 면제할 때만 예외.
 10. **백테 결과 정합성 검증 우선**: 백테 결과 신뢰성 점검 시 데이터 단위 정합성을 먼저 검증한다 — `trades.csv pnl 합` ↔ `metrics.json total_pnl` ↔ `equity_curve.csv 변화량` 일치성. 사용자가 결과를 의심할 때(예: 비현실적 수익률) 직관적 가설(데이터 누출/lookahead)보다 정합성 검증을 우선 수행한다. 불일치 발견 시 즉시 잠재 이슈로 등록.
@@ -86,9 +87,12 @@
 4. **config 운영 상태**: `config/default.yaml` 의 `strategies.active` 확인
    (`[]` → 뼈대 무거래 / 비어있지 않음 → 활성 전략 목록).
 5. **활성 코드 위치**:
-   - `src/backtest/engine.py` — BacktestEngine (봉마감 평가·진입·청산·SL/TP 시뮬 + 리포트)
+   - `src/backtest/engine.py` — BacktestEngine (봉마감 평가·진입·청산·SL/TP 시뮬 + 리포트).
+     **N-트랜치 용량** `backtest.max_slots`(기본 1 = 단일슬롯, D-037) + `equity_curve_mtm`
    - `src/strategy/base.py` — StrategyModule 추상 / `registry.py` — auto-discovery
-   - `src/strategy/plugins/` — 전략 플러그인 폴더 (현재 비어 있음)
+   - `src/strategy/plugins/` — 전략 플러그인: `dumb_l3`(멍청3층) / `adaptive_l3`(청산레버·
+     trade_id 상태격리) / **`econ_l3`**(EV 게이트 + 만기게이트 + 로버스트 선별) /
+     `econ_l3_ensemble`(지평 슬리브 3 — 이름만 분리)
    - `src/accounting/` — fee_model(PnL 공식) + account_tracker(계측)
    - `src/data/historical.py` — 백테 캔들 로더
    - `src/core/` — types + enums
@@ -99,12 +103,19 @@
      **mtf**(build_mtf_features — 결정TF X + 상위TF 완성봉 concat, R4.2)) +
      **models**(base `ProbaModel`·tree_bench·mlp 멀티태스크헤드, 2층)·**experiments**(r1_smoke·
      r2_window_search·r3_multitask·r3_arch_kf·**tf_expansion**(단독TF)·**tf_confirm**(15m 확인)·**tf_mtf**(MTF)·
-     **oos_export**(OOS 예측 박제·**일반화** export_frontier/build_frontier_xy, Phase4~5)). **관문1 PASS**(15m+1h, §12-6).
-     **관문2(경제성) = FAIL-on-cost 유효**(§12-7·12-8). **Phase 5**(정책→지평 프론티어) 소진: 홀딩 무효(D-034)·
-     지평×배리어×x 프론티어 유일양성 4h/{3,4,5일}/x3도 **fresh-eyes = 2024 아티팩트·비정상**(D-035, 코드결함0)·
-     config 원장 CARRY/PARK(D-036, kill0). 멍청3층 = `src/strategy/plugins/dumb_l3.py`(파라미터화 decision_tf·no_tp·conviction).
-     **다음 = Phase 6 최적화3층**(CARRY 후보 위 정책학습, **시간안정성 바** ex-2024+최근OOS) → Phase 7 현실·교차강건·관문3.
-     상세는 `docs/00_Work_Report/QuantModel_MasterPlan.md`(§12-8·D-034~036·I-005~006). 의존성은 `requirements-ml.txt`.
+     **oos_export**(OOS 예측 박제·**일반화** export_frontier/build_frontier_xy, Phase4~5)·
+     **policy_eval**(Phase6 정책 하네스 — 1m fill·실펀딩·연도별·**N 불변 bp 지표**·점유·MDD·
+     슬리피지 허용치·손익 항등식 하드체크)). **관문1 PASS**(15m+1h, §12-6). **관문2 = FAIL-on-cost**(§12-7·12-8).
+     **Phase 6**(최적화3층) **종착 = layer-3 소진**(§12-9): **용량(단일슬롯)이 1차 지렛대**로 판명 —
+     신호의 85~90%를 버려 판정이 표집에 지배됨. 엔진 **N-트랜치**(D-037) 후 포화 재측정 →
+     **93셀 중 ex-2024 양수는 D2/D7 뿐**(4h_4d × **EV게이트**(D-038) × 만기게이트), 층1 통과 0.
+     **D2 baseline 박제**(D-042)·**완전 kill 0 유지**(D-043, PARK 정량 재소환 조건).
+     발견: θ knife-edge=표집아티팩트 · 알파 양방향 실재하나 **베타 노출(87% 롱)이 상쇄** ·
+     **금지가정 "방향편향" 실측**(예측 up 77.7% vs 라벨 32.7%, |편향|↔적중률 상관 −0.739).
+     **다음 = layer 0~2 개선**(예측 편향 모니터·피처 대칭성 감사·헤드분리·캘리브레이션·파생데이터)
+     **→ layer-3 재측정**(도구 완비) → Phase 7 현실·교차강건·관문3.
+     상세는 `docs/00_Work_Report/QuantModel_MasterPlan.md`(§12-9·D-037~043·I-007~013·F-18/19).
+     의존성은 `requirements-ml.txt`.
 6. **캔들 캐시 (data/, git untracked)**: `data/candles/*.csv`.
 
 ---
@@ -151,6 +162,8 @@ python -m pytest tests/ -q
 3. `strategies.active` 리스트에 `"my_strategy"` 추가
 
 엔진 코드 수정은 0이어야 한다 — 그렇지 않으면 추상화가 잘못된 것.
+**단, 이는 "전략 추가 시" 규칙이지 엔진 자체의 성능·메커니즘 개선 금지가 아니다**
+(D-031 성능버그 수정, D-037 N-트랜치 용량 확장 — 둘 다 등가성 회귀로 비파괴 입증 후 반영).
 **거래 정책(사이징·SL/TP·reverse·진입 게이트)·모델 학습·피처 엔지니어링은 전부 전략 소유**
 (엔진은 메커니즘만; 인프라는 피처/학습 파이프라인을 제공하지 않음).
 
@@ -164,7 +177,7 @@ src/
 ├── backtest/    # engine.py — BacktestEngine (엔진 전체) + 리포트
 ├── strategy/
 │   ├── base.py / registry.py
-│   └── plugins/   # ★ 신규 전략 (현재 비어 있음)
+│   └── plugins/   # dumb_l3 / adaptive_l3 / econ_l3 / econ_l3_ensemble
 ├── accounting/  # fee_model(PnL 공식) + account_tracker(equity 계측)
 ├── data/        # historical (백테 캔들 로더)
 └── utils/       # config_loader / logger

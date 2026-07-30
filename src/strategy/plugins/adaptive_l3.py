@@ -43,11 +43,9 @@ class AdaptiveL3(DumbL3):
         self.sl_mult = float(self.params.get("sl_mult", 1.0))              # E2 (0.5=tight)
         self.breakeven = bool(self.params.get("breakeven", False))          # E4
         self.breakeven_r = float(self.params.get("breakeven_r", 1.0))       # 이익 R배 도달시 BE
-        # per-position 상태 (단일슬롯 — 한 번에 한 포지션)
-        self._be_trigger: float | None = None
-        self._be_armed: bool = False
-        self._decay_key = None       # 신호감쇠 lookup 캐시(4h봉 단위, 1m 반복 방지)
-        self._decay_exit: bool = False
+        # per-position 상태 — **trade_id 키**(N-트랜치에서 트랜치끼리 상태 오염 방지).
+        # 값: {"be_trigger": float|None, "be_armed": bool, "decay_key": ts|None, "decay_exit": bool}
+        self._state: dict[int, dict] = {}
         logger.info("AdaptiveL3: signal_decay=%s sl_mult=%.2f breakeven=%s(r=%.1f)",
                     self.signal_decay, self.sl_mult, self.breakeven, self.breakeven_r)
 
@@ -60,28 +58,37 @@ class AdaptiveL3(DumbL3):
         entry = ctx.current_price
         return entry * (1.0 - w) if signal.side == SignalSide.LONG else entry * (1.0 + w)
 
+    # ---- 트랜치별 상태 접근 (trade_id 키; 없으면 생성) ----
+    def _st(self, position: Position) -> dict:
+        return self._state.setdefault(
+            position.trade_id,
+            {"be_trigger": None, "be_armed": False, "decay_key": None, "decay_exit": False},
+        )
+
+    def on_position_closed(self, position: Position, pnl: float) -> None:
+        self._state.pop(position.trade_id, None)          # 트랜치 상태 회수(누수 방지)
+
     # ---- E4: breakeven 상태 초기화 (진입 시 1R 트리거 가격 확정) ----
     def on_position_opened(self, position: Position) -> None:
-        self._be_armed = False
-        self._be_trigger = None
-        self._decay_key = None
-        self._decay_exit = False
+        st = {"be_trigger": None, "be_armed": False, "decay_key": None, "decay_exit": False}
         if self.breakeven and position.stop_loss is not None:
             r = abs(position.entry_price - position.stop_loss)   # 초기 리스크 R (=SL 거리)
             if position.side == PositionSide.LONG:
-                self._be_trigger = position.entry_price + self.breakeven_r * r
+                st["be_trigger"] = position.entry_price + self.breakeven_r * r
             else:
-                self._be_trigger = position.entry_price - self.breakeven_r * r
+                st["be_trigger"] = position.entry_price - self.breakeven_r * r
+        self._state[position.trade_id] = st
 
     # ---- E4: 이익 R배 도달 → SL 을 진입가로 (한 번만) ----
     def update_stop_loss(self, ctx: StrategyContext, position: Position) -> float | None:
-        if not self.breakeven or self._be_armed or self._be_trigger is None:
+        st = self._st(position)
+        if not self.breakeven or st["be_armed"] or st["be_trigger"] is None:
             return None
         px = ctx.current_price
-        hit = (px >= self._be_trigger if position.side == PositionSide.LONG
-               else px <= self._be_trigger)
+        hit = (px >= st["be_trigger"] if position.side == PositionSide.LONG
+               else px <= st["be_trigger"])
         if hit:
-            self._be_armed = True
+            st["be_armed"] = True
             return position.entry_price       # SL → breakeven
         return None
 
@@ -109,16 +116,17 @@ class AdaptiveL3(DumbL3):
         if len(completed) == 0:
             return None
         key = completed[-1]                                # 마지막 **완성** 결정TF 봉(인과)
-        if key != self._decay_key:                         # 4h봉 바뀔 때만 재평가(1m 반복 캐시)
-            self._decay_key = key
+        st = self._st(position)
+        if key != st["decay_key"]:                         # 4h봉 바뀔 때만 재평가(1m 반복 캐시)
+            st["decay_key"] = key
             row = self._lookup(key)
             if row is None:
-                self._decay_exit = False
+                st["decay_exit"] = False
             else:
                 s = self.pred_source
                 held_p = (float(row[f"{s}_up"]) if position.side == PositionSide.LONG
                           else float(row[f"{s}_down"]))
-                self._decay_exit = held_p < self.theta     # 보유 방향 신뢰도가 진입기준 밑
-        if self._decay_exit:
+                st["decay_exit"] = held_p < self.theta     # 보유 방향 신뢰도가 진입기준 밑
+        if st["decay_exit"]:
             return ExitDecision(reason=ExitReason.FORCE_EXIT, note="signal_decay")
         return None
