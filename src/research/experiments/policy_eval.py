@@ -23,6 +23,7 @@ import numpy as np
 import pandas as pd
 
 from src.backtest.engine import BacktestEngine
+from src.data.historical import TF_MS
 from src.research.experiments.tf_expansion import causal_regime_frame_for
 from src.utils.config_loader import load_config
 
@@ -226,7 +227,12 @@ def _analyze(policy_spec: dict, trades: list[dict], funding_csv: str,
     if len(df) == 0:
         out["n_trades"] = 0
         return out
-    df["gross"] = df["pnl"] + df["trading_fee"] + df["funding_fee"]
+    # ★I-012★ gross 역산은 FeeModel.calc_pnl(`net = gross − fees + funding`)의 **역**이어야
+    # 한다 → `gross = net + fees − funding`. 과거 구현은 funding 을 더해(부호 반대) 엔진이
+    # 펀딩을 배선하는 순간 gross 가 deflate 된다. 현재 엔진은 close_position(funding_fee=0.0)
+    # 기본값만 쓰므로(호출부 4곳 전수 확인) 커밋된 수치는 불변이나, Phase 8 realistic
+    # execution 에서 펀딩을 엔진에 태우면 실화한다. 선제 수정(전제 게이트 해소).
+    df["gross"] = df["pnl"] + df["trading_fee"] - df["funding_fee"]
     df["entry_time"] = pd.to_datetime(df["entry_time"], utc=True)
     df["exit_time"] = pd.to_datetime(df["exit_time"], utc=True)
     df = df.sort_values("entry_time").reset_index(drop=True)
@@ -286,11 +292,28 @@ def _analyze(policy_spec: dict, trades: list[dict], funding_csv: str,
         )
     out["by_year"] = by_year
 
-    # 신호 포착률 (θ 넘는 actionable 대비)
+    # 신호 포착률 - 분모는 **실제 진입 게이트 전부**를 통과한 봉이어야 한다. 과거 구현은
+    # theta 만 반영해 EV/만기 게이트 셀에서 분모가 과대(=포착률 과소)였다. D2(theta=0)에서
+    # 41.4% 로 보고됐으나 참값은 81.8%. Phase 6 최대 교훈이 "포화에서 재측정" 이므로
+    # 이 지표가 절반으로 나오면 **포화된 셀을 미포화로 오판**한다.
     try:
-        art = pd.read_parquet(tag, columns=[f"{src}_up", f"{src}_down"])
-        n_act = int((art[[f"{src}_up", f"{src}_down"]].max(axis=1) >= theta).sum())
+        cols = [f"{src}_up", f"{src}_down", f"{src}_expire", "barrier_frac"]
+        art = pd.read_parquet(tag, columns=cols)
+        up_a, dn_a = art[f"{src}_up"].to_numpy(), art[f"{src}_down"].to_numpy()
+        ex_a, w_a = art[f"{src}_expire"].to_numpy(), art["barrier_frac"].to_numpy()
+        act = np.maximum(up_a, dn_a) >= theta
+        ev_k = float(policy_spec.get("ev_k", 0.0) or 0.0)
+        if ev_k > 0.0:
+            hb = float(policy_spec.get("horizon_bars", 0) or 0)
+            tf_h = TF_MS.get(policy_spec.get("decision_tf", ""), 0) / 3_600_000.0
+            cost_frac = 2.0 * 0.0005 + (hb * tf_h / 8.0) * 0.0001
+            act = act & (np.abs(up_a - dn_a) * w_a >= ev_k * cost_frac)
+        if bool(policy_spec.get("require_dir_gt_expire", False)):
+            act = act & (np.maximum(up_a, dn_a) > ex_a)
+        n_act = int(act.sum())
         out["n_actionable"] = n_act
+        out["capture_gates"] = {"theta": theta, "ev_k": ev_k, "require_dir_gt_expire":
+                                bool(policy_spec.get("require_dir_gt_expire", False))}
         out["signal_capture_pct"] = round(n / n_act * 100, 1) if n_act else None
     except Exception:  # noqa: BLE001 — capture 는 진단 보조, 실패해도 채점 유지
         pass

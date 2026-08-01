@@ -8,6 +8,7 @@ import pytest
 
 from src.research.validation.metrics import (
     FoldPrediction,
+    directional_metrics,
     aggregate_metrics,
     balanced_accuracy,
     mcc,
@@ -91,3 +92,87 @@ def test_pooled_per_regime_heterogeneous_classes():
     rep = aggregate_metrics([fp0, fp1], regime_tags=regime, labels=labels)
     assert "log_loss" in rep.per_regime.columns   # 크래시 없이 계산됨
     assert rep.per_regime.loc["bull", "n"] == 6
+
+
+# ---- 방향 편향 지표 (Phase 7 상설화) ----
+
+def _proba(rows):
+    """rows = [(up, down, expire)] → proba DataFrame."""
+    return pd.DataFrame(rows, columns=["up", "down", "expire"])
+
+
+def test_directional_metrics_known_answer():
+    # 4봉: 예측 방향 up,up,down,up / 라벨 up,down,down,expire
+    proba = _proba([(0.5, 0.2, 0.3), (0.4, 0.3, 0.3), (0.1, 0.6, 0.3), (0.45, 0.25, 0.3)])
+    y = pd.Series(["up", "down", "down", "expire"])
+    m = directional_metrics(y, proba)
+    assert m["pred_up_share"] == pytest.approx(0.75)          # 전 봉 4 중 3봉 up 방향
+    assert m["resolved_share"] == pytest.approx(0.75)         # expire 1봉 제외
+    assert m["label_up_share"] == pytest.approx(1 / 3)        # 해소 3봉 중 up 1
+    # ★fresh-eyes H-1★ dir_bias 는 **같은 모집단**(해소봉)끼리 빼야 한다.
+    # 해소 3봉의 예측 방향 = up,up,down → 2/3
+    assert m["pred_up_share_resolved"] == pytest.approx(2 / 3)
+    assert m["dir_bias"] == pytest.approx(2 / 3 - 1 / 3)
+    # 전 봉 기준 차이는 이력 호환용으로 병기되며 모집단이 다름을 명시
+    assert m["dir_bias_allbars"] == pytest.approx(0.75 - 1 / 3)
+    # 해소봉 적중: (up,up)=O (up,down)=X (down,down)=O → 2/3
+    assert m["dir_hit_rate"] == pytest.approx(2 / 3)
+    assert m["margin_mean"] == pytest.approx(np.mean([0.3, 0.1, -0.5, 0.2]))
+    assert m["s_mean"] == pytest.approx(0.7)                  # 전 봉 up+down=0.7
+    # q = max/s: .5/.7, .4/.7, .6/.7, .45/.7 → 중앙값 = (0.45+0.5)/2 / 0.7
+    assert m["q_median"] == pytest.approx((0.475) / 0.7)
+
+
+def test_directional_metrics_detects_long_bias():
+    """라벨은 균형인데 예측이 전부 롱 → dir_bias 가 크게 양수."""
+    proba = _proba([(0.4, 0.2, 0.4)] * 10)
+    y = pd.Series(["up", "down"] * 5)
+    m = directional_metrics(y, proba)
+    assert m["pred_up_share"] == 1.0
+    assert m["label_up_share"] == pytest.approx(0.5)
+    assert m["dir_bias"] == pytest.approx(0.5)
+    assert m["dir_hit_rate"] == pytest.approx(0.5)   # 절반만 맞음
+
+
+def test_directional_metrics_tie_follows_engine_long_convention():
+    """★fresh-eyes H-2★ margin==0 은 엔진과 같이 **롱**으로 센다(dumb_l3 `p_up >= p_down`).
+
+    UniformBaseline 은 전 봉이 정확히 타이라 이 경로가 실제로 도달된다. 과거 구현은
+    pred_up_share(>=)와 dir_hit_rate(>)가 같은 함수 안에서 반대로 세었다.
+    """
+    proba = _proba([(0.3, 0.3, 0.4)] * 4)          # 전 봉 정확히 타이
+    y = pd.Series(["up", "up", "down", "down"])
+    m = directional_metrics(y, proba)
+    assert m["pred_up_share"] == 1.0               # 타이 → 롱
+    assert m["pred_up_share_resolved"] == 1.0
+    assert m["dir_hit_rate"] == pytest.approx(0.5)  # 롱 4개 중 라벨 up 2개
+    assert m["dir_bias"] == pytest.approx(0.5)
+
+
+def test_directional_metrics_noop_for_other_label_sets():
+    """label-agnostic 계약 — up/down 열이 없으면 빈 dict (다른 라벨 집합엔 no-op)."""
+    proba = pd.DataFrame([[0.6, 0.4]], columns=["A", "B"])
+    assert directional_metrics(pd.Series(["A"]), proba) == {}
+    assert directional_metrics(pd.Series(["A"]), None) == {}
+
+
+def test_directional_metrics_skips_nan_labels():
+    proba = _proba([(0.5, 0.2, 0.3), (0.1, 0.6, 0.3)])
+    y = pd.Series(["up", None])
+    m = directional_metrics(y, proba)
+    assert m["pred_up_share"] == 1.0        # NaN 행 제외 후 1봉만, 방향 up
+    assert m["dir_hit_rate"] == 1.0
+
+
+def test_aggregate_metrics_auto_includes_direction():
+    """상설화 확인 — aggregate_metrics 가 폴드별로 방향 지표를 자동 계측한다."""
+    idx = pd.date_range("2024-01-01", periods=4, freq="h", tz="UTC")
+    proba = _proba([(0.5, 0.2, 0.3)] * 4).set_index(idx)
+    y = pd.Series(["up", "down", "up", "down"], index=idx)
+    pred = pd.Series(["up"] * 4, index=idx)
+    rep = aggregate_metrics([FoldPrediction(0, y, pred, proba)],
+                            labels=["up", "down", "expire"])
+    assert "pred_up_share" in rep.per_fold.columns
+    assert "dir_hit_rate" in rep.per_fold.columns
+    assert rep.per_fold.loc[0, "pred_up_share"] == 1.0
+    assert rep.per_fold.loc[0, "dir_bias"] == pytest.approx(0.5)

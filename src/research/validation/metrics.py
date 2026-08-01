@@ -97,6 +97,72 @@ class AggReport:
     summary: pd.DataFrame     # index=지표, cols=[mean,median,min,max,std] (폴드 분포)
 
 
+# ---- 방향 편향 진단 (배리어 3-클래스 전용, Phase 7 상설화) ----
+
+DIRECTION_CLASSES = ("up", "down")
+
+
+def directional_metrics(y_true, y_proba: pd.DataFrame,
+                        classes=DIRECTION_CLASSES) -> dict:
+    """방향 편향·적중률 + ``p_dir`` 인자 분해 (배리어 라벨 진단).
+
+    3-클래스 {up,down,expire} 에서 ``p_dir = max(p_up,p_down)`` 는 **두 인자의 곱**이다::
+
+        p_dir = s × q,   s = p_up + p_down = 1 − p_expire   (움직일 확률)
+                         q = max(p_up,p_down) / s           (맞는 쪽일 조건부 확률, ≥0.5)
+
+    θ 게이트는 이 **곱**에 문턱을 걸므로, s 가 분산을 지배하면 문턱이 방향이 아니라
+    **움직임**을 자른다(Phase 6 실측: corr(p_dir, 방향마진) = 15m 0.09 / 4h 0.55).
+    s/q 를 나눠 재야 "확신이 낮은 게 만기질량 때문인지(좌표계) 방향정보 부재 때문인지"가
+    구분된다.
+
+    **왜 상설 지표인가**: 예측 up 비중을 5년간 아무도 재지 않아 4h 의 77.7% 롱 편향을
+    Phase 6 종착에서야 발견했다. ``aggregate_metrics`` 가 폴드·국면별로 자동 계측하게 해
+    "재는 걸 잊어서 못 보는" 실패를 **구조로** 막는다(계측 누락 재발 방지).
+
+    label-agnostic 계약 유지: up/down 열이 proba 에 없으면 **빈 dict**(다른 라벨 집합엔 no-op).
+    적중률·라벨비중은 **해소봉**(라벨이 up|down)만 대상 — expire 는 방향 정답이 없다.
+    """
+    up_c, dn_c = classes
+    if y_proba is None or not {up_c, dn_c}.issubset(set(y_proba.columns)):
+        return {}
+    yt = pd.Series(y_true)
+    valid = yt.notna().to_numpy()
+    up = y_proba[up_c].to_numpy(dtype="float64")[valid]
+    dn = y_proba[dn_c].to_numpy(dtype="float64")[valid]
+    yt = yt[valid]
+    if len(yt) == 0:
+        return {}
+
+    margin = up - dn
+    s = up + dn
+    with np.errstate(invalid="ignore", divide="ignore"):
+        q = np.where(s > 0, np.maximum(up, dn) / np.where(s > 0, s, 1.0), np.nan)
+    resolved = yt.isin(list(classes)).to_numpy()
+    lab_up = (yt == up_c).to_numpy()
+
+    # 타이(margin==0) 규약은 **엔진과 동일하게 `>=` = 롱**으로 통일 (dumb_l3 `p_up >= p_down`,
+    # alpha_decomp `is_long = up >= dn`). UniformBaseline 은 전 봉 margin==0 이라 실제 도달한다.
+    is_long = margin >= 0
+    out = {
+        "pred_up_share": float(is_long.mean()),          # 전 봉 기준(만기 포함)
+        "margin_mean": float(margin.mean()),
+        "s_mean": float(s.mean()),
+        "q_median": float(np.nanmedian(q)),
+        "resolved_share": float(resolved.mean()),
+    }
+    if resolved.any():
+        # `dir_bias` 는 **같은 모집단끼리** 빼야 한다. 과거 구현은 pred(전 봉) - label(해소봉)
+        # 으로 두 모집단을 섞었다. 해소봉 기준 예측비율을 따로 내고 그것으로 편향을 정의하며,
+        # 전 봉 기준 차이도 병기해 과거 수치와의 대조를 가능하게 한다.
+        out["pred_up_share_resolved"] = float(is_long[resolved].mean())
+        out["label_up_share"] = float(lab_up[resolved].mean())
+        out["dir_bias"] = out["pred_up_share_resolved"] - out["label_up_share"]
+        out["dir_bias_allbars"] = out["pred_up_share"] - out["label_up_share"]
+        out["dir_hit_rate"] = float((is_long == lab_up)[resolved].mean())
+    return out
+
+
 def compute_classification_metrics(
     y_true, y_pred, y_proba: pd.DataFrame | None = None, labels=None
 ) -> dict:
@@ -106,6 +172,9 @@ def compute_classification_metrics(
     }
     if y_proba is not None and labels is not None:
         out["log_loss"] = multiclass_log_loss(y_true, y_proba, labels)
+    # 방향 지표는 **자동 계측**(up/down 열이 있을 때만) — 호출부가 옵트인을 잊어
+    # 다시 미계측이 되는 것을 막는다. 다른 라벨 집합에서는 no-op.
+    out.update(directional_metrics(y_true, y_proba))
     return out
 
 

@@ -207,3 +207,29 @@ def test_equivalence_frontier_gate2_4h_4d():
     out = pe.evaluate_policy(spec, start="2020-12-28", end="2026-04-23")
     assert out["n_trades"] == 338
     assert out["net"] == pytest.approx(9890, abs=60)  # frontier_gate2 기록값
+
+
+def test_gross_inverts_feemodel_including_funding():
+    """★I-012★ gross 역산은 FeeModel.calc_pnl 의 정확한 역이어야 한다.
+
+    FeeModel: ``net = gross - fees + funding``  →  ``gross = net + fees - funding``.
+    엔진이 현재 funding_fee=0 만 넘겨 미발현이나, Phase 8 에서 펀딩을 엔진에 배선하면
+    부호가 틀린 역산은 gross 를 체계적으로 deflate 한다. 0 이 아닌 funding 으로 박제.
+    """
+    from src.accounting.fee_model import FeeModel
+    from src.core.enums import PositionSide
+
+    fm = FeeModel(taker_fee_pct=0.0005, slippage_pct=0.0)
+    entry, exit_, size, funding = 100_000.0, 101_000.0, 0.1, -3.0   # 롱이 펀딩 지불
+    fees = fm.estimate_round_trip(entry, exit_, size)
+    settled = fm.calc_pnl(PositionSide.LONG, entry, exit_, size, fees=fees, funding=funding)
+
+    trades = [dict(entry_time="2024-01-01 00:00", exit_time="2024-01-01 08:00",
+                   side="LONG", size=size, entry_price=entry,
+                   pnl=settled["net_pnl"], trading_fee=fees, funding_fee=funding,
+                   exit_reason="tp_hit")]
+    out = pe._analyze({"decision_tf": "4h", "horizon_bars": 24, "artifact_path": "?"},
+                      trades, funding_csv="data/funding/__nope__.csv", init=10_000.0)
+    # _analyze 가 역산한 gross 가 FeeModel 이 계산한 gross 와 정확히 일치해야 한다
+    assert out["gross"] == pytest.approx(settled["gross_pnl"], abs=1e-6)
+    assert out["gross"] != pytest.approx(settled["net_pnl"] + fees + funding, abs=1e-6)

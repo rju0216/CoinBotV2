@@ -110,6 +110,11 @@ tests/                       # 백테 골격 회귀 테스트 (픽스처는 test
 >   **D2 를 다음 Phase baseline 으로 박제**(D-042), **완전 kill 0 유지·PARK 정량 재소환 조건**(D-043). §12-9.
 > - **Phase 7**(layer 0~2 개선·**진행 중**): 표본/용량 가설 검정(E-배치)·배치 진단(편향·s/q 분해·피처
 >   방향성)·처방 사다리 → **layer-3 재측정**(도구 완비) → **D2 baseline 초과** 판정.
+>   신설 모듈: **`validation/feature_audit`**(피처 방향 AUC·폴드별 부호 안정성·조건부 분포) ·
+>   **`experiments/alpha_decomp`**(배리어·모집단 정합 알파 3분해 = 베타/선택α/방향α) ·
+>   `validation/metrics.directional_metrics`(방향 편향·**s/q 분해**를 `aggregate_metrics` 가 **자동 계측**).
+>   격자 아티팩트 25개 = `data/research/{phase4,phase5_frontier,phase7_grid}`(gitignored),
+>   러너는 `phase7_grid/runners/`. **해소율 통제 관계식 `x = 3.0·√(N/24)`**(§12-10).
 >   ※ **Phase 번호 개정(D-044)**: 구 "6.5" → **Phase 7**, 구 Phase 7(현실·교차강건) → **Phase 8**.
 >   → Phase 8 현실·교차강건·관문3(트랜치 실집행·슬리피지 1순위 게이트 추가).
 > - 상세·진행은 `docs/00_Work_Report/QuantModel_MasterPlan.md`, 의존성은 `requirements-ml.txt`.
