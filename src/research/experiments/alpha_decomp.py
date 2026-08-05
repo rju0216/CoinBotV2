@@ -26,19 +26,69 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from src.data.historical import TF_MS
+
 UP, DOWN = "up", "down"
 
 
+def assert_on_grid(candles: pd.DataFrame, timeframe: str,
+                   span: pd.DatetimeIndex | None = None) -> None:
+    """캔들이 **온그리드·무결손·단조·무중복**인지 검증하고 아니면 하드페일 (F-20).
+
+    ``barrier_matched_long_returns`` 는 "N봉 뒤"를 **위치 오프셋**(``pos + N``)으로 잡는다.
+    이는 캔들에 결손이 없을 때만 시간상 N봉 뒤와 일치한다. 결손이 있으면 조용히 **더 먼
+    미래**를 보게 되어(구간마다 다른 지평) 분해 결과가 오염된다. I-001(1d 캔들 손상이
+    audit 미검출 클래스)의 전례가 있으므로 호출자를 믿지 않고 **여기서 강제**한다
+    (규칙 16 - 계약을 구성으로 강제).
+
+    span 을 주면 그 구간(±지평 여유 포함 전체 범위)만 검사한다. None 이면 전 구간.
+    """
+    if timeframe not in TF_MS:
+        raise ValueError(f"알 수 없는 timeframe: {timeframe}")
+    idx = candles.index
+    if not isinstance(idx, pd.DatetimeIndex):
+        raise ValueError("캔들 인덱스가 DatetimeIndex 가 아니다")
+    if span is not None and len(span):
+        lo, hi = span.min(), span.max()
+        idx = idx[(idx >= lo) & (idx <= hi)]
+    if len(idx) < 2:
+        return
+    if not idx.is_monotonic_increasing:
+        raise ValueError("캔들 인덱스가 시간순이 아니다 - 위치 오프셋이 무의미")
+    if idx.has_duplicates:
+        raise ValueError(f"캔들 인덱스에 중복 {int(idx.duplicated().sum())}개")
+    step = pd.Timedelta(milliseconds=TF_MS[timeframe])
+    diffs = idx[1:] - idx[:-1]
+    bad = diffs != step
+    if bad.any():
+        n_bad = int(bad.sum())
+        where = idx[:-1][bad][:3]
+        raise ValueError(
+            f"{timeframe} 캔들이 온그리드 연속이 아니다 - 간격 이상 {n_bad}곳 "
+            f"(예: {[str(t) for t in where]}, 최대 {diffs[bad].max()}). "
+            f"위치 오프셋 기반 지평이 시간상 지평과 어긋난다(F-20).")
+
+
 def barrier_matched_long_returns(artifact: pd.DataFrame, candles: pd.DataFrame,
-                                 horizon_bars: int) -> pd.Series:
+                                 horizon_bars: int,
+                                 timeframe: str | None = None) -> pd.Series:
     """그 봉에서 **무조건 롱** 진입 시의 배리어 정합 실현 수익률(분수).
 
     up → +w, down → −w (w=barrier_frac, 라벨과 동일 폭), expire → ``close_{i+N}/close_i − 1``.
     N봉 뒤 캔들이 없는 꼬리는 NaN.
+
+    timeframe 을 주면 ``assert_on_grid`` 로 **위치 오프셋의 전제**를 검증한다(F-20).
+    권장 사용법은 캔들을 ``load_audited`` 로 읽고 timeframe 을 명시하는 것.
     """
     c = candles[~candles.index.duplicated()].sort_index()
     if c.index.tz is None:
-        c = c.tz_localize("UTC") if hasattr(c, "tz_localize") else c
+        # (F-21(5)) 과거 구현의 hasattr 분기는 DataFrame 이 항상 갖는 속성이라 사문이었다.
+        c = c.tz_localize("UTC")
+    if timeframe is not None:
+        # 실제로 읽는 범위 = 아티팩트 구간 + **지평 꼬리**(pos+N 이 그만큼 더 본다).
+        step = pd.Timedelta(milliseconds=TF_MS[timeframe])
+        assert_on_grid(c, timeframe, span=pd.DatetimeIndex(
+            [artifact.index.min(), artifact.index.max() + horizon_bars * step]))
     pos = c.index.get_indexer(artifact.index)
     cl = c["close"].to_numpy()
     ok = (pos >= 0) & (pos + horizon_bars < len(cl))
@@ -66,13 +116,17 @@ def barrier_matched_long_returns(artifact: pd.DataFrame, candles: pd.DataFrame,
 
 def decompose(artifact: pd.DataFrame, candles: pd.DataFrame, horizon_bars: int,
               gate: np.ndarray | pd.Series | None = None,
-              pred_source: str = "ens") -> pd.DataFrame:
+              pred_source: str = "ens",
+              timeframe: str | None = None) -> pd.DataFrame:
     """연도별 + 전체 알파/베타 분해 표 (bp 단위). index=연도('전체' 포함).
 
     gate=None 이면 전 봉이 대상. gate 지정 시 **방향 알파는 게이트 통과봉에서**,
     **선택 알파는 게이트봉 벤치 vs 전체봉 벤치**로 계산한다.
     """
-    long_ret = barrier_matched_long_returns(artifact, candles, horizon_bars)
+    # ★M-5★ timeframe 을 넘겨야 F-20 온그리드 가드가 도달한다. 미지정 시 가드 없음
+    # (구 동작 보존) — 판정 경로에서는 **반드시 명시**할 것.
+    long_ret = barrier_matched_long_returns(artifact, candles, horizon_bars,
+                                            timeframe=timeframe)
     up = artifact[f"{pred_source}_up"].to_numpy(dtype="float64")
     dn = artifact[f"{pred_source}_down"].to_numpy(dtype="float64")
     is_long = up >= dn
@@ -130,11 +184,18 @@ def decompose(artifact: pd.DataFrame, candles: pd.DataFrame, horizon_bars: int,
 def ev_expire_gate(artifact: pd.DataFrame, horizon_bars: int, tf_hours: float,
                    ev_k: float = 2.0, taker: float = 0.0005,
                    funding_per_8h: float = 0.0001,
-                   pred_source: str = "ens") -> np.ndarray:
-    """D2 게이트 재현 (EV k=2 + 만기게이트) — 봉 수준. `econ_l3` 규약과 동일 식."""
+                   pred_source: str = "ens", theta: float = 0.0) -> np.ndarray:
+    """D2 게이트 재현 (θ + EV k=2 + 만기게이트) — 봉 수준. `econ_l3` 규약과 동일 식.
+
+    ★F-21②★ 과거 구현은 θ 인자가 없어 θ>0 셀을 재현하려는 호출자가 **조용히 더 넓은
+    모집단**을 얻었다. 기본값 0.0 은 D-047 격자(θ=0)와 동일하므로 기존 호출은 불변이다.
+    θ 규약은 엔진과 같은 ``>=``(dumb_l3 `p_dir < theta` → HOLD, 타이규약 H-2).
+    """
     up = artifact[f"{pred_source}_up"].to_numpy(dtype="float64")
     dn = artifact[f"{pred_source}_down"].to_numpy(dtype="float64")
     ex = artifact[f"{pred_source}_expire"].to_numpy(dtype="float64")
     w = artifact["barrier_frac"].to_numpy(dtype="float64")
     cost = 2.0 * taker + (horizon_bars * tf_hours / 8.0) * funding_per_8h
-    return (np.abs(up - dn) * w >= ev_k * cost) & (np.maximum(up, dn) > ex)
+    p_dir = np.maximum(up, dn)
+    return ((p_dir >= theta) & (np.abs(up - dn) * w >= ev_k * cost)
+            & (p_dir > ex))

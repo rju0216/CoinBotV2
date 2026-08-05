@@ -65,6 +65,9 @@ tests/                       # 백테 골격 회귀 테스트 (픽스처는 test
                              #   Phase6 추가: test_econ_l3 / test_engine_multislot /
                              #   test_phase6_fullstack(통짜 통합·N>1 6불변식) /
                              #   research/test_regime_causal / research/test_policy_eval
+                             #   Phase7 추가: test_econ_l3 축 C 20(인과·선택률통제·상한·워밍업·
+                             #   비파괴·하드페일·타이) / test_phase6_fullstack I7 seam 3 /
+                             #   research/test_alpha_decomp F-20 8. 총 457 passed / 1 skipped
 ```
 
 > **`src/research/` (모델 개발 오프라인 substrate)**: 위 백테 골격과 **별개**로, 새 퀀트
@@ -108,13 +111,20 @@ tests/                       # 백테 골격 회귀 테스트 (픽스처는 test
 >   **결과**: 단일슬롯이 신호의 85~90%를 버려 판정이 표집에 지배되고 있었음 → 포화 재측정 시 형제 config
 >   부호반전 소멸. **93셀 중 ex-2024 양수는 D2/D7 뿐**(4h_4d × EV·만기게이트), 층1 통과 0.
 >   **D2 를 다음 Phase baseline 으로 박제**(D-042), **완전 kill 0 유지·PARK 정량 재소환 조건**(D-043). §12-9.
-> - **Phase 7**(layer 0~2 개선·**진행 중**): 표본/용량 가설 검정(E-배치)·배치 진단(편향·s/q 분해·피처
->   방향성)·처방 사다리 → **layer-3 재측정**(도구 완비) → **D2 baseline 초과** 판정.
+> - **Phase 7**(layer 0~2 개선·**진행 중, Step 7.5e 완료**): E-배치·배치 진단·**엔진 전수 72셀
+>   (7.5c)**·**진단 전수(7.5d)**·**갈래/레버 확정(7.5e)** → 다음 = **7.6 처방** → 7.7a/7.7b 재측정
+>   → **7.8 진전 바 판정**(D-046+D-048: **D7 초과** + 연도별 선택알파 전부 양수 + **귀무 대비 유의**).
 >   신설 모듈: **`validation/feature_audit`**(피처 방향 AUC·폴드별 부호 안정성·조건부 분포) ·
 >   **`experiments/alpha_decomp`**(배리어·모집단 정합 알파 3분해 = 베타/선택α/방향α) ·
 >   `validation/metrics.directional_metrics`(방향 편향·**s/q 분해**를 `aggregate_metrics` 가 **자동 계측**).
->   격자 아티팩트 25개 = `data/research/{phase4,phase5_frontier,phase7_grid}`(gitignored),
->   러너는 `phase7_grid/runners/`. **해소율 통제 관계식 `x = 3.0·√(N/24)`**(§12-10).
+>   격자 아티팩트 25개 = `data/research/{phase4,phase5_frontier,phase7_grid}`(gitignored, **9 기존
+>   + 16 신규**), 러너는 `phase7_grid/runners/`. **해소율 통제 관계식 `x = 3.0·√(N/24)`**.
+>   **7.5c 신규**: `econ_l3` **축 C**(`ev_rank_rate` — causal rolling 백분위 선택률 고정 게이트)와
+>   **`compute_rank_gate()`**(EconL3↔`policy_eval` 단일 출처) · `alpha_decomp.assert_on_grid`
+>   (F-20 온그리드 강제) · `decompose(timeframe=)` · `ev_expire_gate(theta=)`.
+>   **결과**: 72셀 전수(17.91h·거래 749,119) → **축 사실 4**(결정TF 4h 가 원천 · 만기게이트 TF 의존 ·
+>   배리어 폭 통제는 120h 만 · 절대 EV 문턱은 1h/15m 장지평서 열등) · **D7 초과 1셀**이나 귀무 미달 ·
+>   **15m 재소환 조건 충족**(`15m_6h_x3.0 G-B`). 상세·실행 전제는 **§12-10 및 7.5e 부록**.
 >   ※ **Phase 번호 개정(D-044)**: 구 "6.5" → **Phase 7**, 구 Phase 7(현실·교차강건) → **Phase 8**.
 >   → Phase 8 현실·교차강건·관문3(트랜치 실집행·슬리피지 1순위 게이트 추가).
 > - 상세·진행은 `docs/00_Work_Report/QuantModel_MasterPlan.md`, 의존성은 `requirements-ml.txt`.

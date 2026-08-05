@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from src.research.experiments.alpha_decomp import (
+    assert_on_grid,
     barrier_matched_long_returns,
     decompose,
     ev_expire_gate,
@@ -128,3 +129,85 @@ def test_ev_expire_gate_matches_econ_l3_formula():
     # 3봉: |0.01|*0.05=5bp < 44 → 미달 (만기게이트도 0.34>0.33 로는 통과)
     assert bool(g[2]) is False
     assert cost == pytest.approx(0.0022)
+
+
+# --- F-20: 위치 오프셋의 전제(온그리드 무결손) 강제 ------------------------
+
+def test_on_grid_guard_accepts_clean_candles():
+    art, c = _fixture(["up", "down", "expire"], [(0.5, 0.3, 0.2)])
+    assert_on_grid(c, "4h")                                  # 예외 없음
+    r = barrier_matched_long_returns(art, c, N, timeframe="4h")
+    assert r.notna().all()
+
+
+def test_on_grid_guard_rejects_missing_bar():
+    """★F-20 핵심★ 캔들 결손이 있으면 하드페일 - pos+N 이 시간상 N봉 뒤가 아니게 된다."""
+    art, c = _fixture(["up", "down", "expire"], [(0.5, 0.3, 0.2)])
+    holed = c.drop(c.index[10])                              # 한 봉 제거
+    with pytest.raises(ValueError, match="온그리드"):
+        assert_on_grid(holed, "4h")
+    with pytest.raises(ValueError, match="온그리드"):
+        barrier_matched_long_returns(art, holed, N, timeframe="4h")
+
+
+def test_on_grid_guard_is_nonvacuous_the_hole_really_changes_results():
+    """가드가 막는 오염이 실재함을 보인다 - 결손 시 값이 실제로 달라진다.
+
+    (가드가 '있으나 마나'면 회귀가 공허하다. expire 봉의 표류 수익이 바뀌는지 본다.)
+    """
+    idx = pd.date_range("2024-01-01", periods=40, freq="4h", tz="UTC")
+    art = pd.DataFrame({"ens_up": 0.3, "ens_down": 0.2, "ens_expire": 0.5,
+                        "y_true": "expire", "barrier_frac": 0.05}, index=idx)
+    px = pd.DataFrame({"close": np.arange(100.0, 100.0 + 45)},  # 단조 증가 -> 위치가 값을 바꿈
+                      index=pd.date_range("2024-01-01", periods=45, freq="4h", tz="UTC"))
+    clean = barrier_matched_long_returns(art, px, N).to_numpy()
+    holed_px = px.drop(px.index[5])
+    holed = barrier_matched_long_returns(art, holed_px, N).to_numpy()   # 가드 off(구 경로)
+    assert not np.allclose(clean[:20], holed[:20], equal_nan=True), (
+        "결손이 결과를 안 바꾸면 이 가드의 회귀는 공허하다")
+    with pytest.raises(ValueError):                                     # 가드 on 이면 차단
+        barrier_matched_long_returns(art, holed_px, N, timeframe="4h")
+
+
+def test_on_grid_guard_rejects_duplicate_and_unsorted():
+    _, c = _fixture(["up"], [(0.5, 0.3, 0.2)])
+    dup = pd.concat([c, c.iloc[[3]]]).sort_index()
+    with pytest.raises(ValueError, match="중복"):
+        assert_on_grid(dup, "4h")
+    rev = c.iloc[::-1]
+    with pytest.raises(ValueError, match="시간순"):
+        assert_on_grid(rev, "4h")
+
+
+def test_on_grid_guard_only_checks_used_span():
+    """검사 범위는 '아티팩트 구간 + 지평 꼬리' - 그 밖의 결손은 무해하므로 통과."""
+    art, c = _fixture(["up", "down", "expire"], [(0.5, 0.3, 0.2)], n=20)
+    tail = pd.DataFrame({"close": [100.0] * 5}, index=pd.date_range(
+        c.index[-1] + pd.Timedelta(hours=12), periods=5, freq="4h", tz="UTC"))  # 뒤쪽 갭
+    with_far_gap = pd.concat([c, tail])
+    barrier_matched_long_returns(art, with_far_gap, N, timeframe="4h")   # 예외 없어야 함
+
+
+def test_timeframe_none_preserves_legacy_behavior():
+    """비파괴 - timeframe 미지정이면 검증 없이 기존과 동일한 값."""
+    art, c = _fixture(["up", "down", "expire"], [(0.5, 0.3, 0.2)])
+    a = barrier_matched_long_returns(art, c, N).to_numpy()
+    b = barrier_matched_long_returns(art, c, N, timeframe="4h").to_numpy()
+    assert np.allclose(a, b, equal_nan=True)
+
+
+# --- F-21(2): ev_expire_gate 의 theta 인자 --------------------------------
+
+def test_ev_expire_gate_theta_default_is_backward_compatible():
+    """theta 기본 0.0 은 확률이 항상 >=0 이라 무조건 통과 - 기존 호출 불변."""
+    art, _ = _fixture(["up"], [(0.55, 0.15, 0.30), (0.34, 0.32, 0.34)], w=0.02)
+    assert np.array_equal(ev_expire_gate(art, 6, 4.0), ev_expire_gate(art, 6, 4.0, theta=0.0))
+
+
+def test_ev_expire_gate_theta_narrows_population():
+    """★F-21(2)★ theta 를 올리면 모집단이 좁아진다 - 과거엔 인자가 없어 조용히 넓었다."""
+    art, _ = _fixture(["up"], [(0.55, 0.15, 0.30), (0.44, 0.26, 0.30)], w=0.02)
+    base = ev_expire_gate(art, 6, 4.0, theta=0.0)
+    tight = ev_expire_gate(art, 6, 4.0, theta=0.50)
+    assert base.sum() > tight.sum() > 0, "theta 가 인구를 좁히지 못함"
+    assert (tight & ~base).sum() == 0, "theta 는 좁히기만 해야 한다"

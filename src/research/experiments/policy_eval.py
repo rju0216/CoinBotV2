@@ -19,6 +19,8 @@ scratchpad `frontier_gate2`(미커밋) 를 커밋 코드로 승격. 두 축:
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import pandas as pd
 
@@ -26,6 +28,8 @@ from src.backtest.engine import BacktestEngine
 from src.data.historical import TF_MS
 from src.research.experiments.tf_expansion import causal_regime_frame_for
 from src.utils.config_loader import load_config
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_FUNDING = "data/funding/BTCUSDT_binance_funding.csv"
 DEFAULT_INIT = 10_000.0
@@ -215,8 +219,12 @@ def _winrate_breakeven(pnl: pd.Series) -> tuple[float, float]:
 
 
 def _analyze(policy_spec: dict, trades: list[dict], funding_csv: str,
-             init: float) -> dict:
-    """trades → 계측 dict (gross/fee/net·펀딩후·승률vsBE·연도별·청산사유·capture)."""
+             init: float, start: str | None = None,
+             end: str | None = None) -> dict:
+    """trades → 계측 dict (gross/fee/net·펀딩후·승률vsBE·연도별·청산사유·capture).
+
+    start/end 를 주면 **포착률 분모를 그 구간의 게이트봉으로 제한**한다(L-5). 미지정 시
+    아티팩트 전 구간이 분모라 start 이전·end 이후 봉이 섞여 포착률이 과소 보고된다."""
     tag = policy_spec.get("artifact_path", "?")
     theta = float(policy_spec.get("theta", 0.40))
     src = policy_spec.get("pred_source", "ens")
@@ -297,26 +305,61 @@ def _analyze(policy_spec: dict, trades: list[dict], funding_csv: str,
     # 41.4% 로 보고됐으나 참값은 81.8%. Phase 6 최대 교훈이 "포화에서 재측정" 이므로
     # 이 지표가 절반으로 나오면 **포화된 셀을 미포화로 오판**한다.
     try:
-        cols = [f"{src}_up", f"{src}_down", f"{src}_expire", "barrier_frac"]
-        art = pd.read_parquet(tag, columns=cols)
+        art = pd.read_parquet(tag)
         up_a, dn_a = art[f"{src}_up"].to_numpy(), art[f"{src}_down"].to_numpy()
         ex_a, w_a = art[f"{src}_expire"].to_numpy(), art["barrier_frac"].to_numpy()
         act = np.maximum(up_a, dn_a) >= theta
         ev_k = float(policy_spec.get("ev_k", 0.0) or 0.0)
+        dge = bool(policy_spec.get("require_dir_gt_expire", False))
         if ev_k > 0.0:
             hb = float(policy_spec.get("horizon_bars", 0) or 0)
             tf_h = TF_MS.get(policy_spec.get("decision_tf", ""), 0) / 3_600_000.0
-            cost_frac = 2.0 * 0.0005 + (hb * tf_h / 8.0) * 0.0001
+            # ★L-3★ 비용상수를 하드코딩하면 spec 이 수수료·슬리피지를 오버라이드했을 때
+            # 전략의 EV 문턱과 분모가 **조용히 갈린다**. spec 을 단일 출처로 삼는다.
+            taker = float(policy_spec.get("taker_fee_pct", 0.0005))
+            slip = float(policy_spec.get("slippage_pct", 0.0))
+            fund = float(policy_spec.get("funding_rate_per_8h", 0.0001))
+            cost_frac = 2.0 * (taker + slip) + (hb * tf_h / 8.0) * fund
             act = act & (np.abs(up_a - dn_a) * w_a >= ev_k * cost_frac)
-        if bool(policy_spec.get("require_dir_gt_expire", False)):
+        if dge:
             act = act & (np.maximum(up_a, dn_a) > ex_a)
+        # ★축 C(G-C)★ 선택률 고정 게이트도 분모에 반영해야 한다 — 빠지면 분모가 전 봉이 되어
+        # **포화 셀을 미포화로 오판**한다(H-5 가 EV/만기에서 고친 것과 같은 버그).
+        # 게이트 식은 econ_l3.compute_rank_gate 단일 출처를 그대로 호출한다(드리프트 차단).
+        rank_rate = float(policy_spec.get("ev_rank_rate", 0.0) or 0.0)
+        if rank_rate > 0.0:
+            from src.strategy.plugins.econ_l3 import EV_RANK_WINDOW_DAYS, compute_rank_gate
+            gate, rank_diag = compute_rank_gate(
+                pd.read_parquet(tag), rate=rank_rate,
+                window_days=int(policy_spec.get("ev_rank_window_days",
+                                                EV_RANK_WINDOW_DAYS)),
+                decision_tf=policy_spec.get("decision_tf", ""), theta=theta,
+                require_dir_gt_expire=dge, pred_source=src)
+            act = act & gate
+            out.update(rank_diag)              # 실현 선택률·워밍업·상한을 원장에 남긴다
+        # ★L-5★ 분모를 **백테 구간으로 제한**한다. 아티팩트는 start 이전·end 이후 봉을
+        # 포함할 수 있는데(1h 계열은 start 보다 5~10일 앞서 시작), 엔진은 그 봉에서 진입할
+        # 수 없다. 제한 전에는 72셀이 95.6~99.8% 로 보고돼 **포화 셀을 미포화로 오판**했다
+        # (구간 제한 후 전 셀 정확히 100.0%).
+        if start is not None or end is not None:
+            idx = art.index
+            win = np.ones(len(idx), dtype=bool)
+            if start is not None:
+                win &= np.asarray(idx >= pd.Timestamp(start, tz=idx.tz))
+            if end is not None:
+                win &= np.asarray(idx <= pd.Timestamp(end, tz=idx.tz))
+            act = act & win
         n_act = int(act.sum())
         out["n_actionable"] = n_act
-        out["capture_gates"] = {"theta": theta, "ev_k": ev_k, "require_dir_gt_expire":
-                                bool(policy_spec.get("require_dir_gt_expire", False))}
+        out["capture_gates"] = {"theta": theta, "ev_k": ev_k,
+                                "require_dir_gt_expire": dge, "ev_rank_rate": rank_rate,
+                                "window": [start, end]}
         out["signal_capture_pct"] = round(n / n_act * 100, 1) if n_act else None
-    except Exception:  # noqa: BLE001 — capture 는 진단 보조, 실패해도 채점 유지
-        pass
+    except (KeyError, FileNotFoundError, OSError, ValueError) as e:
+        # ★L-4★ 광범위 except 는 compute_rank_gate 의 **하드페일까지 삼켜** 진단 필드가
+        # 조용히 사라지게 했다. 예상 가능한 IO/스키마 오류만 흡수하고 사유를 남긴다.
+        logger.warning("capture 진단 생략: %s: %s", type(e).__name__, e)
+        out["capture_error"] = f"{type(e).__name__}: {e}"
     return out
 
 
@@ -345,7 +388,7 @@ def evaluate_policy(policy_spec: dict, *, start: str, end: str,
         # 거래 원장 보존 — N 간 **교집합 교차검증**(동일 진입시각·방향 거래의 per-trade
         # gross 가 N 에 무관하게 동일한가)과 사후 진단에 필요. fresh-eyes 권고.
         pd.DataFrame(trades).to_csv(trades_out, index=False)
-    out = _analyze(policy_spec, trades, funding_csv, init)
+    out = _analyze(policy_spec, trades, funding_csv, init, start=start, end=end)
     out["max_slots"] = int(max_slots)
     out.update(diag)
     return out

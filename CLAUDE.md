@@ -116,9 +116,10 @@
      인용 금지**.
      **Phase 7 신설**: `validation/feature_audit`(방향 AUC·부호 안정성) · `experiments/alpha_decomp`
      (베타/선택α/방향α 3분해) · `metrics.directional_metrics`(자동 계측). §12-10 참조.
-     **Phase 7**(layer 0~2 개선, **진행 중**) = 표본/용량 가설 검정(E-배치)·배치 진단(편향·s/q 분해·
-     피처 방향성)·처방 사다리 **→ layer-3 재측정**(도구 완비) → **D2 baseline 초과** 판정
-     → Phase 8 현실·교차강건·관문3. ※ **Phase 번호 개정(D-044)**: 구 "6.5"→**7**, 구 7→**8**.
+     **Phase 7**(layer 0~2 개선, **진행 중 — Step 7.5e 완료**) = E-배치·배치 진단·**엔진 전수
+     72셀(7.5c)**·**진단 전수(7.5d)**·**갈래/레버 확정(7.5e)**. 다음 = **7.6 처방**(레버 1~3) →
+     7.7a(layer-3 고정)/7.7b(3층 재탐색) → **7.8 진전 바 판정**. baseline = **D7(포화)**.
+     ★새 세션은 §12-10 **7.5e 부록(7.6 실행 전제)** 부터 읽을 것★ → Phase 8 현실·교차강건·관문3. ※ **Phase 번호 개정(D-044)**: 구 "6.5"→**7**, 구 7→**8**.
      상세는 `docs/00_Work_Report/QuantModel_MasterPlan.md`(§12-9·D-037~045·I-007~014·F-18/19).
      의존성은 `requirements-ml.txt`.
 6. **캔들 캐시 (data/, git untracked)**: `data/candles/*.csv`.

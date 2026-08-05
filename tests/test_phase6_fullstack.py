@@ -21,6 +21,8 @@
   I4  인과: 모든 진입 시각이 그 진입을 만든 **예측봉 마감 이후**.
   I5  게이트 실효: ev_k 를 올리면 거래가 줄고, 만기게이트가 인구를 바꾼다.
   I6  bp 정규화: 지표가 **실현 노셔널** 기준(N 이 달라도 거래당 bp 비교 가능).
+  I7  (Phase 7 추가) 축 C seam: 선택률 고정 게이트의 **플래그 True 봉 == 엔진 진입 봉**
+      이며, 절대문턱(ev_k)과의 동시 지정은 엔진 구성 단계에서 하드페일.
 
 합성 데이터만 사용 — 실캔들/실아티팩트 비의존이라 suite 에서 항상 돈다.
 """
@@ -96,7 +98,8 @@ def _candles(idx4h):
     return {"1m": m, "4h": h4}
 
 
-def _cfg(art_path, max_slots, ev_k=2.0, dir_gt_exp=False, notional=None):
+def _cfg(art_path, max_slots, ev_k=2.0, dir_gt_exp=False, notional=None, **extra):
+    """extra = 전략 섹션에 추가로 얹을 파라미터(예: G-C 의 ev_rank_rate)."""
     return {
         "exchange": {"symbol": "BTC/USDT:USDT"},
         "accounting": {"taker_fee_pct": 0.0005, "slippage_pct": 0.0},
@@ -108,6 +111,7 @@ def _cfg(art_path, max_slots, ev_k=2.0, dir_gt_exp=False, notional=None):
             "require_dir_gt_expire": dir_gt_exp, "sizing": "fixed",
             "notional": notional if notional is not None else INIT / max_slots,
             "no_tp": False, "no_timeout": False, "allow_reverse": False,
+            **extra,
         },
     }
 
@@ -225,3 +229,67 @@ def test_i6_bp_is_invariant_to_tranche_count_for_same_trades(art):
     assert fa["n_trades"] == fb["n_trades"]
     assert fa["net_bp_per_trade"] == pytest.approx(fb["net_bp_per_trade"], abs=0.01)
     assert fa["net_pct"] == pytest.approx(fb["net_pct"] * 4, abs=0.05)   # 금액은 4배
+
+
+# --- I7 축 C(G-C) seam: 게이트 플래그 <-> 실제 진입 1:1 (Phase 7 Step 7.5c) ----
+
+def test_i7_rank_gate_flags_map_one_to_one_to_engine_entries(art):
+    """포화(max_slots=지평)에서 **게이트 True 봉 == 엔진 진입 봉**.
+
+    단위 테스트는 플래그만 보고, 엔진 회귀는 손익만 본다 - 그 사이(플래그가 실제로
+    진입을 만드는가)가 seam 이다. 여기서 어긋나면 선택률을 고정해도 엔진이 다른
+    인구를 거래하게 되어 arm 자체가 무의미해진다(규칙 16).
+    """
+    path, idx = art
+    eng = _run(path, idx, max_slots=HORIZON, ev_k=0.0, dir_gt_exp=True,
+               ev_rank_rate=1 / 3, ev_rank_window_days=1)
+    strat = eng.strategy_by_name["econ_l3"]
+    flags = strat._pred["_econ_rank_ok"]
+    assert flags.any() and not flags.all(), "플래그가 상수 - seam 검증이 공허함"
+
+    interval = pd.Timedelta(hours=4)
+    # 진입은 예측봉 마감 직후 봉의 open 에서 일어난다 -> 진입시각을 예측봉으로 역매핑.
+    entry_pred_bars = set()
+    for t in eng.trades:
+        et = pd.Timestamp(t["entry_time"])
+        prior = idx[idx < et]
+        assert len(prior), f"진입 {et} 에 선행 예측봉 없음"
+        entry_pred_bars.add(prior[-1])
+
+    gate_bars = set(flags.index[flags.to_numpy()])
+    # 마지막 예측봉은 진입할 다음 봉이 캔들 범위 밖일 수 있으므로 꼬리 1봉 허용.
+    missed = gate_bars - entry_pred_bars
+    assert missed <= {idx[-1]}, f"게이트 통과했는데 진입 안 된 봉: {sorted(missed)}"
+    assert not (entry_pred_bars - gate_bars), (
+        f"게이트 미통과인데 진입한 봉: {sorted(entry_pred_bars - gate_bars)}")
+
+
+def test_i7_rank_gate_and_ev_gate_are_mutually_exclusive_end_to_end(art):
+    """엔진 구성 단계에서 하드페일 - 두 문턱 규칙을 함께 켠 셀은 만들어질 수 없다."""
+    path, idx = art
+    with pytest.raises(ValueError):
+        _run(path, idx, max_slots=HORIZON, ev_k=2.0, ev_rank_rate=1 / 3)
+
+
+def test_i7_rank_gate_is_counted_in_capture_denominator(art):
+    """★H-5 재발 방지★ 포화 G-C 셀의 포착률이 ~100% 로 보고된다.
+
+    분모가 축 C 게이트를 모르면 전 봉이 분모가 되어 **포화 셀을 미포화로 오판**한다
+    (Phase 6 최대 교훈이 "포화에서 재측정"인데 그 판단 근거가 되는 지표다).
+    """
+    path, idx = art
+    spec = _cfg(path, HORIZON, ev_k=0.0, dir_gt_exp=True,
+                ev_rank_rate=1 / 3, ev_rank_window_days=1)["econ_l3"]
+    eng = _run(path, idx, max_slots=HORIZON, ev_k=0.0, dir_gt_exp=True,
+               ev_rank_rate=1 / 3, ev_rank_window_days=1)
+    out = pe._analyze(spec, eng.trades, pe.DEFAULT_FUNDING, INIT)
+
+    flags = eng.strategy_by_name["econ_l3"]._pred["_econ_rank_ok"]
+    assert out["n_actionable"] == int(flags.sum()), "분모가 축 C 게이트를 반영하지 않음"
+    assert out["n_actionable"] < len(flags), "분모가 전 봉 - 게이트 미반영"
+    assert out["signal_capture_pct"] >= 95.0, (
+        f"포화인데 포착률 {out['signal_capture_pct']}% - 미포화로 오판됨")
+    assert out["capture_gates"]["ev_rank_rate"] == pytest.approx(1 / 3)
+    for k in ("rank_window_bars", "rank_warmup_bars", "rank_capped_bars",
+              "rank_realized_rate_post_warmup"):
+        assert k in out, f"원장 진단 필드 누락: {k}"
